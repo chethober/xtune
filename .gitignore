@@ -1,0 +1,16 @@
+# binaries
+/xtune
+/xtune.exe
+/xtune-bin
+/dist/
+
+# results contain credentials
+xtune-results/
+*.csv
+links.txt
+client_*.json
+harness.json
+
+.DS_Store
+.idea/
+.vscode/
