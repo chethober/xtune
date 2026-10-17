@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,14 +24,27 @@ var version = "dev"
 
 const usage = `xtune - Xray tuner and manager
 
-Usage:
-  xtune                         interactive wizard (TUI)
-  xtune tune      [conn] [tune flags]           find the configs that get through from this network
-  xtune xray      [conn] status|update [flags]  check / update Xray locally, on the server and in 3x-ui
-  xtune users     [conn] [--backend B] list|add|del|enable|disable|links|rotate|quota|expiry ...
-  xtune logs      [conn] [--unit U] [-n N] [-f]
-  xtune uninstall [conn]                        remove everything xtune installed on the server
+On your computer (client):
+  xtune                                    interactive TUI: connect, tune, deploy, open the server console
+  xtune tune      [conn] [tune flags]      find the configs that get through from this network, deploy them
+                  --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
+  xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
+  xtune xray      [conn] status|update     check / update Xray here and on the server
+  xtune logs      [conn] [-n N] [-f]
+  xtune uninstall [conn]                   remove everything xtune installed on the server
   xtune version
+
+On the server (as root):
+  sudo xtune                               server TUI: users, subscriptions, addresses, Xray, logs
+  xtune users     list
+  xtune users     add NAME [--quota GB] [--days N] [--devices N]
+  xtune users     limit NAME [--quota GB] [--days N] [--devices N]   (0 = unlimited / never)
+  xtune users     links|enable|disable|rotate|reset-usage|reset-sub|del NAME
+  xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable]   public subscription links
+  xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
+  xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
+  xtune xray|logs|uninstall                as above, for this server
+  (internal, run by systemd: xtune enforce, xtune serve)
 
 Connection flags (conn):
   --host H --port 22 --user root --key PATH --password-env VAR --profile NAME
@@ -40,20 +53,41 @@ Connection flags (conn):
 
 func main() {
 	if len(os.Args) < 2 {
-		runTUI()
+		if serverMode() {
+			runServerTUI()
+		} else {
+			runTUI()
+		}
 		return
 	}
 	var err error
 	args := os.Args[2:]
 	switch os.Args[1] {
-	case "tui":
+	case "tui", "client":
 		runTUI()
+	case "server":
+		runServerTUI()
 	case "tune":
 		err = cmdTune(args)
+	case "console":
+		err = cmdConsole(args)
 	case "xray":
 		err = cmdXray(args)
 	case "users":
 		err = cmdUsers(args)
+	case "domains":
+		err = cmdDomains(args)
+	case "sub":
+		err = cmdSub(args)
+	case "country":
+		err = cmdCountry(args)
+	case "enforce":
+		var r *Server
+		if r, err = OpenLocal(); err == nil {
+			err = Enforce(r)
+		}
+	case "serve":
+		err = Serve()
 	case "logs":
 		err = cmdLogs(args)
 	case "uninstall":
@@ -133,12 +167,26 @@ func cliPrompt(label string, secret bool) (string, error) {
 	return strings.TrimSpace(s), err
 }
 
-func connect(c connFlags) (*Remote, error) {
+func connect(c connFlags) (*Server, error) {
 	cn, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
 	return Dial(cn, cliPrompt)
+}
+
+// target connects to --host/--profile, or manages this machine when xtune runs on the server.
+func target(c connFlags) (*Server, error) {
+	if *c.host == "" && *c.profile == "" && serverMode() {
+		return OpenLocal()
+	}
+	return connect(c)
+}
+
+func flagsSet(fs *flag.FlagSet) map[string]bool {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	return set
 }
 
 func parse(fs *flag.FlagSet, args []string) []string {
@@ -177,7 +225,7 @@ func setActiveHarness(h *harness) { activeMu.Lock(); activeHarness = h; activeMu
 
 // guarded runs fn; on Ctrl+C / SIGTERM it stops the local harness and the server test
 // instance before exiting, so an interrupted tune never leaves ports open.
-func guarded(r *Remote, fn func() error) error {
+func guarded(r *Server, fn func() error) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
@@ -215,9 +263,10 @@ func cmdTune(args []string) error {
 	fs.IntVar(&o.Secs, "secs", 8, "seconds per transfer")
 	fs.StringVar(&o.Out, "out", "xtune-results", "results directory")
 	fs.StringVar(&o.ServerTag, "server-version", "", "install this Xray tag on the server first")
-	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc (prefix match)")
+	fs.StringVar(&o.Domain, "domain", "", "direct (DNS-only) domain used in links instead of the IP (default: the deployed one)")
+	fs.StringVar(&o.CDNDomain, "cdn", "", "CDN-proxied domain: adds a VLESS+XHTTP+TLS entry through the CDN (default: the deployed one)")
+	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
-	users := fs.String("users", "", "comma-separated user names for a new deployment")
 	parse(fs, args)
 	if *only != "" {
 		o.Only = strings.Split(*only, ",")
@@ -227,6 +276,16 @@ func cmdTune(args []string) error {
 		return err
 	}
 	defer r.Close()
+	if set := flagsSet(fs); !set["domain"] || !set["cdn"] {
+		if old, _ := LoadState(r); old != nil {
+			if !set["domain"] {
+				o.Domain = old.Domain
+			}
+			if !set["cdn"] {
+				o.CDNDomain = old.CDNDomain
+			}
+		}
+	}
 	o.XrayBin, err = EnsureLocalXray(*c.xray, r, func(s string) { fmt.Println(s) })
 	if err != nil {
 		return err
@@ -238,30 +297,66 @@ func cmdTune(args []string) error {
 	}
 	n := *deploy
 	if n < 0 {
-		s, _ := cliPrompt(fmt.Sprintf("Keep the top N configs running on the server? N (0 = none) [0]"), false)
+		s, _ := cliPrompt("Keep the top N configs running on the server? N (0 = none) [0]", false)
 		n, _ = strconv.Atoi(s)
 	}
-	if n > 0 {
-		st, err := Deploy(r, res, n, strings.Split(*users, ","))
-		if err != nil {
-			return err
-		}
-		printDeployment(st)
-	} else {
+	if n <= 0 {
 		out, _ := r.Helper("cleanup")
 		fmt.Println("[*] server cleanup:", out)
+		return nil
+	}
+	st, err := Deploy(r, res, n)
+	if err != nil {
+		return err
+	}
+	printDeployment(st)
+	if err := EnsureServerXtune(r, func(s string) { fmt.Println("[*] " + s) }); err != nil {
+		fmt.Println("[!] xtune could not be installed on the server, so users cannot be managed there yet:", err)
+	} else if len(st.Users) == 0 {
+		fmt.Printf("\nNo users yet. Add them on the server: xtune console --host %s  (or ssh in and run sudo xtune)\n", r.Conn.Host)
 	}
 	return nil
 }
 
 func printDeployment(st *State) {
-	fmt.Printf("\n[+] deployed %d configs (systemd unit xray-autotune)\n", len(st.Entries))
+	fmt.Printf("\n[+] deployed %d configs (systemd unit xray-autotune), address %s", len(st.Entries), st.Addr())
+	if st.CDNDomain != "" {
+		fmt.Printf(", CDN %s", st.CDNDomain)
+	}
+	fmt.Println()
 	for _, u := range st.Users {
+		if !u.Enabled {
+			continue
+		}
+		if sub := st.SubURL(u); sub != "" {
+			fmt.Printf("  %-16s %s  (refresh to get the new configs)\n", u.Name, sub)
+			continue
+		}
 		fmt.Printf("\n# %s\n", u.Name)
 		for _, l := range st.Links(u) {
 			fmt.Println(l)
 		}
 	}
+}
+
+func cmdConsole(args []string) error {
+	fs := flag.NewFlagSet("console", flag.ExitOnError)
+	c := addConnFlags(fs)
+	parse(fs, args)
+	r, err := connect(c)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return openConsole(r)
+}
+
+// openConsole makes sure the server has this xtune, then runs its server TUI over SSH.
+func openConsole(r *Server) error {
+	if err := EnsureServerXtune(r, func(s string) { fmt.Println(s) }); err != nil {
+		return err
+	}
+	return r.Console(remoteDir + "/xtune server")
 }
 
 // ---------------------------------------------------------------- xray
@@ -273,24 +368,24 @@ func cmdXray(args []string) error {
 	stable := fs.Bool("stable", false, "newest non-prerelease instead of newest")
 	local := fs.Bool("local", false, "only the local binary")
 	server := fs.Bool("server", false, "only xtune's server binary")
-	panelOnly := fs.Bool("panel", false, "only 3x-ui's Xray")
 	pos := parse(fs, args)
 	action := "status"
 	if len(pos) > 0 {
 		action = pos[0]
 	}
-	var r *Remote
-	if *c.host != "" || *c.profile != "" {
+	var r *Server
+	if *c.host != "" || *c.profile != "" || serverMode() {
 		var err error
-		if r, err = connect(c); err != nil {
+		if r, err = target(c); err != nil {
 			return err
 		}
 		defer r.Close()
 	}
-	all := !*local && !*server && !*panelOnly
+	onServer := r != nil && r.Local
+	all := !*local && !*server
 	switch action {
 	case "status":
-		return xrayStatus(os.Stdout, r, *c.xray, *stable)
+		return xrayStatus(os.Stdout, r, *c.xray, *stable, !onServer)
 	case "update":
 		tag := *ver
 		if tag == "" {
@@ -299,12 +394,12 @@ func cmdXray(args []string) error {
 				return err
 			}
 		}
-		return xrayUpdate(r, *c.xray, normTag(tag), all || *local, (all || *server) && r != nil, (all || *panelOnly) && r != nil, cliPrompt)
+		return xrayUpdate(r, *c.xray, normTag(tag), (all || *local) && !onServer, (all || *server) && r != nil)
 	}
 	return fmt.Errorf("unknown xray action %q", action)
 }
 
-func xrayStatus(w *os.File, r *Remote, xrayFlag string, stable bool) error {
+func xrayStatus(w io.Writer, r *Server, xrayFlag string, stable, local bool) error {
 	latest, lerr := LatestXray(stable, r)
 	if lerr != nil {
 		latest = "unknown"
@@ -312,31 +407,27 @@ func xrayStatus(w *os.File, r *Remote, xrayFlag string, stable bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "WHERE\tVERSION\tLATEST\tSTATE\n")
 	mark := func(v string) string {
-		if v == "none" || v == "" {
-			return latest
-		}
-		if newer(latest, v) {
+		if v != "none" && v != "" && newer(latest, v) {
 			return latest + " (update available)"
 		}
 		return latest
 	}
-	lb := FindLocalXray(xrayFlag)
-	lv := XrayVersion(lb)
-	fmt.Fprintf(tw, "local\t%s\t%s\t%s\n", lv, mark(lv), orStr(lb, "not installed"))
+	if local {
+		lb := FindLocalXray(xrayFlag)
+		lv := XrayVersion(lb)
+		fmt.Fprintf(tw, "local\t%s\t%s\t%s\n", lv, mark(lv), orStr(lb, "not installed"))
+	}
 	if r != nil {
 		st, err := r.Status()
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(tw, "server (xtune)\t%s\t%s\tunit %s\n", st.Xray, mark(st.Xray), orStr(st.Unit, "-"))
-		if st.XUI {
-			fmt.Fprintf(tw, "server (3x-ui)\t%s\t%s\tx-ui %s\n", st.XUIXray, mark(st.XUIXray), st.XUIUnit)
-		}
+		fmt.Fprintf(tw, "server\t%s\t%s\tunit %s\n", st.Xray, mark(st.Xray), orStr(st.Unit, "-"))
 	}
 	return tw.Flush()
 }
 
-func xrayUpdate(r *Remote, xrayFlag, tag string, local, server, panel bool, ask Prompter) error {
+func xrayUpdate(r *Server, xrayFlag, tag string, local, server bool) error {
 	logf := func(s string) { fmt.Println(s) }
 	if local {
 		cur := XrayVersion(FindLocalXray(xrayFlag))
@@ -350,300 +441,309 @@ func xrayUpdate(r *Remote, xrayFlag, tag string, local, server, panel bool, ask 
 			fmt.Println("local xray is current:", cur)
 		}
 	}
-	if r == nil {
+	if r == nil || !server {
 		return nil
 	}
 	st, err := r.Status()
 	if err != nil {
 		return err
 	}
-	if server {
-		if st.Xray == "none" && !st.HasState {
-			fmt.Println("server: xtune's Xray is not installed (it is installed on first tune)")
-		} else if newer(tag, st.Xray) {
-			out, err := r.Helper("install", tag)
-			if err != nil {
-				return fmt.Errorf("server update: %w", err)
-			}
-			fmt.Println("server xray:", out)
-		} else {
-			fmt.Println("server xray is current:", st.Xray)
-		}
-	}
-	if panel && st.XUI {
-		if !newer(tag, st.XUIXray) {
-			fmt.Println("3x-ui xray is current:", st.XUIXray)
-			return nil
-		}
-		p, err := OpenPanel(r, st, ask)
+	switch {
+	case st.Xray == "none" && !st.HasState:
+		fmt.Println("server: xtune's Xray is not installed (it is installed on first tune)")
+	case newer(tag, st.Xray):
+		out, err := r.Helper("install", tag)
 		if err != nil {
-			return err
+			return fmt.Errorf("server update: %w", err)
 		}
-		defer p.Close()
-		fmt.Println("3x-ui: installing", tag, "(Xray restarts; connections drop briefly)")
-		if err := p.InstallXray(tag); err != nil {
-			return err
-		}
-		time.Sleep(3 * time.Second)
-		fmt.Println("3x-ui xray:", p.XrayVersion())
+		fmt.Println("server xray:", out)
+	default:
+		fmt.Println("server xray is current:", st.Xray)
 	}
 	return nil
 }
 
-// ---------------------------------------------------------------- users
+// ---------------------------------------------------------------- users and addresses (server only)
 
-type backend struct {
-	r     *Remote
-	st    ServerStatus
-	panel *Panel
-	kind  string // standalone | panel
-}
-
-func pickBackend(r *Remote, want string, ask Prompter) (*backend, error) {
-	st, err := r.Status()
-	if err != nil {
-		return nil, err
-	}
-	b := &backend{r: r, st: st, kind: want}
-	if b.kind == "" || b.kind == "auto" {
-		switch {
-		case st.HasState && st.XUI:
-			return nil, fmt.Errorf("both a standalone deployment and 3x-ui exist; pass --backend standalone|panel")
-		case st.HasState:
-			b.kind = "standalone"
-		case st.XUI:
-			b.kind = "panel"
-		default:
-			return nil, fmt.Errorf("no users to manage: deploy with `xtune tune` or install 3x-ui")
+func serverOnly(cmd string, args []string) error {
+	for _, a := range args {
+		n := strings.TrimLeft(a, "-")
+		if strings.HasPrefix(a, "-") && (strings.HasPrefix(n, "host") || strings.HasPrefix(n, "profile")) {
+			return fmt.Errorf("%s are managed on the server only: run `xtune console --host H`, "+
+				"or ssh in and run `sudo xtune %s`", cmd, cmd)
 		}
 	}
-	if b.kind == "panel" {
-		if b.panel, err = OpenPanel(r, st, ask); err != nil {
-			return nil, err
-		}
-	}
-	return b, nil
+	return nil
 }
 
 func cmdUsers(args []string) error {
+	if err := serverOnly("users", args); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("users", flag.ExitOnError)
-	c := addConnFlags(fs)
-	be := fs.String("backend", "auto", "standalone | panel | auto")
-	quota := fs.Float64("quota", 0, "traffic quota in GB (panel, 0 = unlimited)")
-	days := fs.Int("days", 0, "expire after N days (panel, 0 = never)")
-	inbounds := fs.String("inbounds", "", "panel inbound IDs for add, comma-separated (default: all enabled)")
+	quota := fs.Float64("quota", 0, "traffic quota in GB (0 = unlimited)")
+	days := fs.Int("days", 0, "expire N days from now (0 = never)")
+	devices := fs.Int("devices", 0, "simultaneous devices (client IPs), 0 = unlimited")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
 	}
-	r, err := connect(c)
+	r, err := OpenLocal()
 	if err != nil {
 		return err
 	}
-	defer r.Close()
-	b, err := pickBackend(r, *be, cliPrompt)
-	if err != nil {
-		return err
+	if len(pos) < 2 && pos[0] != "list" && pos[0] != "ls" {
+		return fmt.Errorf("users %s: missing user name", pos[0])
 	}
-	if b.panel != nil {
-		defer b.panel.Close()
+	var l Limits
+	set := flagsSet(fs)
+	if set["quota"] {
+		l.QuotaGB = quota
 	}
-	need := func(n int) error {
-		if len(pos) < n+1 {
-			return fmt.Errorf("users %s: missing argument", pos[0])
+	if set["days"] {
+		l.Days = days
+	}
+	if set["devices"] {
+		l.Devices = devices
+	}
+	show := func(st *State, err error) error {
+		if err != nil {
+			return err
 		}
-		return nil
+		return printLinks(os.Stdout, st, pos[1])
 	}
 	switch pos[0] {
 	case "list", "ls":
-		return b.list(os.Stdout)
+		st, err := requireState(r)
+		if err != nil {
+			return err
+		}
+		us, err := LoadUsage(r)
+		if err != nil {
+			return err
+		}
+		return printUsers(os.Stdout, st, us)
 	case "add":
-		if err := need(1); err != nil {
-			return err
+		st, _, err := AddUser(r, pos[1], l)
+		return show(st, err)
+	case "limit":
+		if l == (Limits{}) {
+			return fmt.Errorf("users limit: pass --quota, --days and/or --devices")
 		}
-		var ids []int
-		for _, f := range strings.Split(*inbounds, ",") {
-			if id, err := strconv.Atoi(strings.TrimSpace(f)); err == nil {
-				ids = append(ids, id)
-			}
-		}
-		if err := b.add(pos[1], *quota, *days, ids); err != nil {
-			return err
-		}
-		return b.links(os.Stdout, pos[1])
+		_, err := SetLimits(r, pos[1], l)
+		return err
 	case "del", "delete", "rm":
-		if err := need(1); err != nil {
-			return err
-		}
-		return b.del(pos[1])
+		return DeleteUser(r, pos[1])
 	case "enable", "disable":
-		if err := need(1); err != nil {
-			return err
-		}
-		return b.setEnabled(pos[1], pos[0] == "enable")
+		return SetUserEnabled(r, pos[1], pos[0] == "enable")
 	case "links", "show":
-		if err := need(1); err != nil {
-			return err
-		}
-		return b.links(os.Stdout, pos[1])
+		return show(requireState(r))
 	case "rotate":
-		if err := need(1); err != nil {
-			return err
-		}
-		return b.rotate(os.Stdout, pos[1])
-	case "quota":
-		if err := need(2); err != nil {
-			return err
-		}
-		gb, err := strconv.ParseFloat(pos[2], 64)
-		if err != nil {
-			return err
-		}
-		return b.setQuota(pos[1], gb)
-	case "expiry":
-		if err := need(2); err != nil {
-			return err
-		}
-		d, err := strconv.Atoi(pos[2])
-		if err != nil {
-			return err
-		}
-		return b.setExpiry(pos[1], d)
+		st, _, err := RotateUser(r, pos[1])
+		return show(st, err)
+	case "reset-usage":
+		return ResetUsage(r, pos[1])
+	case "reset-sub":
+		return show(ResetSubLink(r, pos[1]))
 	}
 	return fmt.Errorf("unknown users action %q", pos[0])
 }
 
-func (b *backend) list(w *os.File) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	defer tw.Flush()
-	if b.kind == "standalone" {
-		st, err := requireState(b.r)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(tw, "USER\tENABLED\tCREATED\tCONFIGS\n")
-		for _, u := range st.Users {
-			fmt.Fprintf(tw, "%s\t%v\t%s\t%d\n", u.Name, u.Enabled, time.Unix(u.Created, 0).Format("2006-01-02"), len(st.Entries))
-		}
+func printUsers(w io.Writer, st *State, us *Usage) error {
+	if len(st.Users) == 0 {
+		fmt.Fprintln(w, "no users yet")
 		return nil
 	}
-	us, err := b.panel.Users()
-	if err != nil {
-		return err
+	now := time.Now()
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "USER\tSTATUS\tUSED\tQUOTA\tEXPIRES\tDEVICES\tLAST SEEN\n")
+	for _, u := range st.Users {
+		uu := us.Users[u.Name]
+		if uu == nil {
+			uu = &UserUsage{}
+		}
+		quota, devices, last := "-", fmt.Sprintf("%d/-", len(uu.Online)), "never"
+		if u.Quota > 0 {
+			quota = fmtBytes(u.Quota)
+		}
+		if u.Devices > 0 {
+			devices = fmt.Sprintf("%d/%d", len(uu.Online), u.Devices)
+		}
+		if len(uu.Online) > 0 {
+			last = "online"
+		} else if uu.LastSeen > 0 {
+			last = time.Unix(uu.LastSeen, 0).Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, userStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
+			quota, fmtExpiry(u.Expires, now), devices, last)
 	}
-	fmt.Fprintf(tw, "USER\tENABLED\tUSED\tQUOTA\tEXPIRES\tINBOUNDS\tLAST ONLINE\n")
-	for _, u := range us {
-		quota := "unlimited"
-		if u.TotalGB > 0 {
-			quota = humanBytes(u.TotalGB)
-		}
-		last := "never"
-		if u.Traffic.LastOnline > 0 {
-			last = time.UnixMilli(u.Traffic.LastOnline).Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(tw, "%s\t%v\t%s\t%s\t%s\t%d\t%s\n", u.Email, u.Enable, humanBytes(u.Traffic.Up+u.Traffic.Down),
-			quota, expiryStr(u.ExpiryTime), len(u.InboundIDs), last)
+	return tw.Flush()
+}
+
+func printLinks(w io.Writer, st *State, name string) error {
+	_, u := st.User(name)
+	if u == nil {
+		return fmt.Errorf("no user %q", name)
+	}
+	state := ""
+	if !u.Enabled {
+		state = ", DISABLED"
+	}
+	if sub := st.SubURL(*u); sub != "" {
+		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n\n", u.Name, state, sub, sub)
+	} else {
+		fmt.Fprintf(w, "# %s (%d configs%s, base64 subscription body below the links)\n", u.Name, len(st.Entries), state)
+	}
+	for _, l := range st.Links(*u) {
+		fmt.Fprintln(w, l)
+	}
+	if st.SubURL(*u) == "" {
+		fmt.Fprintf(w, "\n%s\n", st.Subscription(*u))
 	}
 	return nil
 }
 
-func (b *backend) add(name string, quotaGB float64, days int, inboundIDs []int) error {
-	if name == "" || strings.ContainsAny(name, " /\\\"'") {
-		return fmt.Errorf("invalid user name %q", name)
-	}
-	if b.kind == "standalone" {
-		_, _, err := StandaloneAdd(b.r, name)
+func cmdSub(args []string) error {
+	if err := serverOnly("sub", args); err != nil {
 		return err
 	}
-	return b.panel.Add(name, quotaGB, days, inboundIDs)
-}
-
-func (b *backend) del(name string) error {
-	if b.kind == "standalone" {
-		return StandaloneDelete(b.r, name)
-	}
-	return b.panel.Delete(name)
-}
-
-func (b *backend) setEnabled(name string, on bool) error {
-	if b.kind == "standalone" {
-		return StandaloneSetEnabled(b.r, name, on)
-	}
-	return b.panel.Update(name, func(c J) { c["enable"] = on })
-}
-
-func (b *backend) setQuota(name string, gb float64) error {
-	if b.kind == "standalone" {
-		return errors.New("quotas need traffic accounting - only the 3x-ui backend supports them")
-	}
-	return b.panel.Update(name, func(c J) { c["totalGB"] = int64(gb * (1 << 30)) })
-}
-
-func (b *backend) setExpiry(name string, days int) error {
-	if b.kind == "standalone" {
-		return errors.New("expiry needs enforcement - only the 3x-ui backend supports it")
-	}
-	return b.panel.Update(name, func(c J) { c["expiryTime"] = expiryMs(days) })
-}
-
-func (b *backend) rotate(w *os.File, name string) error {
-	if b.kind != "standalone" {
-		return errors.New("rotate is for the standalone backend (in 3x-ui: delete and re-add)")
-	}
-	if _, _, err := StandaloneRotate(b.r, name); err != nil {
-		return err
-	}
-	return b.links(w, name)
-}
-
-func (b *backend) links(w *os.File, name string) error {
-	if b.kind == "standalone" {
-		st, err := requireState(b.r)
-		if err != nil {
-			return err
-		}
-		_, u := st.User(name)
-		if u == nil {
-			return fmt.Errorf("no user %q", name)
-		}
-		fmt.Fprintf(w, "# %s (%d configs, base64 subscription body below the links)\n", u.Name, len(st.Entries))
-		for _, l := range st.Links(*u) {
-			fmt.Fprintln(w, l)
-		}
-		fmt.Fprintf(w, "\n%s\n", st.Subscription(*u))
-		return nil
-	}
-	us, err := b.panel.Users()
+	fs := flag.NewFlagSet("sub", flag.ExitOnError)
+	mode := fs.String("mode", "", "cdn (through the CDN domain) or direct (Let's Encrypt on the direct domain)")
+	port := fs.Int("port", 0, "HTTPS port (default: a free CDN-compatible port)")
+	pos := parse(fs, args)
+	r, err := OpenLocal()
 	if err != nil {
 		return err
 	}
-	for _, u := range us {
-		if u.Email != name {
-			continue
-		}
-		if sub := b.panel.SubURL(u.SubID); sub != "" {
-			fmt.Fprintf(w, "subscription: %s\n\n", sub)
-		}
-		links, err := b.panel.Links(name)
+	action := "status"
+	if len(pos) > 0 {
+		action = pos[0]
+	}
+	switch action {
+	case "status":
+		st, err := requireState(r)
 		if err != nil {
 			return err
 		}
-		for _, l := range links {
-			fmt.Fprintln(w, l)
+		return printSub(os.Stdout, st)
+	case "enable":
+		st, err := requireState(r)
+		if err != nil {
+			return err
 		}
+		m := *mode
+		if m == "" {
+			m = defaultSubMode(st)
+		}
+		if st, err = EnableSub(r, m, *port); err != nil {
+			return err
+		}
+		return printSub(os.Stdout, st)
+	case "disable":
+		return DisableSub(r)
+	}
+	return fmt.Errorf("unknown sub action %q", action)
+}
+
+// defaultSubMode prefers the CDN: it hides the server's IP and keeps working when the IP is blocked.
+func defaultSubMode(st *State) string {
+	if st.CDNDomain == "" && st.Domain != "" {
+		return "direct"
+	}
+	return "cdn"
+}
+
+func printSub(w io.Writer, st *State) error {
+	if st.Sub.Mode == "" {
+		fmt.Fprintln(w, "subscription server: off (xtune sub enable)")
 		return nil
 	}
-	return fmt.Errorf("no user %q", name)
+	fmt.Fprintf(w, "subscription server: %s mode, https://%s\n\n", st.Sub.Mode, hostPort(subHost(st), st.Sub.Port))
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, u := range st.Users {
+		fmt.Fprintf(tw, "%s\t%s\n", u.Name, st.SubURL(u))
+	}
+	return tw.Flush()
+}
+
+func cmdCountry(args []string) error {
+	if err := serverOnly("country", args); err != nil {
+		return err
+	}
+	r, err := OpenLocal()
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		st, err := requireState(r)
+		if err != nil {
+			return err
+		}
+		fmt.Println("direct country in client configs:", orStr(st.Country, "none"), " (supported:", countryList()+")")
+		return nil
+	}
+	code := strings.ToLower(args[0])
+	if code == "none" {
+		code = ""
+	}
+	return SetCountry(r, code)
+}
+
+func cmdDomains(args []string) error {
+	if err := serverOnly("domains", args); err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("domains", flag.ExitOnError)
+	direct := fs.String("direct", "", "direct (DNS-only) domain; --direct= clears it")
+	cdn := fs.String("cdn", "", "CDN-proxied domain; --cdn= clears it and removes the CDN entry")
+	parse(fs, args)
+	r, err := OpenLocal()
+	if err != nil {
+		return err
+	}
+	st, err := requireState(r)
+	if err != nil {
+		return err
+	}
+	set := flagsSet(fs)
+	if !set["direct"] && !set["cdn"] {
+		printAddresses(os.Stdout, st)
+		return nil
+	}
+	d, c := st.Domain, st.CDNDomain
+	if set["direct"] {
+		d = strings.TrimSpace(*direct)
+	}
+	if set["cdn"] {
+		c = strings.TrimSpace(*cdn)
+	}
+	st, added, err := SetDomains(r, d, c, func(s string) { fmt.Println(s) })
+	if err != nil {
+		return err
+	}
+	printAddresses(os.Stdout, st)
+	if added {
+		fmt.Println("added a CDN entry with default settings; re-run a tune from your users' network to measure it")
+	}
+	fmt.Println("links changed: send users their new links or have them refresh their subscription")
+	return nil
+}
+
+func printAddresses(w io.Writer, st *State) {
+	fmt.Fprintf(w, "server IP / host: %s\n", st.Host)
+	fmt.Fprintf(w, "direct domain:    %s\n", orStr(st.Domain, "-  (links use the IP)"))
+	fmt.Fprintf(w, "CDN domain:       %s\n", orStr(st.CDNDomain, "-"))
+	for _, e := range st.Entries {
+		if e.CDN() {
+			fmt.Fprintf(w, "CDN entry:        %s port %d\n", e.ID, e.Port)
+		}
+	}
+	if st.CDNDomain != "" && !hasCDN(st.Entries) {
+		fmt.Fprintln(w, "CDN entry:        none deployed (save the CDN domain again to add one)")
+	}
 }
 
 // ---------------------------------------------------------------- logs / uninstall
-
-func defaultUnit(st ServerStatus) string {
-	if st.Unit == "active" || !st.XUI {
-		return "xray-autotune"
-	}
-	return "x-ui"
-}
 
 func logCmd(unit string, n int, follow bool) string {
 	c := fmt.Sprintf("journalctl -u %s -n %d --no-pager -o short-iso", shq(unit), n)
@@ -656,22 +756,15 @@ func logCmd(unit string, n int, follow bool) string {
 func cmdLogs(args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
 	c := addConnFlags(fs)
-	unit := fs.String("unit", "", "systemd unit (default: xray-autotune, else x-ui)")
+	unit := fs.String("unit", "xray-autotune", "systemd unit (xray-autotune or xray-autotune-test)")
 	n := fs.Int("n", 100, "lines")
 	follow := fs.Bool("f", false, "follow")
 	parse(fs, args)
-	r, err := connect(c)
+	r, err := target(c)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	if *unit == "" {
-		st, err := r.Status()
-		if err != nil {
-			return err
-		}
-		*unit = defaultUnit(st)
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return r.Stream(ctx, logCmd(*unit, *n, *follow), func(l string) { fmt.Println(l) })
@@ -681,7 +774,7 @@ func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	c := addConnFlags(fs)
 	parse(fs, args)
-	r, err := connect(c)
+	r, err := target(c)
 	if err != nil {
 		return err
 	}

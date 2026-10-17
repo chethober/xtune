@@ -1,5 +1,5 @@
 #!/bin/sh
-# xtune installer for Linux, macOS and FreeBSD.
+# xtune installer for Linux, macOS and Android (Termux).
 #   curl -fsSL https://raw.githubusercontent.com/chethober/xtune/main/install.sh | sh
 # Environment: XTUNE_VERSION=v0.1.0 to pin a release, XTUNE_DIR=/path to choose the install dir.
 set -eu
@@ -12,9 +12,8 @@ need curl
 need tar
 
 case $(uname -s) in
-  Linux) os=linux ;;
+  Linux) os=linux; if [ "$(uname -o 2>/dev/null)" = Android ]; then os=android; fi ;;
   Darwin) os=darwin ;;
-  FreeBSD) os=freebsd ;;
   *) fail "unsupported OS $(uname -s) (Windows: use install.ps1)" ;;
 esac
 case $(uname -m) in
@@ -22,6 +21,7 @@ case $(uname -m) in
   aarch64 | arm64) arch=arm64 ;;
   *) fail "unsupported architecture $(uname -m)" ;;
 esac
+if [ "$os" = android ] && [ "$arch" != arm64 ]; then fail "Android builds are arm64 only"; fi
 
 version=${XTUNE_VERSION:-}
 if [ -z "$version" ]; then
@@ -50,6 +50,7 @@ if [ -z "$want" ] || [ "$want" != "$got" ]; then fail "checksum mismatch for $fi
 tar -xzf "$tmp/$file" -C "$tmp" xtune
 
 dir=${XTUNE_DIR:-}
+if [ -z "$dir" ] && [ "$os" = android ]; then dir=${PREFIX:-$HOME/.local}/bin; fi
 if [ -z "$dir" ]; then
   if [ -w /usr/local/bin ]; then dir=/usr/local/bin
   elif command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then dir=/usr/local/bin; use_sudo=1

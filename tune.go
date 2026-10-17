@@ -33,6 +33,9 @@ var sniCandidates = []string{"www.samsung.com", "www.nvidia.com", "www.amd.com",
 	"www.speedtest.net", "www.intel.com", "www.sony.com", "swdist.apple.com", "addons.mozilla.org"}
 var preferredPorts = []int{443, 8443, 2053, 2083, 2087, 2096, 8880, 2052, 2082, 2086, 2095}
 
+// cdnPorts are the HTTPS ports Cloudflare proxies; 443 comes last so REALITY can keep it.
+var cdnPorts = []int{2053, 2083, 2087, 2096, 8443, 443}
+
 type TuneOpts struct {
 	Depth                         string // smart | deep
 	Probes, Parallel, Top, Rounds int
@@ -41,6 +44,7 @@ type TuneOpts struct {
 	XrayBin                       string
 	ServerTag                     string   // "" = keep / latest
 	Only                          []string // test only entries whose ID starts with one of these
+	Domain, CDNDomain             string   // optional direct and CDN-proxied domains
 	Log                           func(string)
 }
 
@@ -86,19 +90,12 @@ type Variant struct {
 
 // ---------------------------------------------------------------- plan
 
-func PlanEntries(probeOut string) ([]Entry, []string) {
-	type sni struct {
-		t    float64
-		host string
-	}
-	var snis []sni
+// usedPorts parses the helper's "USED proto addr:port" lines.
+func usedPorts(probeOut string) map[string]map[int]bool {
 	used := map[string]map[int]bool{"tcp": {}, "udp": {}}
 	for _, line := range strings.Split(probeOut, "\n") {
 		f := strings.Fields(line)
-		if len(f) == 4 && f[0] == "SNI" && f[2] == "2" { // HTTP/2 over TLS 1.3 = usable REALITY target
-			t, _ := strconv.ParseFloat(f[3], 64)
-			snis = append(snis, sni{t, f[1]})
-		} else if len(f) == 3 && f[0] == "USED" {
+		if len(f) == 3 && f[0] == "USED" {
 			proto := "tcp"
 			if strings.HasPrefix(f[1], "udp") {
 				proto = "udp"
@@ -109,6 +106,36 @@ func PlanEntries(probeOut string) ([]Entry, []string) {
 			}
 		}
 	}
+	return used
+}
+
+// cdnEntry returns a CDN entry on a free CDN-proxied port, or false when none is free.
+func cdnEntry(used map[string]map[int]bool, taken map[int]bool) (Entry, bool) {
+	for _, p := range cdnPorts {
+		if !used["tcp"][p] && !taken[p] {
+			taken[p] = true
+			return Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: p, Path: "/" + randHex(6)}, true
+		}
+	}
+	return Entry{}, false
+}
+
+// PlanEntries picks REALITY targets and ports for the test matrix. With cdn, a CDN entry is
+// added first, because only a few ports pass through the CDN.
+func PlanEntries(probeOut string, cdn bool) ([]Entry, []string) {
+	type sni struct {
+		t    float64
+		host string
+	}
+	var snis []sni
+	for _, line := range strings.Split(probeOut, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 4 && f[0] == "SNI" && f[2] == "2" { // HTTP/2 over TLS 1.3 = usable REALITY target
+			t, _ := strconv.ParseFloat(f[3], 64)
+			snis = append(snis, sni{t, f[1]})
+		}
+	}
+	used := usedPorts(probeOut)
 	sort.Slice(snis, func(i, j int) bool { return snis[i].t < snis[j].t })
 	var hosts []string
 	for i := 0; i < len(snis) && i < 3; i++ {
@@ -118,6 +145,12 @@ func PlanEntries(probeOut string) ([]Entry, []string) {
 		hosts = []string{"www.microsoft.com"}
 	}
 	taken := map[int]bool{}
+	var cdnE []Entry
+	if cdn {
+		if e, ok := cdnEntry(used, taken); ok {
+			cdnE = append(cdnE, e)
+		}
+	}
 	port := func(proto string, preferred bool) int {
 		if preferred {
 			for _, p := range preferredPorts {
@@ -157,7 +190,7 @@ func PlanEntries(probeOut string) ([]Entry, []string) {
 		Entry{ID: "hy2-hiport", Kind: "hysteria2", Port: port("udp", false)},
 		Entry{ID: "ss2022", Kind: "ss2022", Port: port("tcp", false)},
 	)
-	return E, hosts
+	return append(E, cdnE...), hosts
 }
 
 func ExpandVariants(entries []Entry, depth string) []*Variant {
@@ -179,7 +212,7 @@ func ExpandVariants(entries []Entry, depth string) []*Variant {
 			}
 		case e.Kind == "reality-tcp":
 			ks = []Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
-		case e.Kind == "reality-xhttp":
+		case e.Kind == "reality-xhttp" || e.Kind == "cdn-xhttp":
 			for _, f := range fps[:2] {
 				for _, g := range fragNames {
 					ks = append(ks, Knobs{FP: f, Frag: g, Mode: "auto"})
@@ -203,7 +236,8 @@ func ExpandVariants(entries []Entry, depth string) []*Variant {
 			v := &Variant{Entry: e, K: k, Cold: -1, Warm: -1}
 			v.Label = fmt.Sprintf("%s:%d", e.ID, e.Port)
 			if e.Reality() {
-				v.Label += " sni=" + strings.Split(e.SNI, ".")[len(strings.Split(e.SNI, "."))-2]
+				parts := strings.Split(e.SNI, ".")
+				v.Label += " sni=" + parts[len(parts)-2]
 			}
 			if k.FP != "" {
 				v.Label += " fp=" + k.FP
@@ -650,9 +684,12 @@ type TuneResult struct {
 }
 
 // Tune installs/uses the isolated server Xray, starts the test matrix and measures it from here.
-func Tune(r *Remote, o TuneOpts) (*TuneResult, error) {
+func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	o.defaults()
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
+		return nil, err
+	}
+	if err := checkDomains(r.Conn.Host, o.Domain, o.CDNDomain, o.Log); err != nil {
 		return nil, err
 	}
 	o.Log("[*] local xray: " + o.XrayBin + " (" + XrayVersion(o.XrayBin) + ")")
@@ -665,7 +702,10 @@ func Tune(r *Remote, o TuneOpts) (*TuneResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, snis := PlanEntries(probeOut)
+	entries, snis := PlanEntries(probeOut, o.CDNDomain != "")
+	if o.CDNDomain != "" && !hasCDN(entries) {
+		o.Log("[!] no CDN port (" + fmt.Sprint(cdnPorts) + ") is free on the server; skipping the CDN entry")
+	}
 	if len(o.Only) > 0 {
 		var keep []Entry
 		for _, e := range entries {
@@ -689,6 +729,7 @@ func Tune(r *Remote, o TuneOpts) (*TuneResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	st.Domain, st.CDNDomain = o.Domain, o.CDNDomain
 	tuneUser := NewUser("tune")
 	testDir := remoteDir + "/test"
 	cfg := st.ServerConfig(entries, []User{tuneUser})
@@ -731,15 +772,73 @@ func Tune(r *Remote, o TuneOpts) (*TuneResult, error) {
 	return &TuneResult{State: st, Entries: entries, All: vs, Best: best}, nil
 }
 
-// testCerts points Hysteria2 at the test copy of the certificate so tuning never replaces the
+// testCerts points TLS inbounds at the test copy of the certificate so tuning never replaces the
 // certificate a live deployment's clients have pinned.
 func testCerts(cfg J, dir string) {
 	for _, ib := range cfg["inbounds"].([]J) {
-		if ib["protocol"] == "hysteria" {
-			ts := ib["streamSettings"].(J)["tlsSettings"].(J)
-			ts["certificates"] = []J{{"certificateFile": dir + "/hy.crt", "keyFile": dir + "/hy.key"}}
+		ss, _ := ib["streamSettings"].(J) // shadowsocks has none
+		if ts, ok := ss["tlsSettings"].(J); ok {
+			ts["certificates"] = certFiles(dir)
 		}
 	}
+}
+
+func hasCDN(es []Entry) bool {
+	for _, e := range es {
+		if e.CDN() {
+			return true
+		}
+	}
+	return false
+}
+
+// checkDomains resolves the domains from this machine. A direct domain that does not resolve is an
+// error; one that points elsewhere, or a CDN domain that points straight at the server, is a warning.
+func checkDomains(host, direct, cdn string, log func(string)) error {
+	for _, d := range []string{direct, cdn} {
+		if d != "" && (strings.ContainsAny(d, "/: ") || !strings.Contains(d, ".")) {
+			return fmt.Errorf("%q is not a domain name", d)
+		}
+	}
+	if direct == "" && cdn == "" {
+		return nil
+	}
+	server := map[string]bool{}
+	if ips, err := net.LookupHost(host); err == nil {
+		for _, ip := range ips {
+			server[ip] = true
+		}
+	}
+	points := func(d string) (bool, error) {
+		ips, err := net.LookupHost(d)
+		if err != nil {
+			return false, err
+		}
+		for _, ip := range ips {
+			if server[ip] {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if direct != "" {
+		ok, err := points(direct)
+		if err != nil {
+			return fmt.Errorf("direct domain %s does not resolve: %w", direct, err)
+		}
+		if !ok {
+			log("[!] direct domain " + direct + " does not resolve to " + host + " from here (DNS-only / grey cloud?)")
+		}
+	}
+	if cdn != "" {
+		ok, err := points(cdn)
+		if err != nil {
+			log("[!] CDN domain " + cdn + " does not resolve from here: " + err.Error())
+		} else if ok {
+			log("[!] CDN domain " + cdn + " resolves straight to the server: turn the CDN proxy on (orange cloud)")
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- small helpers

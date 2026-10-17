@@ -24,7 +24,7 @@ import (
 // Entry is one server inbound. FP/Mode/Frag are the client-side knobs tuning picked for it.
 type Entry struct {
 	ID      string `json:"id"`
-	Kind    string `json:"kind"` // reality-tcp reality-xhttp reality-grpc vlessenc-tcp vlessenc-xhttp hysteria2 ss2022
+	Kind    string `json:"kind"` // reality-tcp reality-xhttp reality-grpc vlessenc-tcp vlessenc-xhttp cdn-xhttp hysteria2 ss2022
 	Port    int    `json:"port"`
 	SNI     string `json:"sni,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -43,36 +43,55 @@ func (e Entry) Proto() string {
 }
 func (e Entry) Reality() bool  { return strings.HasPrefix(e.Kind, "reality") }
 func (e Entry) VlessEnc() bool { return strings.HasPrefix(e.Kind, "vlessenc") }
+
+// CDN entries are reached through the CDN domain: TLS ends at the CDN, which forwards to the origin.
+func (e Entry) CDN() bool { return strings.HasPrefix(e.Kind, "cdn") }
 func (e Entry) Net() string {
-	if i := strings.Index(e.Kind, "-"); i > 0 && (e.Reality() || e.VlessEnc()) {
+	if i := strings.Index(e.Kind, "-"); i > 0 && (e.Reality() || e.VlessEnc() || e.CDN()) {
 		return e.Kind[i+1:]
 	}
 	return ""
 }
 
 type User struct {
-	Name    string `json:"name"`
-	UUID    string `json:"uuid"`
-	SSKey   string `json:"ssKey"`
-	Enabled bool   `json:"enabled"`
-	Created int64  `json:"created"`
+	Name     string `json:"name"`
+	UUID     string `json:"uuid"`
+	SSKey    string `json:"ssKey"`
+	Enabled  bool   `json:"enabled"`
+	Created  int64  `json:"created"`
+	Quota    int64  `json:"quota,omitempty"`    // traffic in bytes, 0 = unlimited
+	Expires  int64  `json:"expires,omitempty"`  // unix seconds, 0 = never
+	Devices  int    `json:"devices,omitempty"`  // simultaneous client IPs, 0 = unlimited
+	SubToken string `json:"subToken,omitempty"` // secret part of the user's subscription URL
 }
 
-// State is the standalone deployment, stored on the server as state.json (root, 0600).
+// SubConfig is the subscription server: off when Mode is empty.
+type SubConfig struct {
+	Mode string `json:"mode,omitempty"` // cdn (through the CDN domain) | direct (Let's Encrypt on the direct domain)
+	Port int    `json:"port,omitempty"`
+	Path string `json:"path,omitempty"` // secret path prefix
+}
+
+// State is the server's deployment and user database, stored as state.json (root, 0600).
 type State struct {
-	Host        string  `json:"host"`
-	RealityPriv string  `json:"realityPrivateKey"`
-	RealityPub  string  `json:"realityPublicKey"`
-	ShortID     string  `json:"shortId"`
-	VencDec     string  `json:"vlessDecryption"`
-	VencEnc     string  `json:"vlessEncryption"`
-	SSKey       string  `json:"ssServerKey"`
-	CertSNI     string  `json:"certSni"`
-	CertHash    string  `json:"certSha256"`
-	CertPEM     string  `json:"certPem"`
-	KeyPEM      string  `json:"keyPem"`
-	Entries     []Entry `json:"entries"`
-	Users       []User  `json:"users"`
+	Host        string    `json:"host"`
+	Domain      string    `json:"domain,omitempty"`    // direct (DNS-only) domain used instead of Host in links
+	CDNDomain   string    `json:"cdnDomain,omitempty"` // CDN-proxied domain for the cdn-* entries
+	RealityPriv string    `json:"realityPrivateKey"`
+	RealityPub  string    `json:"realityPublicKey"`
+	ShortID     string    `json:"shortId"`
+	VencDec     string    `json:"vlessDecryption"`
+	VencEnc     string    `json:"vlessEncryption"`
+	SSKey       string    `json:"ssServerKey"`
+	CertSNI     string    `json:"certSni"`
+	CertHash    string    `json:"certSha256"`
+	CertPEM     string    `json:"certPem"`
+	KeyPEM      string    `json:"keyPem"`
+	Entries     []Entry   `json:"entries"`
+	Users       []User    `json:"users"`
+	APIPort     int       `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
+	Country     string    `json:"country,omitempty"` // client configs send this country's sites direct
+	Sub         SubConfig `json:"sub"`
 }
 
 type Knobs struct{ FP, Frag, Mode string }
@@ -97,7 +116,7 @@ func newUUID() string {
 func ssKey() string { b := make([]byte, 16); rand.Read(b); return base64.StdEncoding.EncodeToString(b) }
 
 func NewUser(name string) User {
-	return User{Name: name, UUID: newUUID(), SSKey: ssKey(), Enabled: true, Created: time.Now().Unix()}
+	return User{Name: name, UUID: newUUID(), SSKey: ssKey(), Enabled: true, Created: time.Now().Unix(), SubToken: randHex(16)}
 }
 
 // NewState generates every secret. REALITY keys and the Hysteria2 certificate are made here;
@@ -154,6 +173,27 @@ func (st *State) makeCert() error {
 	return nil
 }
 
+// Addr is the address clients dial for direct (non-CDN) entries.
+func (st *State) Addr() string { return orStr(st.Domain, st.Host) }
+
+func (st *State) addrFor(e Entry) string {
+	if e.CDN() {
+		return st.CDNDomain
+	}
+	return st.Addr()
+}
+
+func hostPort(host string, port int) string {
+	if strings.Contains(host, ":") { // IPv6
+		return "[" + host + "]:" + strconv.Itoa(port)
+	}
+	return host + ":" + strconv.Itoa(port)
+}
+
+func certFiles(dir string) []J {
+	return []J{{"certificateFile": dir + "/hy.crt", "keyFile": dir + "/hy.key"}}
+}
+
 func (st *State) User(name string) (int, *User) {
 	for i := range st.Users {
 		if st.Users[i].Name == name {
@@ -179,7 +219,7 @@ func (st *State) inbound(e Entry, users []User) J {
 		ib["protocol"] = "hysteria"
 		ib["settings"] = J{"version": 2, "clients": cl}
 		ib["streamSettings"] = J{"network": "hysteria", "security": "tls", "tlsSettings": J{"alpn": []string{"h3"},
-			"certificates": []J{{"certificateFile": remoteDir + "/hy.crt", "keyFile": remoteDir + "/hy.key"}}}}
+			"certificates": certFiles(remoteDir)}}
 		return ib
 	case "ss2022":
 		var cl []J
@@ -210,6 +250,10 @@ func (st *State) inbound(e Entry, users []User) J {
 		ss["realitySettings"] = J{"target": e.SNI + ":443", "serverNames": []string{e.SNI},
 			"privateKey": st.RealityPriv, "shortIds": []string{st.ShortID}}
 	}
+	if e.CDN() { // CDNs in "Full" TLS mode accept the self-signed certificate at the origin
+		ss["security"] = "tls"
+		ss["tlsSettings"] = J{"alpn": []string{"h2", "http/1.1"}, "certificates": certFiles(remoteDir)}
+	}
 	switch e.Net() {
 	case "xhttp":
 		ss["xhttpSettings"] = J{"path": e.Path, "mode": "auto"}
@@ -234,11 +278,19 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 			ibs = append(ibs, st.inbound(e, enabled))
 		}
 	}
-	return J{"log": J{"loglevel": "warning"}, "inbounds": ibs,
+	cfg := J{"log": J{"loglevel": "warning"}, "inbounds": ibs,
 		"outbounds": []J{{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}},
 		// keep clients away from the VPS's own localhost services (panels, APIs)
 		"routing": J{"rules": []J{{"ip": []string{"geoip:private"}, "outboundTag": "block"},
 			{"protocol": []string{"bittorrent"}, "outboundTag": "block"}}}}
+	if st.APIPort > 0 {
+		// live user changes, traffic and online stats, source-IP blocks; loopback only
+		cfg["api"] = J{"tag": "api", "listen": fmt.Sprintf("127.0.0.1:%d", st.APIPort),
+			"services": []string{"HandlerService", "StatsService", "RoutingService"}}
+		cfg["stats"] = J{}
+		cfg["policy"] = J{"levels": J{"0": J{"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true}}}
+	}
+	return cfg
 }
 
 // ---------------------------------------------------------------- client side
@@ -246,11 +298,11 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	switch e.Kind {
 	case "hysteria2":
-		return J{"tag": tag, "protocol": "hysteria", "settings": J{"version": 2, "address": st.Host, "port": e.Port},
+		return J{"tag": tag, "protocol": "hysteria", "settings": J{"version": 2, "address": st.Addr(), "port": e.Port},
 			"streamSettings": J{"network": "hysteria", "hysteriaSettings": J{"version": 2, "auth": u.UUID},
 				"security": "tls", "tlsSettings": J{"serverName": st.CertSNI, "alpn": []string{"h3"}, "pinnedPeerCertSha256": st.CertHash}}}
 	case "ss2022":
-		return J{"tag": tag, "protocol": "shadowsocks", "settings": J{"servers": []J{{"address": st.Host, "port": e.Port,
+		return J{"tag": tag, "protocol": "shadowsocks", "settings": J{"servers": []J{{"address": st.Addr(), "port": e.Port,
 			"method": "2022-blake3-aes-128-gcm", "password": st.SSKey + ":" + u.SSKey}}}}
 	}
 	enc, flow := "none", ""
@@ -266,16 +318,23 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 		ss["realitySettings"] = J{"serverName": e.SNI, "fingerprint": orStr(k.FP, "chrome"), "publicKey": st.RealityPub,
 			"shortId": st.ShortID, "spiderX": "/"}
 	}
+	if e.CDN() {
+		ss["security"] = "tls"
+		ss["tlsSettings"] = J{"serverName": st.CDNDomain, "fingerprint": orStr(k.FP, "chrome"), "alpn": []string{"h2", "http/1.1"}}
+	}
 	switch e.Net() {
 	case "xhttp":
 		ss["xhttpSettings"] = J{"path": e.Path, "mode": orStr(k.Mode, "auto")}
+		if e.CDN() {
+			ss["xhttpSettings"].(J)["host"] = st.CDNDomain
+		}
 	case "grpc":
 		ss["grpcSettings"] = J{"serviceName": e.Svc}
 	}
 	if k.Frag != "" && k.Frag != "none" {
 		ss["sockopt"] = J{"dialerProxy": k.Frag}
 	}
-	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.Host, "port": e.Port,
+	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.addrFor(e), "port": e.Port,
 		"users": []J{{"id": u.UUID, "encryption": enc, "flow": flow}}}}}, "streamSettings": ss}
 }
 
@@ -287,24 +346,57 @@ func fragOutbounds() []J {
 	return out
 }
 
-// ClientConfig is a standalone client config (socks 10808, http 10809).
+func clientInbounds() []J {
+	return []J{{"tag": "socks", "listen": "127.0.0.1", "port": 10808, "protocol": "socks", "settings": J{"udp": true},
+		"sniffing": J{"enabled": true, "destOverride": []string{"http", "tls"}, "routeOnly": true}},
+		{"tag": "http", "listen": "127.0.0.1", "port": 10809, "protocol": "http"}}
+}
+
+// ClientConfig is a ready-to-run client config (socks 10808, http 10809).
 func ClientConfig(out J) J {
 	obs := append([]J{out}, fragOutbounds()...)
 	obs = append(obs, J{"tag": "direct", "protocol": "freedom"})
-	return J{"log": J{"loglevel": "warning"},
-		"inbounds": []J{{"tag": "socks", "listen": "127.0.0.1", "port": 10808, "protocol": "socks", "settings": J{"udp": true},
-			"sniffing": J{"enabled": true, "destOverride": []string{"http", "tls"}, "routeOnly": true}},
-			{"tag": "http", "listen": "127.0.0.1", "port": 10809, "protocol": "http"}},
-		"outbounds": obs,
-		"routing":   J{"rules": []J{{"ip": []string{"geoip:private"}, "outboundTag": "direct"}}}}
+	return J{"log": J{"loglevel": "warning"}, "inbounds": clientInbounds(), "outbounds": obs,
+		"routing": J{"rules": []J{{"ip": []string{"geoip:private"}, "outboundTag": "direct"}}}}
+}
+
+// countries maps a country code to the client routing lists that send its sites direct.
+var countries = map[string][2]string{
+	"ir": {"geosite:category-ir", "geoip:ir"},
+	"cn": {"geosite:cn", "geoip:cn"},
+	"ru": {"geosite:category-ru", "geoip:ru"},
+}
+
+// FailoverConfig is a full client config with every deployed config behind one balancer: Xray
+// health-checks them and uses the fastest working one, so a blocked config fails over by itself
+// (to the CDN entry, for example). Private addresses, and the chosen country's sites, go direct;
+// ads are blocked. Domain strategy AsIs keeps DNS lookups for proxied sites off the local network.
+func (st *State) FailoverConfig(u User) J {
+	var obs []J
+	for _, e := range st.Entries {
+		obs = append(obs, st.Outbound(e, u, Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode}, "proxy-"+e.ID))
+	}
+	obs = append(obs, fragOutbounds()...)
+	obs = append(obs, J{"tag": "direct", "protocol": "freedom"}, J{"tag": "block", "protocol": "blackhole"})
+	rules := []J{{"ip": []string{"geoip:private"}, "outboundTag": "direct"},
+		{"domain": []string{"geosite:category-ads-all"}, "outboundTag": "block"}}
+	if c, ok := countries[st.Country]; ok {
+		rules = append(rules, J{"domain": []string{c[0]}, "outboundTag": "direct"}, J{"ip": []string{c[1]}, "outboundTag": "direct"})
+	}
+	rules = append(rules, J{"network": "tcp,udp", "balancerTag": "auto"})
+	balancer := J{"tag": "auto", "selector": []string{"proxy-"}, "strategy": J{"type": "leastPing"}}
+	if len(st.Entries) > 0 {
+		balancer["fallbackTag"] = "proxy-" + st.Entries[0].ID
+	}
+	return J{"remarks": "xtune - " + u.Name, "log": J{"loglevel": "warning"}, "inbounds": clientInbounds(), "outbounds": obs,
+		"burstObservatory": J{"subjectSelector": []string{"proxy-"},
+			"pingConfig": J{"destination": probeURL, "interval": "1m", "timeout": "5s", "sampling": 3}},
+		"routing": J{"domainStrategy": "AsIs", "balancers": []J{balancer}, "rules": rules}}
 }
 
 func (st *State) Link(e Entry, u User, k Knobs) string {
 	name := url.PathEscape(u.Name + "-" + e.ID)
-	hostPort := st.Host + ":" + strconv.Itoa(e.Port)
-	if strings.Contains(st.Host, ":") { // IPv6
-		hostPort = "[" + st.Host + "]:" + strconv.Itoa(e.Port)
-	}
+	hostPort := hostPort(st.addrFor(e), e.Port)
 	switch e.Kind {
 	case "hysteria2":
 		return fmt.Sprintf("hysteria2://%s@%s?sni=%s&alpn=h3&pinSHA256=%s#%s", u.UUID, hostPort, st.CertSNI, st.CertHash, name)
@@ -322,6 +414,13 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 		q.Set("pbk", st.RealityPub)
 		q.Set("sid", st.ShortID)
 		q.Set("spx", "/")
+	}
+	if e.CDN() {
+		q.Set("security", "tls")
+		q.Set("sni", st.CDNDomain)
+		q.Set("host", st.CDNDomain)
+		q.Set("fp", orStr(k.FP, "chrome"))
+		q.Set("alpn", "h2,http/1.1")
 	}
 	if e.Kind == "reality-tcp" {
 		q.Set("flow", "xtls-rprx-vision")

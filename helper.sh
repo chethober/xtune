@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Server-side helper for xtune. Runs as root. Everything lives in $D; nothing else is touched
-# except the xray-autotune systemd units and firewall rules this script opens itself.
+# except the xray-autotune systemd units, the /usr/local/bin/xtune link and firewall rules this
+# script opens itself.
 set -euo pipefail
 D=/opt/xray-autotune
 X=$D/xray
+XT=$D/xtune
+LINK=/usr/local/bin/xtune
 cmd=${1:-}; shift || true
 
 fw_open() {
@@ -28,6 +31,43 @@ fw_close() {
   done < "$f"
   rm -f "$f"
 }
+# link puts the server copy of xtune on PATH, unless another xtune install is already there
+link() {
+  if [ -L $LINK ] || [ ! -e $LINK ]; then ln -sfn $XT $LINK; else echo "note: $LINK is not xtune's link; left as is" >&2; fi
+}
+unlink_xt() {
+  if [ -L $LINK ] && [ "$(readlink $LINK)" = $XT ]; then rm -f $LINK; fi
+}
+U=/etc/systemd/system
+# the enforce timer: traffic accounting, quotas, expiry and device limits, every minute
+install_timer() {
+  [ -x $XT ] || return 0
+  cat > $U/xray-autotune-enforce.service <<EOF
+[Unit]
+Description=xtune: usage, quotas, expiry and device limits
+After=xray-autotune.service
+[Service]
+Type=oneshot
+ExecStart=$XT enforce
+EOF
+  cat > $U/xray-autotune-enforce.timer <<EOF
+[Unit]
+Description=Run xtune enforce every minute
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now xray-autotune-enforce.timer >/dev/null 2>&1
+}
+remove_units() {
+  systemctl disable --now xray-autotune xray-autotune-test xray-autotune-sub xray-autotune-enforce.timer >/dev/null 2>&1 || true
+  rm -f $U/xray-autotune.service $U/xray-autotune-sub.service $U/xray-autotune-enforce.service $U/xray-autotune-enforce.timer
+  systemctl daemon-reload
+}
 
 case $cmd in
 status)
@@ -35,14 +75,13 @@ status)
   if [ -x $X ]; then echo "XRAY $($X version | sed -n 1p | awk '{print $2}')"; else echo "XRAY none"; fi
   echo "UNIT $(systemctl is-active xray-autotune 2>/dev/null || true)"
   if [ -f $D/state.json ]; then echo "STATE yes"; else echo "STATE no"; fi
-  if [ -x /usr/local/x-ui/x-ui ]; then
-    echo "XUI yes"
-    /usr/local/x-ui/x-ui setting -show 2>/dev/null | awk -F': ' '/^port:/{print "XUI_PORT", $2} /^webBasePath:/{print "XUI_BASE", $2}'
-    if [ -f /etc/x-ui/install-result.env ]; then sed -n 's/^XUI_API_TOKEN=/XUI_TOKEN /p' /etc/x-ui/install-result.env; fi
-    for b in /usr/local/x-ui/bin/xray-linux-*; do [ -x "$b" ] && echo "XUI_XRAY $("$b" version | sed -n 1p | awk '{print $2}')" && break; done
-    echo "XUI_UNIT $(systemctl is-active x-ui 2>/dev/null || true)"
+  echo "SUB $(systemctl is-active xray-autotune-sub 2>/dev/null || true)"
+  echo "TIMER $(systemctl is-active xray-autotune-enforce.timer 2>/dev/null || true)"
+  if [ -x $XT ]; then
+    echo "XTUNE $($XT version 2>/dev/null | awk '{print $2}')"
+    echo "XTUNE_SHA $(sha256sum $XT | cut -d' ' -f1)"
   else
-    echo "XUI no"
+    echo "XTUNE none"
   fi ;;
 latest)
   # Xray publishes most releases as pre-releases; "stable" uses GitHub's latest non-prerelease
@@ -68,6 +107,23 @@ install)
   cp "$t"/u/*.dat $D/ 2>/dev/null || true
   if systemctl is-active xray-autotune >/dev/null 2>&1; then systemctl restart xray-autotune; fi
   $X version | sed -n 1p ;;
+xtune-link)
+  chmod 755 $XT; link; install_timer
+  $XT version ;;
+xtune-install)
+  # the release build of xtune for this server, checksum-verified
+  tag=$1 arch=$2 f=xtune_linux_$2.tar.gz
+  b=https://github.com/chethober/xtune/releases/download/$tag
+  t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+  curl -fsSL -m 180 -o "$t/$f" "$b/$f"
+  curl -fsSL -m 30 -o "$t/sums" "$b/checksums.txt"
+  want=$(awk -v f="$f" '$2==f{print $1}' "$t/sums"); got=$(sha256sum "$t/$f" | cut -d' ' -f1)
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then echo "checksum mismatch ($got != $want)" >&2; exit 1; fi
+  tar -xzf "$t/$f" -C "$t" xtune
+  mkdir -p $D && chmod 700 $D
+  install -m 755 "$t/xtune" $XT.new && mv -f $XT.new $XT
+  link; install_timer
+  $XT version ;;
 probe)
   for h in "$@"; do
     echo "SNI $h $(curl -so /dev/null --tlsv1.3 --http2 -m 4 -w '%{http_version} %{time_appconnect}' "https://$h/" 2>/dev/null || echo fail)"
@@ -85,8 +141,12 @@ stop-test)
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
   fw_close $D/fw.test
   rm -rf $D/test.json $D/test ;;
+check)
+  if ! $X run -test -c $D/config.json >/dev/null 2>&1; then $X run -test -c $D/config.json 2>&1 | tail -5; exit 1; fi
+  echo ok ;;
 apply)
-  $X run -test -c $D/config.json >/dev/null
+  if ! $X run -test -c $D/config.json >/dev/null 2>&1; then $X run -test -c $D/config.json 2>&1 | tail -5; exit 1; fi
+  install_timer
   if [ ! -f /etc/systemd/system/xray-autotune.service ]; then
     cat > /etc/systemd/system/xray-autotune.service <<EOF
 [Unit]
@@ -106,18 +166,45 @@ EOF
   systemctl restart xray-autotune
   fw_close $D/fw.deployed; fw_open $D/fw.deployed "$@"
   sleep 1; systemctl is-active xray-autotune ;;
+sub-enable)
+  # the subscription server; arguments are the firewall port specs it needs
+  cat > $U/xray-autotune-sub.service <<EOF
+[Unit]
+Description=xtune subscription server
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=$XT serve
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=$D
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable xray-autotune-sub >/dev/null 2>&1
+  systemctl restart xray-autotune-sub
+  fw_close $D/fw.sub; fw_open $D/fw.sub "$@"
+  sleep 1; systemctl is-active xray-autotune-sub ;;
+sub-disable)
+  systemctl disable --now xray-autotune-sub >/dev/null 2>&1 || true
+  rm -f $U/xray-autotune-sub.service; systemctl daemon-reload
+  fw_close $D/fw.sub; echo disabled ;;
 cleanup)
   # remove test leftovers; the whole dir goes only if nothing is deployed
   systemctl stop xray-autotune-test 2>/dev/null || true
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
   fw_close $D/fw.test
   if [ -f /etc/systemd/system/xray-autotune.service ]; then rm -rf $D/test.json $D/test; echo kept-deployed
-  else rm -rf $D; echo removed; fi ;;
+  else unlink_xt; rm -rf $D; echo removed; fi ;;
 uninstall)
-  systemctl disable --now xray-autotune xray-autotune-test >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/xray-autotune.service; systemctl daemon-reload
-  fw_close $D/fw.test; fw_close $D/fw.deployed
-  rm -rf $D; echo uninstalled ;;
+  remove_units
+  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub
+  unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|probe|start|stop-test|apply|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|start|stop-test|check|apply|sub-enable|sub-disable|cleanup|uninstall" >&2; exit 2 ;;
 esac

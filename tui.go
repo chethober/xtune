@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,7 +24,7 @@ var (
 )
 
 type tui struct {
-	r     *Remote
+	r     *Server
 	xray  string
 	theme *huh.Theme
 }
@@ -71,12 +72,12 @@ func runTUI() {
 		}
 		var action string
 		err := huh.NewSelect[string]().
-			Title(fmt.Sprintf("xtune  -  %s@%s", t.r.Conn.User, t.r.Conn.Host)).
+			Title("xtune  -  "+t.r.Name()).
 			Options(
 				huh.NewOption("Status & Xray versions", "status"),
 				huh.NewOption("Install / update Xray", "update"),
-				huh.NewOption("Tune: find the configs that get through", "tune"),
-				huh.NewOption("Users", "users"),
+				huh.NewOption("Tune: find the configs that get through, deploy them", "tune"),
+				huh.NewOption("Server console: users, addresses", "console"),
 				huh.NewOption("Logs", "logs"),
 				huh.NewOption("Switch server", "switch"),
 				huh.NewOption("Uninstall xtune from server", "uninstall"),
@@ -92,8 +93,8 @@ func runTUI() {
 			showErr(t.update())
 		case "tune":
 			showErr(t.tune())
-		case "users":
-			showErr(t.users())
+		case "console":
+			showErr(openConsole(t.r))
 		case "logs":
 			showErr(t.logs())
 		case "switch":
@@ -101,6 +102,57 @@ func runTUI() {
 			t.r = nil
 		case "uninstall":
 			showErr(t.uninstall())
+		}
+	}
+}
+
+// runServerTUI is the TUI on the server itself (sudo xtune): users and addresses are managed here.
+func runServerTUI() {
+	lipgloss.SetHasDarkBackground(os.Getenv("XTUNE_LIGHT") == "")
+	r, err := OpenLocal()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, errStyle.Render("error: ")+err.Error())
+		os.Exit(1)
+	}
+	t := &tui{r: r, theme: huh.ThemeCharm()}
+	for {
+		var action string
+		err := huh.NewSelect[string]().
+			Title("xtune server  -  "+r.Conn.Host).
+			Options(
+				huh.NewOption("Status", "status"),
+				huh.NewOption("Users: limits, usage, links", "users"),
+				huh.NewOption("Subscription server: public links", "sub"),
+				huh.NewOption("Addresses: direct / CDN domain", "addresses"),
+				huh.NewOption("Client routing: direct country", "country"),
+				huh.NewOption("Update Xray", "update"),
+				huh.NewOption("Logs", "logs"),
+				huh.NewOption("Uninstall xtune from this server", "uninstall"),
+				huh.NewOption("Quit", "quit"),
+			).Value(&action).WithTheme(t.theme).Run()
+		if err != nil || action == "quit" {
+			return
+		}
+		switch action {
+		case "status":
+			showErr(t.status())
+		case "users":
+			showErr(t.users())
+		case "sub":
+			showErr(t.sub())
+		case "addresses":
+			showErr(t.addresses())
+		case "country":
+			showErr(t.country())
+		case "update":
+			showErr(t.update())
+		case "logs":
+			showErr(t.logs())
+		case "uninstall":
+			if err := t.uninstall(); err != nil || !serverMode() {
+				showErr(err)
+				return
+			}
 		}
 	}
 }
@@ -194,7 +246,7 @@ func (t *tui) localXray() (string, error) {
 
 func (t *tui) status() error {
 	fmt.Println(titleStyle.Render("\nXray versions"))
-	if err := xrayStatus(os.Stdout, t.r, "", false); err != nil {
+	if err := xrayStatus(os.Stdout, t.r, "", false, !t.r.Local); err != nil {
 		return err
 	}
 	st, err := t.r.Status()
@@ -202,42 +254,56 @@ func (t *tui) status() error {
 		return err
 	}
 	fmt.Println(titleStyle.Render("\nServer"))
-	fmt.Printf("  arch %s, xtune deployment: %v (unit %s), 3x-ui: %v\n", st.Arch, st.HasState, orStr(st.Unit, "-"), st.XUI)
-	if st.HasState {
-		if s, err := LoadState(t.r); err == nil && s != nil {
-			for _, e := range s.Entries {
-				fmt.Printf("  - %-14s %-15s port %d/%s\n", e.ID, e.Kind, e.Port, e.Proto())
-			}
-			fmt.Printf("  users: %d\n", len(s.Users))
+	fmt.Printf("  arch %s, xray-autotune: %s, xtune on server: %s\n", st.Arch, orStr(st.Unit, "-"), orStr(st.Xtune, "none"))
+	fmt.Printf("  enforce timer: %s, subscription server: %s\n", orStr(st.Timer, "-"), orStr(st.Sub, "-"))
+	s, err := LoadState(t.r)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		fmt.Println("  nothing deployed yet")
+		pause()
+		return nil
+	}
+	fmt.Println()
+	printAddresses(os.Stdout, s)
+	fmt.Println()
+	for _, e := range s.Entries {
+		fmt.Printf("  - %-14s %-15s port %d/%s\n", e.ID, e.Kind, e.Port, e.Proto())
+	}
+	us, err := LoadUsage(t.r)
+	if err != nil {
+		return err
+	}
+	online := 0
+	for _, u := range s.Users {
+		if uu := us.Users[u.Name]; uu != nil && len(uu.Online) > 0 {
+			online++
 		}
 	}
+	fmt.Printf("  users: %d, %d active, %d online now\n", len(s.Users), len(s.activeUsers(us, time.Now())), online)
 	pause()
 	return nil
 }
 
 func (t *tui) update() error {
-	st, err := t.r.Status()
-	if err != nil {
-		return err
-	}
-	targets := []string{"local", "server"}
-	opts := []huh.Option[string]{huh.NewOption("This computer", "local").Selected(true),
-		huh.NewOption("Server (xtune's Xray)", "server").Selected(true)}
-	if st.XUI {
-		opts = append(opts, huh.NewOption("Server (3x-ui's Xray - restarts the panel's Xray)", "panel"))
-	}
+	targets := []string{"server"}
 	channel := "pre"
-	err = huh.NewForm(huh.NewGroup(
-		huh.NewMultiSelect[string]().Title("Update which Xray?").Options(opts...).Value(&targets),
-		huh.NewSelect[string]().Title("Version").Options(
-			huh.NewOption("Newest release (Xray tags most releases as pre-release)", "pre"),
-			huh.NewOption("Newest stable release", "stable"),
-			huh.NewOption("Specific tag ...", "tag")).Value(&channel),
-	)).WithTheme(t.theme).Run()
-	if err != nil {
+	fields := []huh.Field{huh.NewSelect[string]().Title("Version").Options(
+		huh.NewOption("Newest release (Xray tags most releases as pre-release)", "pre"),
+		huh.NewOption("Newest stable release", "stable"),
+		huh.NewOption("Specific tag ...", "tag")).Value(&channel)}
+	if !t.r.Local {
+		targets = append(targets, "local")
+		fields = append([]huh.Field{huh.NewMultiSelect[string]().Title("Update which Xray?").Options(
+			huh.NewOption("This computer", "local").Selected(true),
+			huh.NewOption("Server", "server").Selected(true)).Value(&targets)}, fields...)
+	}
+	if err := huh.NewForm(huh.NewGroup(fields...)).WithTheme(t.theme).Run(); err != nil {
 		return err
 	}
 	var tag string
+	var err error
 	if channel == "tag" {
 		if tag, err = tuiPrompt("Tag (e.g. v26.9.30)", false); err != nil {
 			return err
@@ -253,7 +319,7 @@ func (t *tui) update() error {
 		}
 		return false
 	}
-	err = xrayUpdate(t.r, "", normTag(tag), has("local"), has("server"), has("panel"), tuiPrompt)
+	err = xrayUpdate(t.r, "", normTag(tag), has("local"), has("server"))
 	t.xray = ""
 	if err == nil {
 		pause()
@@ -263,8 +329,8 @@ func (t *tui) update() error {
 
 func (t *tui) uninstall() error {
 	ok := false
-	if err := huh.NewConfirm().Title("Remove xtune's Xray, its deployment, users and firewall rules from the server?").
-		Description("3x-ui and anything else on the server are not touched.").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
+	if err := huh.NewConfirm().Title("Remove xtune, its Xray, deployment, users and firewall rules from the server?").
+		Description("Nothing else on the server is touched.").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
 		return err
 	}
 	out, err := t.r.Helper("uninstall")
@@ -281,18 +347,32 @@ func (t *tui) tune() error {
 		return err
 	}
 	o := TuneOpts{XrayBin: bin}
+	old, err := LoadState(t.r)
+	if err != nil {
+		return err
+	}
+	if old != nil {
+		o.Domain, o.CDNDomain = old.Domain, old.CDNDomain
+	}
 	rounds := "2"
 	err = huh.NewForm(huh.NewGroup(
 		huh.NewNote().Title("Tune").Description("Starts a temporary test matrix on the server (REALITY on several SNIs/ports,\n"+
-			"XHTTP, gRPC, VLESS Encryption, Hysteria2, Shadowsocks-2022) and measures each\n"+
+			"XHTTP, gRPC, VLESS Encryption, Hysteria2, Shadowsocks-2022, CDN) and measures each\n"+
 			"variant from THIS computer. Run it from the network your users are on."),
 		huh.NewSelect[string]().Title("Depth").Options(
 			huh.NewOption("Smart (~50 variants, ~8 min)", "smart"), huh.NewOption("Deep (~75 variants, ~20 min)", "deep")).Value(&o.Depth),
 		huh.NewInput().Title("Benchmark rounds").Value(&rounds),
+	), huh.NewGroup(
+		huh.NewInput().Title("Direct domain (optional)").
+			Description("A DNS-only (grey cloud) record pointing at the server. Links use it instead of the IP.").Value(&o.Domain),
+		huh.NewInput().Title("CDN domain (optional)").
+			Description("A CDN-proxied (orange cloud) record for the server, SSL/TLS mode \"Full\".\n"+
+				"Adds a VLESS + XHTTP + TLS entry that goes through the CDN.").Value(&o.CDNDomain),
 	)).WithTheme(t.theme).Run()
 	if err != nil {
 		return err
 	}
+	o.Domain, o.CDNDomain = strings.TrimSpace(o.Domain), strings.TrimSpace(o.CDNDomain)
 	o.Rounds = atoiOr(rounds, 2)
 	fmt.Println(dimStyle.Render("Ctrl+C stops the test and cleans up the server."))
 	var res *TuneResult
@@ -300,205 +380,309 @@ func (t *tui) tune() error {
 		t.r.Helper("cleanup")
 		return err
 	}
-	n, users := "3", ""
-	if old, _ := LoadState(t.r); old != nil {
-		fmt.Println(dimStyle.Render(fmt.Sprintf("A deployment already exists; its %d users keep their names but get new links.", len(old.Users))))
+	n := "3"
+	if old != nil {
+		fmt.Println(dimStyle.Render(fmt.Sprintf("A deployment already exists: its %d users and server keys are kept.", len(old.Users))))
 	}
-	err = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Keep the top N configs running on the server (0 = remove all)").Value(&n),
-		huh.NewInput().Title("User names for the deployment (comma-separated, default user1)").Value(&users),
-	)).WithTheme(t.theme).Run()
-	if err != nil || atoiOr(n, 0) <= 0 {
+	if err := huh.NewInput().Title("Keep the top N configs running on the server (0 = remove all)").
+		Description("A working CDN config is always kept as well.").Value(&n).
+		WithTheme(t.theme).Run(); err != nil || atoiOr(n, 0) <= 0 {
 		out, _ := t.r.Helper("cleanup")
 		fmt.Println("server cleanup:", out)
 		pause()
 		return nil
 	}
-	st, err := Deploy(t.r, res, atoiOr(n, 0), strings.Split(users, ","))
+	st, err := Deploy(t.r, res, atoiOr(n, 0))
 	if err != nil {
 		return err
 	}
 	printDeployment(st)
-	pause()
-	return nil
+	if err := EnsureServerXtune(t.r, func(s string) { fmt.Println(s) }); err != nil {
+		return fmt.Errorf("deployed, but xtune could not be installed on the server to manage users: %w", err)
+	}
+	open := true
+	title := "Open the server console to manage users?"
+	if len(st.Users) == 0 {
+		title = "No users yet. Open the server console to add them?"
+	}
+	if huh.NewConfirm().Title(title).Value(&open).WithTheme(t.theme).Run() != nil || !open {
+		return nil
+	}
+	return openConsole(t.r)
 }
 
-// ---------------------------------------------------------------- users
+// ---------------------------------------------------------------- users (server)
 
 func (t *tui) users() error {
-	st, err := t.r.Status()
-	if err != nil {
-		return err
-	}
-	kind := ""
-	switch {
-	case st.HasState && st.XUI:
-		if err := huh.NewSelect[string]().Title("Which users?").Options(
-			huh.NewOption("3x-ui panel users", "panel"), huh.NewOption("xtune standalone users", "standalone")).
-			Value(&kind).WithTheme(t.theme).Run(); err != nil {
-			return err
-		}
-	case st.HasState:
-		kind = "standalone"
-	case st.XUI:
-		kind = "panel"
-	default:
-		return errors.New("no users to manage yet: run Tune and deploy, or install 3x-ui")
-	}
-	b, err := pickBackend(t.r, kind, tuiPrompt)
-	if err != nil {
-		return err
-	}
-	if b.panel != nil {
-		defer b.panel.Close()
-	}
 	for {
-		fmt.Println(titleStyle.Render("\nUsers (" + kind + ")"))
-		if err := b.list(os.Stdout); err != nil {
-			return err
-		}
-		names, err := b.names()
+		st, err := requireState(t.r)
 		if err != nil {
 			return err
 		}
+		us, err := LoadUsage(t.r)
+		if err != nil {
+			return err
+		}
+		fmt.Println(titleStyle.Render("\nUsers"))
+		printUsers(os.Stdout, st, us)
 		opts := []huh.Option[string]{huh.NewOption("Add user", "add")}
-		if len(names) > 0 {
-			opts = append(opts, huh.NewOption("Show links / subscription", "links"), huh.NewOption("Enable / disable", "toggle"))
-			if kind == "panel" {
-				opts = append(opts, huh.NewOption("Set traffic quota", "quota"), huh.NewOption("Set expiry", "expiry"))
-			} else {
-				opts = append(opts, huh.NewOption("Rotate credentials", "rotate"))
-			}
-			opts = append(opts, huh.NewOption("Delete user", "del"))
+		if len(st.Users) > 0 {
+			opts = append(opts, huh.NewOption("Show links / subscription", "links"),
+				huh.NewOption("Set limits: quota, expiry, devices", "limits"),
+				huh.NewOption("Enable / disable", "toggle"), huh.NewOption("Reset usage", "reset"),
+				huh.NewOption("Rotate credentials", "rotate"), huh.NewOption("New subscription link", "resub"),
+				huh.NewOption("Delete user", "del"))
 		}
 		opts = append(opts, huh.NewOption("Back", "back"))
 		var action string
 		if err := huh.NewSelect[string]().Title("Action").Options(opts...).Value(&action).WithTheme(t.theme).Run(); err != nil || action == "back" {
 			return nil
 		}
-		if err := t.userAction(b, action, names); err != nil {
+		if err := t.userAction(st, action); err != nil {
 			showErr(err)
 		}
 	}
 }
 
-func (b *backend) names() ([]string, error) {
-	var out []string
-	if b.kind == "standalone" {
-		st, err := requireState(b.r)
-		if err != nil {
-			return nil, err
-		}
-		for _, u := range st.Users {
-			out = append(out, u.Name)
-		}
-		return out, nil
+// limitsForm asks for quota, expiry and device limits, prefilled from u.
+func (t *tui) limitsForm(u User, name *string) (Limits, error) {
+	quota, days, devices := "", "", ""
+	if u.Quota > 0 {
+		quota = strconv.FormatFloat(float64(u.Quota)/(1<<30), 'f', -1, 64)
 	}
-	us, err := b.panel.Users()
-	for _, u := range us {
-		out = append(out, u.Email)
+	if u.Expires > 0 {
+		days = strconv.Itoa(max(0, int(time.Until(time.Unix(u.Expires, 0)).Hours()/24+0.5)))
 	}
-	return out, err
+	if u.Devices > 0 {
+		devices = strconv.Itoa(u.Devices)
+	}
+	num := func(s string) error {
+		if s = strings.TrimSpace(s); s != "" {
+			if f, err := strconv.ParseFloat(s, 64); err != nil || f < 0 {
+				return errors.New("a number, or empty")
+			}
+		}
+		return nil
+	}
+	var fields []huh.Field
+	if name != nil {
+		fields = append(fields, huh.NewInput().Title("User name").Value(name).Validate(func(s string) error {
+			return validUserName(strings.TrimSpace(s))
+		}))
+	}
+	fields = append(fields,
+		huh.NewInput().Title("Traffic quota in GB (empty = unlimited)").Value(&quota).Validate(num),
+		huh.NewInput().Title("Expires in days from now (empty = never)").Value(&days).Validate(num),
+		huh.NewInput().Title("Devices at the same time (empty = unlimited)").
+			Description("Counted by client IP. Extra devices are blocked for 10 minutes at a time.").Value(&devices).Validate(num))
+	if err := huh.NewForm(huh.NewGroup(fields...)).WithTheme(t.theme).Run(); err != nil {
+		return Limits{}, err
+	}
+	q, _ := strconv.ParseFloat(strings.TrimSpace(quota), 64)
+	d, dv := atoiOr(days, 0), atoiOr(devices, 0)
+	return Limits{QuotaGB: &q, Days: &d, Devices: &dv}, nil
 }
 
-func (t *tui) userAction(b *backend, action string, names []string) error {
+func (t *tui) userAction(st *State, action string) error {
 	if action == "add" {
-		var name, quota, days string
-		group := []huh.Field{huh.NewInput().Title("User name").Value(&name)}
-		if b.kind == "panel" {
-			group = append(group, huh.NewInput().Title("Quota GB (empty = unlimited)").Value(&quota),
-				huh.NewInput().Title("Expires in days (empty = never)").Value(&days))
-		}
-		var ids []int
-		if b.kind == "panel" {
-			ibs, err := b.panel.Inbounds()
-			if err != nil {
-				return err
-			}
-			var opts []huh.Option[int]
-			for _, ib := range ibs {
-				if ib.Enable {
-					opts = append(opts, huh.NewOption(fmt.Sprintf("%s  (%s :%d)", ib.Remark, ib.Protocol, ib.Port), ib.ID).Selected(true))
-				}
-			}
-			group = append(group, huh.NewMultiSelect[int]().Title("Inbounds").Options(opts...).Value(&ids))
-		}
-		if err := huh.NewForm(huh.NewGroup(group...)).WithTheme(t.theme).Run(); err != nil {
+		var name string
+		l, err := t.limitsForm(User{}, &name)
+		if err != nil {
 			return err
 		}
-		q, _ := strconv.ParseFloat(strings.TrimSpace(quota), 64)
-		if err := b.add(strings.TrimSpace(name), q, atoiOr(days, 0), ids); err != nil {
+		st, u, err := AddUser(t.r, strings.TrimSpace(name), l)
+		if err != nil {
 			return err
 		}
-		fmt.Println(okStyle.Render("added " + name))
-		b.links(os.Stdout, strings.TrimSpace(name))
+		fmt.Println(okStyle.Render("added " + u.Name))
+		printLinks(os.Stdout, st, u.Name)
 		pause()
 		return nil
 	}
+	var names []string
+	for _, u := range st.Users {
+		names = append(names, u.Name)
+	}
 	var name string
-	opts := huh.NewOptions(names...)
-	if err := huh.NewSelect[string]().Title("User").Options(opts...).Value(&name).WithTheme(t.theme).Run(); err != nil {
+	if err := huh.NewSelect[string]().Title("User").Options(huh.NewOptions(names...)...).Value(&name).WithTheme(t.theme).Run(); err != nil {
 		return err
 	}
+	_, u := st.User(name)
 	switch action {
 	case "links":
-		if err := b.links(os.Stdout, name); err != nil {
+		if err := printLinks(os.Stdout, st, name); err != nil {
 			return err
 		}
 		pause()
+	case "limits":
+		l, err := t.limitsForm(*u, nil)
+		if err != nil {
+			return err
+		}
+		_, err = SetLimits(t.r, name, l)
+		return err
 	case "toggle":
 		on := true
 		if err := huh.NewSelect[bool]().Title(name).Options(huh.NewOption("Enable", true), huh.NewOption("Disable", false)).
 			Value(&on).WithTheme(t.theme).Run(); err != nil {
 			return err
 		}
-		return b.setEnabled(name, on)
-	case "quota":
-		v, err := tuiPrompt("Quota GB for "+name+" (0 = unlimited)", false)
-		if err != nil {
+		return SetUserEnabled(t.r, name, on)
+	case "reset":
+		ok := false
+		if err := huh.NewConfirm().Title("Reset " + name + "'s traffic to zero?").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
 			return err
 		}
-		gb, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)
-		return b.setQuota(name, gb)
-	case "expiry":
-		v, err := tuiPrompt("Expires in N days from now (0 = never)", false)
-		if err != nil {
-			return err
-		}
-		return b.setExpiry(name, atoiOr(v, 0))
+		return ResetUsage(t.r, name)
 	case "rotate":
 		ok := false
-		if err := huh.NewConfirm().Title("New credentials for " + name + "? Old links stop working.").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
+		if err := huh.NewConfirm().Title("New credentials for " + name + "? Old links stop working.").
+			Description("Subscription users get the new ones on their next update.").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
 			return err
 		}
-		if err := b.rotate(os.Stdout, name); err != nil {
+		st, u, err := RotateUser(t.r, name)
+		if err != nil {
 			return err
 		}
+		printLinks(os.Stdout, st, u.Name)
+		pause()
+	case "resub":
+		ok := false
+		if err := huh.NewConfirm().Title("New subscription link for " + name + "? The old link stops working.").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
+			return err
+		}
+		st, err := ResetSubLink(t.r, name)
+		if err != nil {
+			return err
+		}
+		printLinks(os.Stdout, st, name)
 		pause()
 	case "del":
 		ok := false
 		if err := huh.NewConfirm().Title("Delete " + name + "?").Value(&ok).WithTheme(t.theme).Run(); err != nil || !ok {
 			return err
 		}
-		return b.del(name)
+		return DeleteUser(t.r, name)
 	}
+	return nil
+}
+
+// ---------------------------------------------------------------- subscription server / client routing (server)
+
+func (t *tui) sub() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nSubscription server"))
+	printSub(os.Stdout, st)
+	fmt.Println(dimStyle.Render("\nEach user gets one link: a page in a browser (usage, QR code, configs), a subscription for apps,\n" +
+		"and an automatic-failover config at <link>/json."))
+	opts := []huh.Option[string]{}
+	if st.CDNDomain != "" {
+		opts = append(opts, huh.NewOption("Through the CDN domain "+st.CDNDomain+" (hides the server IP)", "cdn"))
+	}
+	if st.Domain != "" {
+		opts = append(opts, huh.NewOption("On the direct domain "+st.Domain+" (Let's Encrypt, needs port 80)", "direct"))
+	}
+	if len(opts) == 0 {
+		return errors.New("the subscription server needs a domain: set a CDN or direct domain under Addresses first")
+	}
+	if st.Sub.Mode != "" {
+		opts = append(opts, huh.NewOption("Turn off", "off"))
+	}
+	opts = append(opts, huh.NewOption("Back", "back"))
+	mode := st.Sub.Mode
+	if mode == "" {
+		mode = defaultSubMode(st)
+	}
+	if err := huh.NewSelect[string]().Title("Serve subscriptions").Options(opts...).Value(&mode).WithTheme(t.theme).Run(); err != nil || mode == "back" {
+		return err
+	}
+	if mode == "off" {
+		return DisableSub(t.r)
+	}
+	port := ""
+	if st.Sub.Mode == mode {
+		port = strconv.Itoa(st.Sub.Port)
+	}
+	if err := huh.NewInput().Title("HTTPS port (empty = pick a free one)").Description("Through a CDN: one of " + fmt.Sprint(cdnPorts)).
+		Value(&port).WithTheme(t.theme).Run(); err != nil {
+		return err
+	}
+	if st, err = EnableSub(t.r, mode, atoiOr(port, 0)); err != nil {
+		return err
+	}
+	fmt.Println(okStyle.Render("\nsubscription server is on"))
+	printSub(os.Stdout, st)
+	pause()
+	return nil
+}
+
+func (t *tui) country() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	code := st.Country
+	if err := huh.NewSelect[string]().Title("Sites that go direct in client configs").
+		Description("Used by the automatic-failover config: local sites skip the proxy (faster, less server traffic).").
+		Options(huh.NewOption("None: everything through the proxy", ""), huh.NewOption("Iran (ir)", "ir"),
+			huh.NewOption("China (cn)", "cn"), huh.NewOption("Russia (ru)", "ru")).
+		Value(&code).WithTheme(t.theme).Run(); err != nil {
+		return err
+	}
+	return SetCountry(t.r, code)
+}
+
+// ---------------------------------------------------------------- addresses (server)
+
+func (t *tui) addresses() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nAddresses"))
+	printAddresses(os.Stdout, st)
+	direct, cdn := st.Domain, st.CDNDomain
+	err = huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Direct domain (empty = use the IP)").
+			Description("DNS-only (grey cloud) record pointing at this server.").Value(&direct),
+		huh.NewInput().Title("CDN domain (empty = no CDN entry)").
+			Description("CDN-proxied (orange cloud) record, SSL/TLS mode \"Full\". Setting one adds a\n"+
+				"VLESS + XHTTP + TLS entry with default settings; re-tune to measure it.").Value(&cdn),
+	)).WithTheme(t.theme).Run()
+	if err != nil {
+		return err
+	}
+	direct, cdn = strings.TrimSpace(direct), strings.TrimSpace(cdn)
+	if direct == st.Domain && cdn == st.CDNDomain && (cdn == "" || hasCDN(st.Entries)) {
+		return nil
+	}
+	st, added, err := SetDomains(t.r, direct, cdn, func(s string) { fmt.Println(s) })
+	if err != nil {
+		return err
+	}
+	fmt.Println(okStyle.Render("\naddresses updated"))
+	printAddresses(os.Stdout, st)
+	if added {
+		fmt.Println(dimStyle.Render("Added a CDN entry with default settings; re-run a tune from your users' network to measure it."))
+	}
+	fmt.Println(dimStyle.Render("Users' links changed: send them the new links or have them refresh their subscription."))
+	pause()
 	return nil
 }
 
 // ---------------------------------------------------------------- logs
 
 func (t *tui) logs() error {
-	st, err := t.r.Status()
-	if err != nil {
-		return err
-	}
-	unit := defaultUnit(st)
-	opts := []huh.Option[string]{huh.NewOption("xtune Xray (xray-autotune)", "xray-autotune")}
-	if st.XUI {
-		opts = append(opts, huh.NewOption("3x-ui panel + its Xray (x-ui)", "x-ui"))
-	}
-	opts = append(opts, huh.NewOption("xtune test instance (xray-autotune-test)", "xray-autotune-test"))
-	if err := huh.NewSelect[string]().Title("Logs").Options(opts...).Value(&unit).WithTheme(t.theme).Run(); err != nil {
+	unit := "xray-autotune"
+	if err := huh.NewSelect[string]().Title("Logs").Options(
+		huh.NewOption("Deployed Xray (xray-autotune)", "xray-autotune"),
+		huh.NewOption("Subscription server (xray-autotune-sub)", "xray-autotune-sub"),
+		huh.NewOption("Usage and limits job (xray-autotune-enforce)", "xray-autotune-enforce"),
+		huh.NewOption("Test instance (xray-autotune-test)", "xray-autotune-test"),
+	).Value(&unit).WithTheme(t.theme).Run(); err != nil {
 		return err
 	}
 	return viewLogs(t.r, unit)
@@ -591,7 +775,7 @@ func (m logModel) View() string {
 	return head + "\n" + m.vp.View() + "\n" + foot
 }
 
-func viewLogs(r *Remote, unit string) error {
+func viewLogs(r *Server, unit string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := make(chan string, 256)

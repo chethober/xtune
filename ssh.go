@@ -9,15 +9,16 @@ import (
 	"io"
 	"net"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/muesli/cancelreader"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
+	"golang.org/x/term"
 )
 
 // Conn describes how to reach a server. Secrets are never written to disk.
@@ -33,17 +34,16 @@ type Conn struct {
 // Prompter asks the user for a value; secret input is not echoed.
 type Prompter func(label string, secret bool) (string, error)
 
-// Remote is an SSH connection that can run commands as root (directly or via sudo).
-type Remote struct {
+// sshTransport is an SSH connection that can run commands as root (directly or via sudo).
+type sshTransport struct {
 	c        *ssh.Client
-	Conn     Conn
+	user     string
+	password string
 	isRoot   bool
 	sudoPass *string // nil: root login or passwordless sudo
 }
 
-func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
-
-func Dial(cfg Conn, ask Prompter) (*Remote, error) {
+func Dial(cfg Conn, ask Prompter) (*Server, error) {
 	if cfg.Port == 0 {
 		cfg.Port = 22
 	}
@@ -88,12 +88,12 @@ func Dial(cfg Conn, ask Prompter) (*Remote, error) {
 	if client == nil {
 		return nil, fmt.Errorf("ssh %s: no authentication method available (pass --key or --password-env)", addr)
 	}
-	r := &Remote{c: client, Conn: cfg, isRoot: cfg.User == "root"}
-	if err := r.setupSudo(ask); err != nil {
+	t := &sshTransport{c: client, user: cfg.User, password: cfg.Password, isRoot: cfg.User == "root"}
+	if err := t.setupSudo(ask); err != nil {
 		client.Close()
 		return nil, err
 	}
-	return r, nil
+	return &Server{sh: t, Conn: cfg}, nil
 }
 
 func isAuthErr(err error) bool {
@@ -192,26 +192,26 @@ func hostKeyCallback() (ssh.HostKeyCallback, error) {
 	}, nil
 }
 
-func (r *Remote) setupSudo(ask Prompter) error {
+func (r *sshTransport) setupSudo(ask Prompter) error {
 	if r.isRoot {
 		return nil
 	}
-	if _, _, err := r.Exec("true", "", true); err == nil {
+	if _, _, err := r.exec("true", "", true); err == nil {
 		return nil // passwordless sudo
 	}
 	try := func(pw string) bool {
 		r.sudoPass = &pw
-		_, _, err := r.Exec("true", "", true)
+		_, _, err := r.exec("true", "", true)
 		return err == nil
 	}
-	if r.Conn.Password != "" && try(r.Conn.Password) {
+	if r.password != "" && try(r.password) {
 		return nil
 	}
 	if pw := os.Getenv("XTUNE_SUDO_PASSWORD"); pw != "" && try(pw) {
 		return nil
 	}
 	if ask != nil {
-		pw, err := ask(fmt.Sprintf("sudo password for %s", r.Conn.User), true)
+		pw, err := ask(fmt.Sprintf("sudo password for %s", r.user), true)
 		if err != nil {
 			return err
 		}
@@ -220,10 +220,10 @@ func (r *Remote) setupSudo(ask Prompter) error {
 		}
 	}
 	r.sudoPass = nil
-	return fmt.Errorf("%s cannot run sudo (set XTUNE_SUDO_PASSWORD or log in as root)", r.Conn.User)
+	return fmt.Errorf("%s cannot run sudo (set XTUNE_SUDO_PASSWORD or log in as root)", r.user)
 }
 
-func (r *Remote) wrap(cmd, stdin string, sudo bool) (string, string) {
+func (r *sshTransport) wrap(cmd, stdin string, sudo bool) (string, string) {
 	if !sudo || r.isRoot {
 		return cmd, stdin
 	}
@@ -233,8 +233,7 @@ func (r *Remote) wrap(cmd, stdin string, sudo bool) (string, string) {
 	return "sudo -n bash -c " + shq(cmd), stdin
 }
 
-// Exec runs cmd and returns stdout/stderr; stdin is fed to the command.
-func (r *Remote) Exec(cmd, stdin string, sudo bool) (string, string, error) {
+func (r *sshTransport) exec(cmd, stdin string, sudo bool) (string, string, error) {
 	s, err := r.c.NewSession()
 	if err != nil {
 		return "", "", err
@@ -243,36 +242,13 @@ func (r *Remote) Exec(cmd, stdin string, sudo bool) (string, string, error) {
 	cmd, stdin = r.wrap(cmd, stdin, sudo)
 	var out, errb bytes.Buffer
 	s.Stdin, s.Stdout, s.Stderr = strings.NewReader(stdin), &out, &errb
-	err = s.Run(cmd)
-	if err != nil {
-		msg := strings.TrimSpace(errb.String())
-		if msg == "" {
-			msg = strings.TrimSpace(out.String())
-		}
-		if len(msg) > 1500 {
-			msg = msg[len(msg)-1500:]
-		}
-		err = fmt.Errorf("%w: %s", err, msg)
+	if err = s.Run(cmd); err != nil {
+		err = cmdErr(err, out.String(), errb.String())
 	}
 	return out.String(), errb.String(), err
 }
 
-// Root runs cmd as root and returns stdout.
-func (r *Remote) Root(cmd string) (string, error) {
-	out, _, err := r.Exec(cmd, "", true)
-	return out, err
-}
-
-// Upload writes content to path as root, atomically, with the given octal mode.
-func (r *Remote) Upload(dst string, content []byte, mode string) error {
-	cmd := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.tmp && chmod %s %s.tmp && mv -f %s.tmp %s",
-		shq(path.Dir(dst)), shq(dst), mode, shq(dst), shq(dst), shq(dst))
-	_, _, err := r.Exec(cmd, string(content), true)
-	return err
-}
-
-// Stream runs cmd as root and sends each output line to fn until ctx is cancelled or the command exits.
-func (r *Remote) Stream(ctx context.Context, cmd string, fn func(string)) error {
+func (r *sshTransport) stream(ctx context.Context, cmd string, fn func(string)) error {
 	s, err := r.c.NewSession()
 	if err != nil {
 		return err
@@ -295,7 +271,76 @@ func (r *Remote) Stream(ctx context.Context, cmd string, fn func(string)) error 
 	return nil
 }
 
-func (r *Remote) Close() { r.c.Close() }
+func (r *sshTransport) close() { r.c.Close() }
+
+// Console runs cmd on the server in an interactive terminal; this is how a client reaches the
+// server-side TUI. sudo, when needed, prompts inside that terminal.
+func (r *Server) Console(cmd string) error {
+	t, ok := r.sh.(*sshTransport)
+	if !ok {
+		return errors.New("the console needs an SSH connection")
+	}
+	in, out := int(os.Stdin.Fd()), int(os.Stdout.Fd())
+	if !term.IsTerminal(in) {
+		return errors.New("the console needs an interactive terminal")
+	}
+	if !t.isRoot {
+		cmd = "sudo " + cmd
+	}
+	s, err := t.c.NewSession()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	w, h, err := term.GetSize(out)
+	if err != nil {
+		w, h = 80, 24
+	}
+	name := os.Getenv("TERM")
+	if name == "" {
+		name = "xterm-256color"
+	}
+	if err := s.RequestPty(name, h, w, ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}); err != nil {
+		return err
+	}
+	stdin, err := s.StdinPipe()
+	if err != nil {
+		return err
+	}
+	s.Stdout, s.Stderr = os.Stdout, os.Stderr
+	old, err := term.MakeRaw(in)
+	if err != nil {
+		return err
+	}
+	defer term.Restore(in, old)
+	// a cancelable reader, so the copy goroutine does not swallow the next keypress after the session ends
+	cr, err := cancelreader.NewReader(os.Stdin)
+	if err != nil {
+		return err
+	}
+	defer cr.Close()
+	go io.Copy(stdin, cr)
+	done := make(chan struct{})
+	defer close(done)
+	go func() { // follow terminal resizes (polling works on every OS, unlike SIGWINCH)
+		tk := time.NewTicker(500 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tk.C:
+				if nw, nh, err := term.GetSize(out); err == nil && (nw != w || nh != h) {
+					w, h = nw, nh
+					s.WindowChange(h, w)
+				}
+			}
+		}
+	}()
+	err = s.Run(cmd)
+	cr.Cancel()
+	return err
+}
 
 func expandHome(p string) string {
 	if strings.HasPrefix(p, "~") {

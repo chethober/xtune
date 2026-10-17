@@ -13,7 +13,7 @@ labels: bug
 **Environment**
 - `xtune version`:
 - Your OS / architecture:
-- Server OS (`cat /etc/os-release`), and whether 3x-ui is installed:
+- Server OS (`cat /etc/os-release`), and the server's `xtune version`:
 - Output of `xtune xray status`:
 
 **Logs**

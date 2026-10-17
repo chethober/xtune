@@ -28,7 +28,7 @@ const remoteDir = "/opt/xray-autotune"
 
 // ---------------------------------------------------------------- remote helper
 
-func (r *Remote) Helper(args ...string) (string, error) {
+func (r *Server) Helper(args ...string) (string, error) {
 	if err := r.Upload(remoteDir+"/helper.sh", []byte(helperScript), "700"); err != nil {
 		return "", fmt.Errorf("upload helper: %w", err)
 	}
@@ -41,14 +41,13 @@ func (r *Remote) Helper(args ...string) (string, error) {
 }
 
 type ServerStatus struct {
-	Arch, Xray, Unit           string // isolated xtune Xray
-	HasState                   bool   // a standalone deployment exists
-	XUI                        bool   // 3x-ui installed
-	XUIPort, XUIBase           string
-	XUIToken, XUIXray, XUIUnit string
+	Arch, Xray, Unit string // isolated xtune Xray
+	HasState         bool   // a deployment exists
+	Xtune, XtuneSHA  string // server copy of xtune ("none" when missing)
+	Sub, Timer       string // subscription server and enforce timer (systemctl is-active)
 }
 
-func (r *Remote) Status() (ServerStatus, error) {
+func (r *Server) Status() (ServerStatus, error) {
 	out, err := r.Helper("status")
 	var s ServerStatus
 	for _, line := range strings.Split(out, "\n") {
@@ -62,18 +61,14 @@ func (r *Remote) Status() (ServerStatus, error) {
 			s.Unit = v
 		case "STATE":
 			s.HasState = v == "yes"
-		case "XUI":
-			s.XUI = v == "yes"
-		case "XUI_PORT":
-			s.XUIPort = v
-		case "XUI_BASE":
-			s.XUIBase = v
-		case "XUI_TOKEN":
-			s.XUIToken = v
-		case "XUI_XRAY":
-			s.XUIXray = v
-		case "XUI_UNIT":
-			s.XUIUnit = v
+		case "XTUNE":
+			s.Xtune = v
+		case "XTUNE_SHA":
+			s.XtuneSHA = v
+		case "SUB":
+			s.Sub = v
+		case "TIMER":
+			s.Timer = v
 		}
 	}
 	return s, err
@@ -136,7 +131,7 @@ func httpGet(url string, timeout time.Duration) ([]byte, error) {
 
 // LatestXray returns the newest Xray tag. Pre-releases count unless stable is set, because
 // Xray ships most releases as pre-releases. Falls back to asking the server.
-func LatestXray(stable bool, r *Remote) (string, error) {
+func LatestXray(stable bool, r *Server) (string, error) {
 	url := "https://api.github.com/repos/XTLS/Xray-core/releases?per_page=5"
 	if stable {
 		url = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -229,7 +224,7 @@ func assetName() (string, error) {
 		"linux/amd64": "linux-64", "linux/arm64": "linux-arm64-v8a", "linux/386": "linux-32", "linux/arm": "linux-arm32-v7a",
 		"darwin/amd64": "macos-64", "darwin/arm64": "macos-arm64-v8a",
 		"windows/amd64": "windows-64", "windows/arm64": "windows-arm64-v8a", "windows/386": "windows-32",
-		"freebsd/amd64": "freebsd-64", "freebsd/arm64": "freebsd-arm64-v8a",
+		"android/arm64": "android-arm64-v8a",
 	}
 	a, ok := m[runtime.GOOS+"/"+runtime.GOARCH]
 	if !ok {
@@ -297,7 +292,7 @@ func InstallLocalXray(tag string, log func(string)) (string, error) {
 }
 
 // EnsureLocalXray returns a usable local binary, downloading one if none exists.
-func EnsureLocalXray(flagPath string, r *Remote, log func(string)) (string, error) {
+func EnsureLocalXray(flagPath string, r *Server, log func(string)) (string, error) {
 	if b := FindLocalXray(flagPath); b != "" && XrayVersion(b) != "broken" {
 		return b, nil
 	}
@@ -309,7 +304,7 @@ func EnsureLocalXray(flagPath string, r *Remote, log func(string)) (string, erro
 }
 
 // EnsureServerXray installs the isolated server binary when missing (or a specific tag).
-func EnsureServerXray(r *Remote, tag string, log func(string)) (string, error) {
+func EnsureServerXray(r *Server, tag string, log func(string)) (string, error) {
 	st, err := r.Status()
 	if err != nil {
 		return "", err
@@ -325,4 +320,50 @@ func EnsureServerXray(r *Remote, tag string, log func(string)) (string, error) {
 	log("installing Xray " + tag + " on the server (" + remoteDir + ")")
 	out, err := r.Helper("install", normTag(tag))
 	return out, err
+}
+
+// ---------------------------------------------------------------- xtune on the server
+
+// EnsureServerXtune installs this version of xtune on the server, where users and addresses are
+// managed. A Linux client with the server's architecture uploads itself (so development builds
+// work too); other clients have the server download the matching release.
+func EnsureServerXtune(r *Server, log func(string)) error {
+	st, err := r.Status()
+	if err != nil {
+		return err
+	}
+	arch := map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[st.Arch]
+	if arch == "" {
+		return fmt.Errorf("no xtune build for server architecture %s", st.Arch)
+	}
+	if runtime.GOOS == "linux" && runtime.GOARCH == arch {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		self, err := os.ReadFile(exe)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(self)
+		if st.XtuneSHA == hex.EncodeToString(sum[:]) {
+			return nil
+		}
+		log("installing xtune " + version + " on the server")
+		if err := r.Upload(remoteDir+"/xtune", self, "755"); err != nil {
+			return err
+		}
+		_, err = r.Helper("xtune-link")
+		return err
+	}
+	if st.Xtune == version {
+		return nil
+	}
+	if version == "dev" {
+		return fmt.Errorf("this development build cannot install itself on a linux/%s server: build xtune for "+
+			"linux/%s and copy it to %s/xtune there", arch, arch, remoteDir)
+	}
+	log("installing xtune v" + version + " on the server")
+	_, err = r.Helper("xtune-install", "v"+version, arch)
+	return err
 }
