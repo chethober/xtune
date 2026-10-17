@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -124,11 +125,7 @@ func pickAPIPort(st *State) int {
 
 // restart (re)starts xray-autotune with the saved config and opens the entries' firewall ports.
 func restart(r *Server, st *State) error {
-	specs := []string{"apply"}
-	for _, e := range st.Entries {
-		specs = append(specs, fmt.Sprintf("%d/%s", e.Port, e.Proto()))
-	}
-	out, err := r.Helper(specs...)
+	out, err := r.Helper(append([]string{"apply"}, portSpecs(st.Entries)...)...)
 	if err != nil {
 		return err
 	}
@@ -143,15 +140,19 @@ func restart(r *Server, st *State) error {
 // already has a deployment, the server keys, certificate and users are kept: only ports, SNIs and
 // client settings change, so subscriptions keep working.
 func Deploy(r *Server, res *TuneResult, n int) (*State, error) {
-	chosen := deployChoice(res.Best, n)
+	return DeployVariants(r, res.State, deployChoice(res.Best, n))
+}
+
+// DeployVariants deploys the chosen variants with their tuned client settings, keeping an
+// existing deployment's identity and users (see Deploy).
+func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	if len(chosen) == 0 {
 		return nil, fmt.Errorf("nothing to deploy")
 	}
-	st := res.State
 	st.Entries = nil
 	for _, v := range chosen {
 		e := v.Entry
-		e.FP, e.Mode, e.Frag = v.K.FP, v.K.Mode, v.K.Frag
+		e.FP, e.Mode, e.Frag, e.Split = v.K.FP, v.K.Mode, v.K.Frag, v.K.Split
 		st.Entries = append(st.Entries, e)
 	}
 	old, err := LoadState(r)
@@ -163,6 +164,7 @@ func Deploy(r *Server, res *TuneResult, n int) (*State, error) {
 		st.VencDec, st.VencEnc, st.SSKey = old.VencDec, old.VencEnc, old.SSKey
 		st.CertSNI, st.CertHash, st.CertPEM, st.KeyPEM = old.CertSNI, old.CertHash, old.CertPEM, old.KeyPEM
 		st.Users, st.APIPort, st.Country, st.Sub = old.Users, old.APIPort, old.Country, old.Sub
+		st.Check, st.Warp, st.Notify = old.Check, old.Warp, old.Notify
 	}
 	if err := Apply(r, st); err != nil {
 		return st, err
@@ -200,7 +202,7 @@ func requireState(r *Server) (*State, error) {
 func (st *State) Links(u User) []string {
 	var out []string
 	for _, e := range st.Entries {
-		out = append(out, st.Link(e, u, Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode}))
+		out = append(out, st.Link(e, u, e.Knobs()))
 	}
 	return out
 }
@@ -216,6 +218,9 @@ func validUserName(name string) error {
 	if name == "" || strings.ContainsAny(name, " /\\\"'#?&%<>") {
 		return fmt.Errorf("invalid user name %q", name)
 	}
+	if name == checkUserName {
+		return fmt.Errorf("%q is reserved for xtune check", name)
+	}
 	return nil
 }
 
@@ -224,9 +229,33 @@ type Limits struct {
 	QuotaGB *float64 // 0 = unlimited
 	Days    *int     // expiry N days from now, 0 = never
 	Devices *int     // 0 = unlimited
+	Reset   *string  // usage reset period: monthly | weekly | "" (never)
+}
+
+var resetPeriods = []string{"monthly", "weekly"}
+
+func validReset(p string) error {
+	if p != "" && !slices.Contains(resetPeriods, p) {
+		return fmt.Errorf("unknown reset period %q (monthly, weekly or none)", p)
+	}
+	return nil
+}
+
+// nextReset is when a usage period that starts at from ends.
+func nextReset(period string, from time.Time) time.Time {
+	if period == "weekly" {
+		return from.AddDate(0, 0, 7)
+	}
+	return from.AddDate(0, 1, 0)
 }
 
 func (l Limits) apply(u *User) {
+	if l.Reset != nil {
+		u.Reset, u.ResetAt = *l.Reset, 0
+		if u.Reset != "" {
+			u.ResetAt = nextReset(u.Reset, time.Now()).Unix()
+		}
+	}
 	if l.QuotaGB != nil {
 		u.Quota = int64(*l.QuotaGB * (1 << 30))
 	}
@@ -261,6 +290,11 @@ func changeUser(r *Server, name string, fn func(st *State, u *User) error) (*Sta
 func AddUser(r *Server, name string, l Limits) (*State, User, error) {
 	if err := validUserName(name); err != nil {
 		return nil, User{}, err
+	}
+	if l.Reset != nil {
+		if err := validReset(*l.Reset); err != nil {
+			return nil, User{}, err
+		}
 	}
 	defer r.lock()()
 	st, err := requireState(r)
@@ -299,6 +333,11 @@ func SetUserEnabled(r *Server, name string, on bool) error {
 }
 
 func SetLimits(r *Server, name string, l Limits) (*State, error) {
+	if l.Reset != nil {
+		if err := validReset(*l.Reset); err != nil {
+			return nil, err
+		}
+	}
 	return changeUser(r, name, func(_ *State, u *User) error { l.apply(u); return nil })
 }
 

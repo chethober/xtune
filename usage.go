@@ -19,6 +19,8 @@ type Usage struct {
 	Blocks    []IPBlock             `json:"blocks,omitempty"`    // device-limit blocks
 	ActiveKey string                `json:"activeKey,omitempty"` // which users config.json was last written for
 	Updated   int64                 `json:"updated,omitempty"`
+	Notified  map[string]int64      `json:"notified,omitempty"` // alerts sent, so each is sent once
+	Failures  int                   `json:"failures,omitempty"` // enforce runs in a row the Xray API failed
 }
 
 type UserUsage struct {
@@ -85,6 +87,11 @@ func userStatus(u User, uu *UserUsage, now time.Time) string {
 	return "active"
 }
 
+// checkUserName is the hidden user `xtune check` measures the deployed configs with. It has no
+// limits and is not listed with the other users.
+const checkUserName = "xtune-check"
+
+// activeUsers are the users who can connect now, plus the check user.
 func (st *State) activeUsers(us *Usage, now time.Time) []User {
 	var out []User
 	for _, u := range st.Users {
@@ -92,7 +99,31 @@ func (st *State) activeUsers(us *Usage, now time.Time) []User {
 			out = append(out, u)
 		}
 	}
+	if st.Check != nil {
+		out = append(out, *st.Check)
+	}
 	return out
+}
+
+// applyResets starts the usage of users whose reset time has come from zero. It reports whether
+// any user's next reset time changed, so the state needs saving.
+func applyResets(st *State, us *Usage, now time.Time) bool {
+	changed := false
+	for i := range st.Users {
+		u := &st.Users[i]
+		if u.Reset == "" || u.ResetAt == 0 || now.Unix() < u.ResetAt {
+			continue
+		}
+		if uu := us.Users[u.Name]; uu != nil {
+			uu.Up, uu.Down = 0, 0
+		}
+		next := time.Unix(u.ResetAt, 0)
+		for !next.After(now) {
+			next = nextReset(u.Reset, next)
+		}
+		u.ResetAt, changed = next.Unix(), true
+	}
+	return changed
 }
 
 // activeKey identifies a set of active users and their credentials, plus the entries they are on.
@@ -226,9 +257,17 @@ func Enforce(r *Server) error {
 	}
 	now := time.Now()
 	prev, err := collect(r, st, us, now)
+	notifyXray(st, us, err)
 	if err != nil {
+		saveUsage(r, us) // keeps the alert from repeating
 		return err
 	}
+	if applyResets(st, us, now) {
+		if err := saveState(r, st); err != nil {
+			return err
+		}
+	}
+	notifyUsers(st, us, now)
 	if err := applyDeviceLimits(r, st, us, prev, now); err != nil {
 		return err
 	}

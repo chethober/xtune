@@ -9,9 +9,24 @@ XT=$D/xtune
 LINK=/usr/local/bin/xtune
 cmd=${1:-}; shift || true
 
+# hop_rule adds (-A), checks (-C) or deletes (-D) the NAT rule that forwards a UDP port range to
+# one port, for Hysteria2 port hopping. Rules carry the comment "xtune".
+hop_rule() {
+  local op=$1 ipt=$2 range=$3 port=$4
+  $ipt -t nat "$op" PREROUTING -p udp --dport "$range" -m comment --comment xtune -j REDIRECT --to-ports "$port" 2>/dev/null
+}
 fw_open() {
   local f=$1; shift
   for spec in "$@"; do
+    case $spec in
+      hop:*)
+        # hop:LO-HI:PORT; the firewall sees the forwarded port, which is opened on its own
+        IFS=: read -r _ range port <<< "$spec"; range=${range/-/:}
+        for ipt in iptables ip6tables; do
+          if command -v $ipt >/dev/null && hop_rule -A $ipt "$range" "$port"; then echo "$ipt $range $port" >> "$f"; fi
+        done
+        continue ;;
+    esac
     if command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then
       ufw allow "$spec" >/dev/null && echo "ufw $spec" >> "$f"
     fi
@@ -23,13 +38,24 @@ fw_open() {
 fw_close() {
   local f=$1
   [ -f "$f" ] || return 0
-  while read -r kind spec; do
+  while read -r kind spec extra; do
     case $kind in
       ufw) ufw delete allow "$spec" >/dev/null 2>&1 || true ;;
       firewalld) firewall-cmd --remove-port="$spec" >/dev/null 2>&1 || true ;;
+      iptables|ip6tables) while hop_rule -D "$kind" "$spec" "$extra"; do :; done ;;
     esac
   done < "$f"
   rm -f "$f"
+}
+# hop_restore re-adds recorded hop rules that are missing (they do not survive a reboot)
+hop_restore() {
+  local f=$1
+  [ -f "$f" ] || return 0
+  while read -r kind spec extra; do
+    case $kind in
+      iptables|ip6tables) hop_rule -C "$kind" "$spec" "$extra" || hop_rule -A "$kind" "$spec" "$extra" || true ;;
+    esac
+  done < "$f"
 }
 # link puts the server copy of xtune on PATH, unless another xtune install is already there
 link() {
@@ -77,6 +103,9 @@ status)
   if [ -f $D/state.json ]; then echo "STATE yes"; else echo "STATE no"; fi
   echo "SUB $(systemctl is-active xray-autotune-sub 2>/dev/null || true)"
   echo "TIMER $(systemctl is-active xray-autotune-enforce.timer 2>/dev/null || true)"
+  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then echo "FW ufw"
+  elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then echo "FW firewalld"
+  else echo "FW none"; fi
   if [ -x $XT ]; then
     echo "XTUNE $($XT version 2>/dev/null | awk '{print $2}')"
     echo "XTUNE_SHA $(sha256sum $XT | cut -d' ' -f1)"
@@ -109,6 +138,8 @@ install)
   $X version | sed -n 1p ;;
 xtune-link)
   chmod 755 $XT; link; install_timer
+  # a new xtune binary: the subscription server runs it too
+  systemctl try-restart xray-autotune-sub >/dev/null 2>&1 || true
   $XT version ;;
 xtune-install)
   # the release build of xtune for this server, checksum-verified
@@ -128,7 +159,15 @@ probe)
   for h in "$@"; do
     echo "SNI $h $(curl -so /dev/null --tlsv1.3 --http2 -m 4 -w '%{http_version} %{time_appconnect}' "https://$h/" 2>/dev/null || echo fail)"
   done
+  ss -Htuln | awk '{print "USED", $1, $5}'
+  if command -v iptables >/dev/null && iptables -t nat -S PREROUTING >/dev/null 2>&1; then echo "HOP yes"; else echo "HOP no"; fi ;;
+doctor)
+  echo "TIME $(date +%s)"
+  echo "NTP $(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
+  echo "HOPRULES $( (iptables -t nat -S PREROUTING 2>/dev/null || true) | grep -c 'comment xtune' || true)"
   ss -Htuln | awk '{print "USED", $1, $5}' ;;
+hop-restore)
+  hop_restore $D/fw.deployed ;;
 start)
   systemctl stop xray-autotune-test 2>/dev/null || true
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
@@ -147,22 +186,22 @@ check)
 apply)
   if ! $X run -test -c $D/config.json >/dev/null 2>&1; then $X run -test -c $D/config.json 2>&1 | tail -5; exit 1; fi
   install_timer
-  if [ ! -f /etc/systemd/system/xray-autotune.service ]; then
-    cat > /etc/systemd/system/xray-autotune.service <<EOF
+  # written every time, so older deployments get the hop-rule restore after a reboot
+  cat > $U/xray-autotune.service <<EOF
 [Unit]
 Description=Xray (managed by xtune)
 After=network-online.target
 Wants=network-online.target
 [Service]
+ExecStartPre=-/bin/bash $D/helper.sh hop-restore
 ExecStart=$X run -c $D/config.json
 Restart=on-failure
 LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable xray-autotune >/dev/null 2>&1
-  fi
+  systemctl daemon-reload
+  systemctl enable xray-autotune >/dev/null 2>&1
   systemctl restart xray-autotune
   fw_close $D/fw.deployed; fw_open $D/fw.deployed "$@"
   sleep 1; systemctl is-active xray-autotune ;;
@@ -206,5 +245,5 @@ uninstall)
   fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub
   unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|start|stop-test|check|apply|sub-enable|sub-disable|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|start|stop-test|check|apply|sub-enable|sub-disable|cleanup|uninstall" >&2; exit 2 ;;
 esac

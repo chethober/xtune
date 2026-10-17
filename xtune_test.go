@@ -274,6 +274,7 @@ type fakeServer struct {
 	stats    string                       // statsquery output
 	online   string                       // statsonlineiplist output
 	sib      []string                     // last sib arguments
+	helper   map[string]string            // canned output of other helper commands
 	restarts int
 	apiCalls int
 }
@@ -353,10 +354,10 @@ func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
 	case strings.HasPrefix(cmd, remoteDir+"/xray api "):
 		out, err := f.api(strings.Fields(strings.TrimPrefix(cmd, remoteDir+"/xray api ")))
 		return out, "", err
-	case strings.HasPrefix(cmd, "cat "+remoteDir+"/usage.json"):
-		return f.files[remoteDir+"/usage.json"], "", nil
-	case strings.HasPrefix(cmd, "cat "+remoteDir+"/state.json"):
-		return f.files[remoteDir+"/state.json"], "", nil
+	case strings.HasPrefix(cmd, "cat "):
+		return f.files[strings.Fields(cmd)[1]], "", nil
+	case strings.HasPrefix(cmd, "rm -f '"):
+		delete(f.files, strings.Trim(strings.Fields(cmd)[2], "'"))
 	case strings.Contains(cmd, "cat > '"):
 		dst := strings.SplitN(strings.SplitN(cmd, "cat > '", 2)[1], "'", 2)[0]
 		f.files[dst] = stdin
@@ -384,6 +385,9 @@ func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
 		return "active\n", "", nil
 	case strings.Contains(cmd, "helper.sh 'probe'"):
 		return f.used, "", nil
+	case strings.Contains(cmd, "helper.sh '"):
+		name := strings.SplitN(strings.SplitN(cmd, "helper.sh '", 2)[1], "'", 2)[0]
+		return f.helper[name], "", nil
 	}
 	return "", "", nil
 }

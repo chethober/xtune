@@ -268,7 +268,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		hd.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "+
 			"img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		hd.Set("Content-Type", "text/html; charset=utf-8")
-		subPage.Execute(w, pageData(st, *u, uu, time.Now()))
+		subPage.Execute(w, pageData(st, *u, uu, time.Now(), pageLang(req, st.Sub.Lang)))
 	default:
 		hd.Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, st.Subscription(*u))
@@ -280,29 +280,58 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 type pageLink struct{ Name, URL string }
 
 type page struct {
+	Lang, Dir                     string
+	T                             map[string]string
 	Name, Status, StatusClass     string
 	Used, Quota, Expires, Devices string
+	Resets                        string
 	Percent                       int
 	SubURL, JSONURL, LastSeen     string
 	QR                            template.URL // generated here, so safe as a data: URL
 	Links                         []pageLink
 }
 
-func pageData(st *State, u User, uu *UserUsage, now time.Time) page {
-	p := page{Name: u.Name, Status: userStatus(u, uu, now), Used: fmtBytes(uu.Up + uu.Down), Quota: "unlimited",
-		Expires: fmtExpiry(u.Expires, now), Devices: fmt.Sprintf("%d online", len(uu.Online)),
-		SubURL: st.SubURL(u), LastSeen: "never"}
+func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page {
+	T := pageText[lang]
+	num := func(s string) string { // Persian digits for the page's numbers
+		if lang == "fa" {
+			return faDigits(s)
+		}
+		return s
+	}
+	status := userStatus(u, uu, now)
+	p := page{Lang: lang, Dir: "ltr", T: T, Name: u.Name, Status: T[status], Used: num(fmtBytes(uu.Up + uu.Down)),
+		Quota: T["unlimited"], Expires: T["never"], Devices: num(fmt.Sprintf(T["online"], len(uu.Online))),
+		SubURL: st.SubURL(u), LastSeen: T["never"]}
+	if lang == "fa" {
+		p.Dir = "rtl"
+	}
 	p.JSONURL = p.SubURL + "/json"
-	p.StatusClass = map[string]string{"active": "ok", "disabled": "off", "expired": "bad", "over quota": "bad"}[p.Status]
+	p.StatusClass = map[string]string{"active": "ok", "disabled": "off", "expired": "bad", "over quota": "bad"}[status]
 	if u.Quota > 0 {
-		p.Quota = fmtBytes(u.Quota)
+		p.Quota = num(fmtBytes(u.Quota))
 		p.Percent = int(min(100, (uu.Up+uu.Down)*100/u.Quota))
 	}
+	if u.Expires > 0 {
+		t := time.Unix(u.Expires, 0)
+		if now.After(t) {
+			p.Expires = fmt.Sprintf(T["expired"], fmtDate(t, lang))
+		} else {
+			p.Expires = num(fmt.Sprintf(T["left"], fmtDate(t, lang), int(t.Sub(now).Hours()/24)))
+		}
+	}
 	if u.Devices > 0 {
-		p.Devices = fmt.Sprintf("%d of %d online", len(uu.Online), u.Devices)
+		p.Devices = num(fmt.Sprintf(T["onlineOf"], len(uu.Online), u.Devices))
+	}
+	if u.Reset != "" && u.ResetAt > 0 {
+		p.Resets = fmt.Sprintf(T[u.Reset], fmtDate(time.Unix(u.ResetAt, 0), lang))
 	}
 	if uu.LastSeen > 0 {
-		p.LastSeen = time.Unix(uu.LastSeen, 0).UTC().Format("2006-01-02 15:04 UTC")
+		t := time.Unix(uu.LastSeen, 0).UTC()
+		p.LastSeen = t.Format("2006-01-02 15:04 UTC")
+		if lang == "fa" {
+			p.LastSeen = fmtDate(t, lang) + " " + faDigits(t.Format("15:04")) + " UTC"
+		}
 	}
 	if c, err := qr.Encode(p.SubURL, qr.M); err == nil {
 		c.Scale = 6
@@ -339,14 +368,14 @@ func fmtExpiry(ts int64, now time.Time) string {
 }
 
 var subPage = template.Must(template.New("page").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="{{.Lang}}" dir="{{.Dir}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>{{.Name}} - subscription</title>
+<title>{{.Name}} - {{.T.title}}</title>
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--fg:#14171c;--dim:#5d6673;--line:#e3e6eb;--acc:#2f6fed;--ok:#1a7f45;--bad:#c4332b;--off:#7a828e}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a20;--fg:#e8eaee;--dim:#98a1ad;--line:#272b33;--acc:#6b9bff;--ok:#4cc38a;--bad:#ff6b61;--off:#8b93a0}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Vazirmatn,Tahoma,sans-serif}
 main{max-width:680px;margin:0 auto;padding:24px 16px 48px}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:0 0 10px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:16px}
@@ -356,31 +385,47 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:0 0 10px}
 .k{color:var(--dim);font-size:13px}.v{font-weight:600}
 .bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:12px}.bar>i{display:block;height:100%;background:var(--acc)}
 .row{display:flex;gap:8px;align-items:center;margin-top:8px}
-code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+code{direction:ltr;text-align:left;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 button{flex:none;font:inherit;font-size:13px;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
 .qr{display:block;margin:12px auto 0;width:220px;max-width:100%;image-rendering:pixelated;background:#fff;padding:8px;border-radius:8px}
-.dim{color:var(--dim);font-size:13px}ul{margin:8px 0 0;padding-left:18px}
+.dim{color:var(--dim);font-size:13px}
 </style></head><body><main>
 <h1>{{.Name}}</h1>
 <span class="pill {{.StatusClass}}">{{.Status}}</span>
 <div class="card"><div class="grid">
-<div><div class="k">Used</div><div class="v">{{.Used}}</div></div>
-<div><div class="k">Quota</div><div class="v">{{.Quota}}</div></div>
-<div><div class="k">Expires</div><div class="v">{{.Expires}}</div></div>
-<div><div class="k">Devices</div><div class="v">{{.Devices}}</div></div>
+<div><div class="k">{{.T.used}}</div><div class="v">{{.Used}}</div></div>
+<div><div class="k">{{.T.quota}}</div><div class="v">{{.Quota}}</div></div>
+<div><div class="k">{{.T.expires}}</div><div class="v">{{.Expires}}</div></div>
+<div><div class="k">{{.T.devices}}</div><div class="v">{{.Devices}}</div></div>
+{{if .Resets}}<div><div class="k">{{.T.resets}}</div><div class="v">{{.Resets}}</div></div>{{end}}
 </div>{{if .Percent}}<div class="bar"><i style="width:{{.Percent}}%"></i></div>{{end}}
-<p class="dim">Last connected: {{.LastSeen}}</p></div>
-<div class="card"><h2>Subscription link</h2>
-<div class="row"><code>{{.SubURL}}</code><button data-copy="{{.SubURL}}">Copy</button></div>
-{{if .QR}}<img class="qr" src="{{.QR}}" alt="QR code of the subscription link">{{end}}
-<p class="dim">Add it as a subscription in v2rayN, v2rayNG, Hiddify, Streisand or Happ. The app keeps your configs up to date.</p></div>
-<div class="card"><h2>Automatic failover config</h2>
-<div class="row"><code>{{.JSONURL}}</code><button data-copy="{{.JSONURL}}">Copy</button></div>
-<p class="dim">One Xray config with every server below. It keeps using the fastest one that works, so you switch automatically when one is blocked. Import it as a custom config (v2rayN: Add custom config).</p></div>
-<div class="card"><h2>Single configs</h2>
-{{range .Links}}<div class="row"><code title="{{.Name}}">{{.URL}}</code><button data-copy="{{.URL}}">Copy</button></div>{{end}}</div>
+<p class="dim">{{.T.last}}: {{.LastSeen}}</p></div>
+<div class="card"><h2>{{.T.subLink}}</h2>
+<div class="row"><code>{{.SubURL}}</code><button data-copy="{{.SubURL}}">{{.T.copy}}</button></div>
+{{if .QR}}<img class="qr" src="{{.QR}}" alt="{{.T.qrAlt}}">{{end}}
+<p class="dim">{{.T.subHelp}}</p></div>
+<div class="card"><h2>{{.T.failover}}</h2>
+<div class="row"><code>{{.JSONURL}}</code><button data-copy="{{.JSONURL}}">{{.T.copy}}</button></div>
+<p class="dim">{{.T.failHelp}}</p></div>
+<div class="card"><h2>{{.T.single}}</h2>
+{{range .Links}}<div class="row"><code title="{{.Name}}">{{.URL}}</code><button data-copy="{{.URL}}">{{$.T.copy}}</button></div>{{end}}</div>
 </main><script>
+var copyText={{.T.copy}},copiedText={{.T.copied}};
 document.querySelectorAll("button[data-copy]").forEach(function(b){b.addEventListener("click",function(){
-var t=b.getAttribute("data-copy"),done=function(){b.textContent="Copied";setTimeout(function(){b.textContent="Copy"},1500)};
+var t=b.getAttribute("data-copy"),done=function(){b.textContent=copiedText;setTimeout(function(){b.textContent=copyText},1500)};
 if(navigator.clipboard){navigator.clipboard.writeText(t).then(done)}else{var a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();document.execCommand("copy");a.remove();done()}})});
 </script></body></html>`))
+
+// SetSubLang chooses the language of users' pages ("" = from the browser).
+func SetSubLang(r *Server, lang string) error {
+	if err := validLang(lang); err != nil {
+		return err
+	}
+	defer r.lock()()
+	st, err := requireState(r)
+	if err != nil {
+		return err
+	}
+	st.Sub.Lang = lang
+	return saveState(r, st) // the server reads state.json on every request
+}

@@ -45,6 +45,8 @@ type TuneOpts struct {
 	ServerTag                     string   // "" = keep / latest
 	Only                          []string // test only entries whose ID starts with one of these
 	Domain, CDNDomain             string   // optional direct and CDN-proxied domains
+	KeepTest                      bool     // leave the server test instance running (it expires by itself)
+	Network                       string   // name of the network measured from, for the history
 	Log                           func(string)
 }
 
@@ -190,7 +192,44 @@ func PlanEntries(probeOut string, cdn bool) ([]Entry, []string) {
 		Entry{ID: "hy2-hiport", Kind: "hysteria2", Port: port("udp", false)},
 		Entry{ID: "ss2022", Kind: "ss2022", Port: port("tcp", false)},
 	)
+	if strings.Contains(probeOut, "\nHOP yes") || strings.HasPrefix(probeOut, "HOP yes") {
+		// port hopping: the server forwards a UDP range to one port, the client keeps changing ports
+		if hop, ok := hopRange(used["udp"], taken); ok {
+			E = append(E, Entry{ID: "hy2-hop", Kind: "hysteria2", Port: port("udp", false), Hop: hop})
+		}
+	}
 	return append(E, cdnE...), hosts
+}
+
+// hopRange picks a 1000-port UDP range with no port in use or taken.
+func hopRange(used, taken map[int]bool) (string, bool) {
+	for try := 0; try < 50; try++ {
+		lo := 20000 + 1000*mrand.IntN(30)
+		free := true
+		for p := lo; p < lo+1000 && free; p++ {
+			free = !used[p] && !taken[p]
+		}
+		if free {
+			for p := lo; p < lo+1000; p++ {
+				taken[p] = true
+			}
+			return fmt.Sprintf("%d-%d", lo, lo+999), true
+		}
+	}
+	return "", false
+}
+
+// portSpecs are the helper's firewall arguments for entries: "443/tcp", plus "hop:LO-HI:PORT"
+// for a port-hopping range forwarded to PORT.
+func portSpecs(es []Entry) []string {
+	var specs []string
+	for _, e := range es {
+		specs = append(specs, fmt.Sprintf("%d/%s", e.Port, e.Proto()))
+		if e.Hop != "" {
+			specs = append(specs, fmt.Sprintf("hop:%s:%d", e.Hop, e.Port))
+		}
+	}
+	return specs
 }
 
 func ExpandVariants(entries []Entry, depth string) []*Variant {
@@ -221,6 +260,11 @@ func ExpandVariants(entries []Entry, depth string) []*Variant {
 			for _, m := range modes[1:] {
 				ks = append(ks, Knobs{FP: "chrome", Frag: "none", Mode: m})
 			}
+			if e.CDN() { // upload through the CDN, download straight from the server
+				for _, m := range []string{"packet-up", "stream-up"} {
+					ks = append(ks, Knobs{FP: "chrome", Frag: "none", Mode: m, Split: "cdn-up"})
+				}
+			}
 		case e.Kind == "reality-grpc":
 			for _, g := range fragNames {
 				ks = append(ks, Knobs{FP: "chrome", Frag: g})
@@ -247,6 +291,12 @@ func ExpandVariants(entries []Entry, depth string) []*Variant {
 			}
 			if k.Mode != "" {
 				v.Label += " mode=" + k.Mode
+			}
+			if k.Split != "" {
+				v.Label += " split=" + k.Split
+			}
+			if e.Hop != "" {
+				v.Label += " hop=" + e.Hop
 			}
 			out = append(out, v)
 		}
@@ -501,6 +551,9 @@ func simplicity(v *Variant) int {
 	if v.K.Mode != "" && v.K.Mode != "auto" {
 		s += 2
 	}
+	if v.K.Split != "" {
+		s += 8
+	}
 	return s
 }
 
@@ -678,6 +731,7 @@ func Report(w io.Writer, o TuneOpts, st *State, u User, vs []*Variant) ([]*Varia
 
 type TuneResult struct {
 	State   *State
+	User    User // the test user, on the test instance only
 	Entries []Entry
 	All     []*Variant
 	Best    []*Variant
@@ -729,6 +783,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	entries = supported(o.XrayBin, st, entries, o.Log)
 	st.Domain, st.CDNDomain = o.Domain, o.CDNDomain
 	tuneUser := NewUser("tune")
 	testDir := remoteDir + "/test"
@@ -740,11 +795,11 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 			return nil, err
 		}
 	}
-	var specs []string
-	for _, e := range entries {
-		specs = append(specs, fmt.Sprintf("%d/%s", e.Port, e.Proto()))
-	}
+	specs := portSpecs(entries)
 	defer func() {
+		if o.KeepTest {
+			return
+		}
 		if _, err := r.Helper("stop-test"); err != nil {
 			o.Log("[!] stopping server test instance failed: " + err.Error())
 		}
@@ -769,7 +824,39 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 		return nil, err
 	}
 	o.Log(buf.String())
-	return &TuneResult{State: st, Entries: entries, All: vs, Best: best}, nil
+	return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Best: best}, nil
+}
+
+// supported drops entries whose client settings the local Xray cannot run (port hopping needs a
+// recent Xray), so one unsupported knob does not fail the whole test.
+func supported(bin string, st *State, entries []Entry, log func(string)) []Entry {
+	var keep []Entry
+	for _, e := range entries {
+		if e.Hop != "" {
+			cfg := ClientConfig(st.Outbound(e, NewUser("t"), Knobs{}, "proxy"))
+			if err := xrayAccepts(bin, cfg); err != nil {
+				log("[!] the local Xray cannot do Hysteria2 port hopping (update it with `xtune xray update`); skipping " + e.ID)
+				continue
+			}
+		}
+		keep = append(keep, e)
+	}
+	return keep
+}
+
+// xrayAccepts checks a config with `xray run -test`.
+func xrayAccepts(bin string, cfg J) error {
+	f, err := os.CreateTemp("", "xtune-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	json.NewEncoder(f).Encode(cfg)
+	f.Close()
+	if out, err := exec.Command(bin, "run", "-test", "-c", f.Name()).CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, tail(string(out), 300))
+	}
+	return nil
 }
 
 // testCerts points TLS inbounds at the test copy of the certificate so tuning never replaces the

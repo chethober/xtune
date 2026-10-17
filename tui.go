@@ -77,8 +77,12 @@ func runTUI() {
 				huh.NewOption("Status & Xray versions", "status"),
 				huh.NewOption("Install / update Xray", "update"),
 				huh.NewOption("Tune: find the configs that get through, deploy them", "tune"),
+				huh.NewOption("Check the deployed configs from this network", "check"),
 				huh.NewOption("Server console: users, addresses", "console"),
+				huh.NewOption("Doctor: diagnose the server", "doctor"),
+				huh.NewOption("Backup / move to a new server", "move"),
 				huh.NewOption("Logs", "logs"),
+				huh.NewOption("Update xtune", "self"),
 				huh.NewOption("Switch server", "switch"),
 				huh.NewOption("Uninstall xtune from server", "uninstall"),
 				huh.NewOption("Quit", "quit"),
@@ -93,10 +97,18 @@ func runTUI() {
 			showErr(t.update())
 		case "tune":
 			showErr(t.tune())
+		case "check":
+			showErr(t.check())
 		case "console":
 			showErr(openConsole(t.r))
+		case "doctor":
+			showErr(t.doctor())
+		case "move":
+			showErr(t.move())
 		case "logs":
 			showErr(t.logs())
+		case "self":
+			showErr(t.selfUpdate())
 		case "switch":
 			t.r.Close()
 			t.r = nil
@@ -125,7 +137,12 @@ func runServerTUI() {
 				huh.NewOption("Subscription server: public links", "sub"),
 				huh.NewOption("Addresses: direct / CDN domain", "addresses"),
 				huh.NewOption("Client routing: direct country", "country"),
+				huh.NewOption("WARP: sites that refuse the server's IP", "warp"),
+				huh.NewOption("Alerts: Telegram / webhook", "notify"),
+				huh.NewOption("Doctor: diagnose this server", "doctor"),
+				huh.NewOption("Backup", "backup"),
 				huh.NewOption("Update Xray", "update"),
+				huh.NewOption("Update xtune", "self"),
 				huh.NewOption("Logs", "logs"),
 				huh.NewOption("Uninstall xtune from this server", "uninstall"),
 				huh.NewOption("Quit", "quit"),
@@ -144,8 +161,18 @@ func runServerTUI() {
 			showErr(t.addresses())
 		case "country":
 			showErr(t.country())
+		case "warp":
+			showErr(t.warp())
+		case "notify":
+			showErr(t.notify())
+		case "doctor":
+			showErr(t.doctor())
+		case "backup":
+			showErr(t.backup())
 		case "update":
 			showErr(t.update())
+		case "self":
+			showErr(t.selfUpdate())
 		case "logs":
 			showErr(t.logs())
 		case "uninstall":
@@ -254,7 +281,11 @@ func (t *tui) status() error {
 		return err
 	}
 	fmt.Println(titleStyle.Render("\nServer"))
-	fmt.Printf("  arch %s, xray-autotune: %s, xtune on server: %s\n", st.Arch, orStr(st.Unit, "-"), orStr(st.Xtune, "none"))
+	mismatch := ""
+	if !t.r.Local && version != "dev" && st.Xtune != "none" && st.Xtune != version {
+		mismatch = " (this computer has " + version + "; opening the console updates it)"
+	}
+	fmt.Printf("  arch %s, xray-autotune: %s, xtune on server: %s%s\n", st.Arch, orStr(st.Unit, "-"), orStr(st.Xtune, "none"), mismatch)
 	fmt.Printf("  enforce timer: %s, subscription server: %s\n", orStr(st.Timer, "-"), orStr(st.Sub, "-"))
 	s, err := LoadState(t.r)
 	if err != nil {
@@ -380,6 +411,7 @@ func (t *tui) tune() error {
 		t.r.Helper("cleanup")
 		return err
 	}
+	appendHistory(tuneRecord(t.r.Conn.Host, "", res.Best))
 	n := "3"
 	if old != nil {
 		fmt.Println(dimStyle.Render(fmt.Sprintf("A deployment already exists: its %d users and server keys are kept.", len(old.Users))))
@@ -446,7 +478,7 @@ func (t *tui) users() error {
 
 // limitsForm asks for quota, expiry and device limits, prefilled from u.
 func (t *tui) limitsForm(u User, name *string) (Limits, error) {
-	quota, days, devices := "", "", ""
+	quota, days, devices, reset := "", "", "", u.Reset
 	if u.Quota > 0 {
 		quota = strconv.FormatFloat(float64(u.Quota)/(1<<30), 'f', -1, 64)
 	}
@@ -474,13 +506,19 @@ func (t *tui) limitsForm(u User, name *string) (Limits, error) {
 		huh.NewInput().Title("Traffic quota in GB (empty = unlimited)").Value(&quota).Validate(num),
 		huh.NewInput().Title("Expires in days from now (empty = never)").Value(&days).Validate(num),
 		huh.NewInput().Title("Devices at the same time (empty = unlimited)").
-			Description("Counted by client IP. Extra devices are blocked for 10 minutes at a time.").Value(&devices).Validate(num))
+			Description("Counted by client IP. Extra devices are blocked for 10 minutes at a time.").Value(&devices).Validate(num),
+		huh.NewSelect[string]().Title("Usage starts from zero").Options(huh.NewOption("Never", ""),
+			huh.NewOption("Every month (from today)", "monthly"), huh.NewOption("Every week (from today)", "weekly")).Value(&reset))
 	if err := huh.NewForm(huh.NewGroup(fields...)).WithTheme(t.theme).Run(); err != nil {
 		return Limits{}, err
 	}
 	q, _ := strconv.ParseFloat(strings.TrimSpace(quota), 64)
 	d, dv := atoiOr(days, 0), atoiOr(devices, 0)
-	return Limits{QuotaGB: &q, Days: &d, Devices: &dv}, nil
+	l := Limits{QuotaGB: &q, Days: &d, Devices: &dv}
+	if reset != u.Reset { // keep the running period when the setting does not change
+		l.Reset = &reset
+	}
+	return l, nil
 }
 
 func (t *tui) userAction(st *State, action string) error {
@@ -589,7 +627,7 @@ func (t *tui) sub() error {
 		return errors.New("the subscription server needs a domain: set a CDN or direct domain under Addresses first")
 	}
 	if st.Sub.Mode != "" {
-		opts = append(opts, huh.NewOption("Turn off", "off"))
+		opts = append(opts, huh.NewOption("Page language", "lang"), huh.NewOption("Turn off", "off"))
 	}
 	opts = append(opts, huh.NewOption("Back", "back"))
 	mode := st.Sub.Mode
@@ -601,6 +639,15 @@ func (t *tui) sub() error {
 	}
 	if mode == "off" {
 		return DisableSub(t.r)
+	}
+	if mode == "lang" {
+		lang := st.Sub.Lang
+		if err := huh.NewSelect[string]().Title("Language of users' pages").Options(
+			huh.NewOption("From the browser's setting", ""), huh.NewOption("English", "en"),
+			huh.NewOption("Persian (فارسی), Solar Hijri dates", "fa")).Value(&lang).WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+		return SetSubLang(t.r, lang)
 	}
 	port := ""
 	if st.Sub.Mode == mode {

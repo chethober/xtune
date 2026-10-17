@@ -8,6 +8,7 @@ Thanks for helping! Issues and pull requests are welcome.
 go build -o xtune .
 go vet ./... && go test ./...
 gofmt -l .        # must print nothing
+XTUNE_E2E=1 go test -run EndToEnd ./...   # optional: real local Xray, needs a local xray and internet access
 ```
 
 CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs `shellcheck` on `helper.sh` and
@@ -20,7 +21,8 @@ CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs 
   the `xray-autotune*` units (Xray, test, enforce timer, subscription server) and the `/usr/local/bin/xtune` link. Never modify other software on the server.
 - The same binary is the client and the server tool. Code that changes the server takes a `*Server`, so it works
   over SSH and locally; user management stays server-side only.
-- Secrets are never written to argv or to local files; profiles store connection details only.
+- Secrets are never written to argv or to local files; profiles store connection details only. The one exception
+  is a backup the user asks for (`xtune backup`), written readable by the owner only.
 - When you add a protocol or knob, add it to the test matrix *and* the share-link generator, with a unit test for the link.
 - Test changes against a real server before opening a PR, and say in the PR what you tested.
 

@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -33,7 +34,12 @@ type Entry struct {
 	FP      string `json:"fp,omitempty"`
 	Mode    string `json:"mode,omitempty"`
 	Frag    string `json:"frag,omitempty"`
+	Split   string `json:"split,omitempty"` // cdn-xhttp: "cdn-up" uploads through the CDN and downloads straight from the server
+	Hop     string `json:"hop,omitempty"`   // hysteria2: UDP port range forwarded to Port, for port hopping ("20000-20999")
 }
+
+// Knobs are the client settings tuning picked for the entry.
+func (e Entry) Knobs() Knobs { return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split} }
 
 func (e Entry) Proto() string {
 	if e.Kind == "hysteria2" {
@@ -63,6 +69,8 @@ type User struct {
 	Expires  int64  `json:"expires,omitempty"`  // unix seconds, 0 = never
 	Devices  int    `json:"devices,omitempty"`  // simultaneous client IPs, 0 = unlimited
 	SubToken string `json:"subToken,omitempty"` // secret part of the user's subscription URL
+	Reset    string `json:"reset,omitempty"`    // usage starts from zero every period: monthly | weekly
+	ResetAt  int64  `json:"resetAt,omitempty"`  // unix seconds of the next reset
 }
 
 // SubConfig is the subscription server: off when Mode is empty.
@@ -70,6 +78,7 @@ type SubConfig struct {
 	Mode string `json:"mode,omitempty"` // cdn (through the CDN domain) | direct (Let's Encrypt on the direct domain)
 	Port int    `json:"port,omitempty"`
 	Path string `json:"path,omitempty"` // secret path prefix
+	Lang string `json:"lang,omitempty"` // page language: en | fa ("" = from the browser)
 }
 
 // State is the server's deployment and user database, stored as state.json (root, 0600).
@@ -92,9 +101,13 @@ type State struct {
 	APIPort     int       `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
 	Country     string    `json:"country,omitempty"` // client configs send this country's sites direct
 	Sub         SubConfig `json:"sub"`
+	Check       *User     `json:"check,omitempty"` // hidden user `xtune check` measures the deployed configs with
+	Warp        *Warp     `json:"warp,omitempty"`  // Cloudflare WARP outbound for chosen sites
+	Notify      Notify    `json:"notify,omitzero"` // admin alerts
 }
 
-type Knobs struct{ FP, Frag, Mode string }
+// Knobs are client-side settings. Split applies to cdn-xhttp only.
+type Knobs struct{ FP, Frag, Mode, Split string }
 
 var fragNames = []string{"none", "frag-mild", "frag-aggr"}
 var fragments = map[string]map[string]string{
@@ -278,11 +291,15 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 			ibs = append(ibs, st.inbound(e, enabled))
 		}
 	}
-	cfg := J{"log": J{"loglevel": "warning"}, "inbounds": ibs,
-		"outbounds": []J{{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}},
-		// keep clients away from the VPS's own localhost services (panels, APIs)
-		"routing": J{"rules": []J{{"ip": []string{"geoip:private"}, "outboundTag": "block"},
-			{"protocol": []string{"bittorrent"}, "outboundTag": "block"}}}}
+	obs := []J{{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}}
+	// keep clients away from the VPS's own localhost services (panels, APIs)
+	rules := []J{{"ip": []string{"geoip:private"}, "outboundTag": "block"},
+		{"protocol": []string{"bittorrent"}, "outboundTag": "block"}}
+	if st.Warp != nil {
+		obs = append(obs, st.Warp.outbound())
+		rules = append(rules, st.Warp.rule())
+	}
+	cfg := J{"log": J{"loglevel": "warning"}, "inbounds": ibs, "outbounds": obs, "routing": J{"rules": rules}}
 	if st.APIPort > 0 {
 		// live user changes, traffic and online stats, source-IP blocks; loopback only
 		cfg["api"] = J{"tag": "api", "listen": fmt.Sprintf("127.0.0.1:%d", st.APIPort),
@@ -298,9 +315,14 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	switch e.Kind {
 	case "hysteria2":
+		ss := J{"network": "hysteria", "hysteriaSettings": J{"version": 2, "auth": u.UUID},
+			"security": "tls", "tlsSettings": J{"serverName": st.CertSNI, "alpn": []string{"h3"}, "pinnedPeerCertSha256": st.CertHash}}
+		if e.Hop != "" { // the server forwards the range to Port; the client changes ports as it goes
+			ss["finalmask"] = J{"udp": []J{{"type": "udphop", "settings": J{"mode": "intervalLocal,intervalRemote",
+				"remotePorts": e.Hop, "interval": hopInterval}}}}
+		}
 		return J{"tag": tag, "protocol": "hysteria", "settings": J{"version": 2, "address": st.Addr(), "port": e.Port},
-			"streamSettings": J{"network": "hysteria", "hysteriaSettings": J{"version": 2, "auth": u.UUID},
-				"security": "tls", "tlsSettings": J{"serverName": st.CertSNI, "alpn": []string{"h3"}, "pinnedPeerCertSha256": st.CertHash}}}
+			"streamSettings": ss}
 	case "ss2022":
 		return J{"tag": tag, "protocol": "shadowsocks", "settings": J{"servers": []J{{"address": st.Addr(), "port": e.Port,
 			"method": "2022-blake3-aes-128-gcm", "password": st.SSKey + ":" + u.SSKey}}}}
@@ -328,6 +350,9 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 		if e.CDN() {
 			ss["xhttpSettings"].(J)["host"] = st.CDNDomain
 		}
+		if e.CDN() && k.Split == "cdn-up" {
+			ss["xhttpSettings"].(J)["extra"] = J{"downloadSettings": st.directDownload(e, k)}
+		}
 	case "grpc":
 		ss["grpcSettings"] = J{"serviceName": e.Svc}
 	}
@@ -336,6 +361,18 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	}
 	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.addrFor(e), "port": e.Port,
 		"users": []J{{"id": u.UUID, "encryption": enc, "flow": flow}}}}}, "streamSettings": ss}
+}
+
+// hopInterval is how often (seconds) a port-hopping client moves to another port.
+const hopInterval = "10-30"
+
+// directDownload is the download half of a split CDN entry: the same inbound, reached straight at
+// the server's address. Its certificate is self-signed, so the client pins it.
+func (st *State) directDownload(e Entry, k Knobs) J {
+	return J{"address": st.Addr(), "port": e.Port, "network": "xhttp", "security": "tls",
+		"tlsSettings": J{"serverName": st.CertSNI, "fingerprint": orStr(k.FP, "chrome"), "alpn": []string{"h2", "http/1.1"},
+			"pinnedPeerCertSha256": st.CertHash},
+		"xhttpSettings": J{"path": e.Path}}
 }
 
 func fragOutbounds() []J {
@@ -374,7 +411,7 @@ var countries = map[string][2]string{
 func (st *State) FailoverConfig(u User) J {
 	var obs []J
 	for _, e := range st.Entries {
-		obs = append(obs, st.Outbound(e, u, Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode}, "proxy-"+e.ID))
+		obs = append(obs, st.Outbound(e, u, e.Knobs(), "proxy-"+e.ID))
 	}
 	obs = append(obs, fragOutbounds()...)
 	obs = append(obs, J{"tag": "direct", "protocol": "freedom"}, J{"tag": "block", "protocol": "blackhole"})
@@ -399,7 +436,11 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 	hostPort := hostPort(st.addrFor(e), e.Port)
 	switch e.Kind {
 	case "hysteria2":
-		return fmt.Sprintf("hysteria2://%s@%s?sni=%s&alpn=h3&pinSHA256=%s#%s", u.UUID, hostPort, st.CertSNI, st.CertHash, name)
+		hop := ""
+		if e.Hop != "" {
+			hop = "&mport=" + e.Hop
+		}
+		return fmt.Sprintf("hysteria2://%s@%s?sni=%s&alpn=h3&pinSHA256=%s%s#%s", u.UUID, hostPort, st.CertSNI, st.CertHash, hop, name)
 	case "ss2022":
 		return fmt.Sprintf("ss://%s@%s#%s", url.QueryEscape("2022-blake3-aes-128-gcm:"+st.SSKey+":"+u.SSKey), hostPort, name)
 	}
@@ -429,6 +470,10 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 	case "xhttp":
 		q.Set("path", e.Path)
 		q.Set("mode", orStr(k.Mode, "auto"))
+		if e.CDN() && k.Split == "cdn-up" {
+			b, _ := json.Marshal(J{"downloadSettings": st.directDownload(e, k)})
+			q.Set("extra", string(b))
+		}
 	case "grpc":
 		q.Set("serviceName", e.Svc)
 		q.Set("mode", "gun")

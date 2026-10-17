@@ -28,22 +28,38 @@ On your computer (client):
   xtune                                    interactive TUI: connect, tune, deploy, open the server console
   xtune tune      [conn] [tune flags]      find the configs that get through from this network, deploy them
                   --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
+                  --network NAME           name of this network (ISP), for the history and merged deploys
+                  --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
+  xtune measure   FILE [--network NAME] [--report OUT]   measure a shared test from this network (no SSH)
+  xtune deploy    [conn] [-n N] [REPORT ...]   deploy the shared test, so every network gets a config that works
+  xtune check     [conn] [--network NAME]  quick check of the deployed configs from this network
+  xtune history   [--host H] [-n N]        past tunes and checks
+  xtune doctor    [conn]                   diagnose services, ports, DNS, the CDN, clocks and certificates
+  xtune backup    [conn] [-o FILE]         save the deployment (keys, users, usage) to a local file
+  xtune restore   [conn] FILE              rebuild a backup on a new server, configs as they were
+  xtune migrate   [conn | --backup FILE] --to [user@]host[:port] [--no-tune] [tune flags]
+                                           move the deployment to a new server, keeping users and links
   xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
   xtune xray      [conn] status|update     check / update Xray here and on the server
   xtune logs      [conn] [-n N] [-f]
   xtune uninstall [conn]                   remove everything xtune installed on the server
+  xtune self-update [--version vX.Y.Z]     update this xtune (on the server: its copy)
   xtune version
 
 On the server (as root):
   sudo xtune                               server TUI: users, subscriptions, addresses, Xray, logs
-  xtune users     list
-  xtune users     add NAME [--quota GB] [--days N] [--devices N]
-  xtune users     limit NAME [--quota GB] [--days N] [--devices N]   (0 = unlimited / never)
-  xtune users     links|enable|disable|rotate|reset-usage|reset-sub|del NAME
-  xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable]   public subscription links
+  xtune users     list [--json]
+  xtune users     add NAME [--quota GB] [--days N] [--devices N] [--reset monthly|weekly]
+  xtune users     limit NAME [--quota GB] [--days N] [--devices N] [--reset monthly|weekly|none]
+                                           (0 = unlimited / never; --reset starts usage from zero each period)
+  xtune users     links NAME [--json] [--qr]
+  xtune users     enable|disable|rotate|reset-usage|reset-sub|del NAME
+  xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable | lang en|fa|auto]
   xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
-  xtune xray|logs|uninstall                as above, for this server
+  xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
+  xtune warp      [status | on [--domains D,D] [--all] | off]   chosen sites (default: AI services) via WARP
+  xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
   (internal, run by systemd: xtune enforce, xtune serve)
 
 Connection flags (conn):
@@ -81,6 +97,28 @@ func main() {
 		err = cmdSub(args)
 	case "country":
 		err = cmdCountry(args)
+	case "notify":
+		err = cmdNotify(args)
+	case "warp":
+		err = cmdWarp(args)
+	case "check":
+		err = cmdCheck(args)
+	case "history":
+		err = cmdHistory(args)
+	case "measure":
+		err = cmdMeasure(args)
+	case "deploy":
+		err = cmdDeploy(args)
+	case "doctor":
+		err = cmdDoctor(args)
+	case "backup":
+		err = cmdBackup(args)
+	case "restore":
+		err = cmdRestore(args)
+	case "migrate":
+		err = cmdMigrate(args)
+	case "self-update":
+		err = cmdSelfUpdate(args)
 	case "enforce":
 		var r *Server
 		if r, err = OpenLocal(); err == nil {
@@ -224,7 +262,7 @@ var (
 func setActiveHarness(h *harness) { activeMu.Lock(); activeHarness = h; activeMu.Unlock() }
 
 // guarded runs fn; on Ctrl+C / SIGTERM it stops the local harness and the server test
-// instance before exiting, so an interrupted tune never leaves ports open.
+// instance (when r is set) before exiting, so an interrupted tune never leaves ports open.
 func guarded(r *Server, fn func() error) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -241,8 +279,10 @@ func guarded(r *Server, fn func() error) error {
 			activeHarness.stop()
 		}
 		activeMu.Unlock()
-		if _, err := r.Helper("stop-test"); err != nil {
-			fmt.Fprintln(os.Stderr, "server cleanup failed:", err)
+		if r != nil {
+			if _, err := r.Helper("stop-test"); err != nil {
+				fmt.Fprintln(os.Stderr, "server cleanup failed:", err)
+			}
 		}
 		os.Exit(130)
 	}
@@ -265,9 +305,12 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.ServerTag, "server-version", "", "install this Xray tag on the server first")
 	fs.StringVar(&o.Domain, "domain", "", "direct (DNS-only) domain used in links instead of the IP (default: the deployed one)")
 	fs.StringVar(&o.CDNDomain, "cdn", "", "CDN-proxied domain: adds a VLESS+XHTTP+TLS entry through the CDN (default: the deployed one)")
+	fs.StringVar(&o.Network, "network", "", "name of this network (ISP), for the history and merged deploys")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
+	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
 	parse(fs, args)
+	o.KeepTest = *share != ""
 	if *only != "" {
 		o.Only = strings.Split(*only, ",")
 	}
@@ -295,6 +338,12 @@ func cmdTune(args []string) error {
 		r.Helper("cleanup")
 		return err
 	}
+	if err := appendHistory(tuneRecord(r.Conn.Host, o.Network, res.Best)); err != nil {
+		fmt.Println("[!] history:", err)
+	}
+	if *share != "" {
+		return shareTune(r, res, o, *share)
+	}
 	n := *deploy
 	if n < 0 {
 		s, _ := cliPrompt("Keep the top N configs running on the server? N (0 = none) [0]", false)
@@ -309,13 +358,18 @@ func cmdTune(args []string) error {
 	if err != nil {
 		return err
 	}
+	afterDeploy(r, st)
+	return nil
+}
+
+// afterDeploy shows the deployment and installs xtune on the server, where users are managed.
+func afterDeploy(r *Server, st *State) {
 	printDeployment(st)
 	if err := EnsureServerXtune(r, func(s string) { fmt.Println("[*] " + s) }); err != nil {
 		fmt.Println("[!] xtune could not be installed on the server, so users cannot be managed there yet:", err)
 	} else if len(st.Users) == 0 {
 		fmt.Printf("\nNo users yet. Add them on the server: xtune console --host %s  (or ssh in and run sudo xtune)\n", r.Conn.Host)
 	}
-	return nil
 }
 
 func printDeployment(st *State) {
@@ -484,6 +538,9 @@ func cmdUsers(args []string) error {
 	quota := fs.Float64("quota", 0, "traffic quota in GB (0 = unlimited)")
 	days := fs.Int("days", 0, "expire N days from now (0 = never)")
 	devices := fs.Int("devices", 0, "simultaneous devices (client IPs), 0 = unlimited")
+	reset := fs.String("reset", "", "start usage from zero every period: monthly, weekly or none")
+	asJSON := fs.Bool("json", false, "machine-readable output (list, links)")
+	asQR := fs.Bool("qr", false, "links: show QR codes in the terminal")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
@@ -506,9 +563,21 @@ func cmdUsers(args []string) error {
 	if set["devices"] {
 		l.Devices = devices
 	}
+	if set["reset"] {
+		p := strings.TrimSpace(*reset)
+		if p == "none" {
+			p = ""
+		}
+		l.Reset = &p
+	}
 	show := func(st *State, err error) error {
-		if err != nil {
+		switch {
+		case err != nil:
 			return err
+		case *asJSON:
+			return printLinksJSON(os.Stdout, st, pos[1])
+		case *asQR:
+			return printLinksQR(os.Stdout, st, pos[1])
 		}
 		return printLinks(os.Stdout, st, pos[1])
 	}
@@ -522,13 +591,16 @@ func cmdUsers(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *asJSON {
+			return printUsersJSON(os.Stdout, st, us)
+		}
 		return printUsers(os.Stdout, st, us)
 	case "add":
 		st, _, err := AddUser(r, pos[1], l)
 		return show(st, err)
 	case "limit":
 		if l == (Limits{}) {
-			return fmt.Errorf("users limit: pass --quota, --days and/or --devices")
+			return fmt.Errorf("users limit: pass --quota, --days, --devices and/or --reset")
 		}
 		_, err := SetLimits(r, pos[1], l)
 		return err
@@ -556,7 +628,7 @@ func printUsers(w io.Writer, st *State, us *Usage) error {
 	}
 	now := time.Now()
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "USER\tSTATUS\tUSED\tQUOTA\tEXPIRES\tDEVICES\tLAST SEEN\n")
+	fmt.Fprintf(tw, "USER\tSTATUS\tUSED\tQUOTA\tRESETS\tEXPIRES\tDEVICES\tLAST SEEN\n")
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		if uu == nil {
@@ -574,8 +646,8 @@ func printUsers(w io.Writer, st *State, us *Usage) error {
 		} else if uu.LastSeen > 0 {
 			last = time.Unix(uu.LastSeen, 0).Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, userStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
-			quota, fmtExpiry(u.Expires, now), devices, last)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, userStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
+			quota, fmtReset(u), fmtExpiry(u.Expires, now), devices, last)
 	}
 	return tw.Flush()
 }
@@ -641,6 +713,15 @@ func cmdSub(args []string) error {
 		return printSub(os.Stdout, st)
 	case "disable":
 		return DisableSub(r)
+	case "lang":
+		if len(pos) < 2 {
+			return fmt.Errorf("sub lang: en, fa or auto (from the browser)")
+		}
+		l := strings.ToLower(pos[1])
+		if l == "auto" {
+			l = ""
+		}
+		return SetSubLang(r, l)
 	}
 	return fmt.Errorf("unknown sub action %q", action)
 }
@@ -658,7 +739,8 @@ func printSub(w io.Writer, st *State) error {
 		fmt.Fprintln(w, "subscription server: off (xtune sub enable)")
 		return nil
 	}
-	fmt.Fprintf(w, "subscription server: %s mode, https://%s\n\n", st.Sub.Mode, hostPort(subHost(st), st.Sub.Port))
+	fmt.Fprintf(w, "subscription server: %s mode, https://%s, page language %s\n\n", st.Sub.Mode,
+		hostPort(subHost(st), st.Sub.Port), orStr(st.Sub.Lang, "from the browser"))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, u := range st.Users {
 		fmt.Fprintf(tw, "%s\t%s\n", u.Name, st.SubURL(u))

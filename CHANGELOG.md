@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+### Added
+- `xtune backup`, `xtune restore` and `xtune migrate --to NEWHOST`: move a deployment to a new server (when its IP is
+  blocked, say) with the same server keys, users, usage and subscription links. `migrate` tunes the new server from
+  your network first; `--no-tune` keeps the configs as they were; `--backup FILE` works when the old server is gone.
+- `xtune check`: a quick re-test of only the deployed configs from the current network, flagging blocked, flaky, slow
+  and throttled ones. It measures with a hidden check user. Tunes and checks are kept in a local history
+  (`xtune history`).
+- Tuning for several networks: `tune --share FILE` leaves the test running for 2 hours and writes a bundle; testers on
+  other ISPs run `xtune measure FILE` (no SSH access) and send back a report; `xtune deploy REPORT...` deploys configs
+  chosen so every network gets one that does well there.
+- Usage resets: `users add|limit --reset monthly|weekly`; the enforce job starts usage from zero each period.
+- Persian subscription pages (right-to-left, Solar Hijri dates, Persian digits): picked from the browser's
+  language, `?lang=`, or `xtune sub lang en|fa|auto`.
+- `users list --json`, `users links NAME --json` and `users links NAME --qr` (QR codes in the terminal).
+- Admin alerts by Telegram bot or webhook (`xtune notify`): quota at 80% and 100%, expiry soon and reached, and the
+  deployed Xray not answering for 3 minutes.
+- Hysteria2 port hopping in the test matrix (`hy2-hop`), when the server has iptables: a UDP range forwarded to one
+  port, with the client's `udphop` mask. Skipped when the local Xray is too old for it.
+- A split CDN variant (`split=cdn-up`): XHTTP uploads through the CDN, downloads straight from the server, into the
+  same inbound.
+- `xtune warp on|off`: a Cloudflare WARP outbound for chosen sites (default: AI services) or all traffic.
+- `xtune self-update` (on the server it updates the server copy and restarts the subscription server), and a
+  warning when the server runs a different xtune than the client.
+- `xtune doctor`: services, listening ports, port-hopping rules, DNS records, the CDN's SSL/TLS mode, clock skew and
+  certificate expiry.
+- Client TUI: check, doctor, backup / move, update xtune. Server TUI: WARP, alerts, doctor, backup, update xtune,
+  page language and usage resets.
+
+### Changed
+- The `xray-autotune` unit file is rewritten on every deploy, so it restores port-hopping rules after a reboot.
+
 ## [0.2.0] - 2026-10-17
 
 ### Added
@@ -50,5 +83,6 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.3.0]: https://github.com/chethober/xtune/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/chethober/xtune/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chethober/xtune/releases/tag/v0.1.0
