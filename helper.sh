@@ -112,7 +112,7 @@ xtune-link)
   $XT version ;;
 xtune-install)
   # the release build of xtune for this server, checksum-verified
-  tag=$1 arch=$2 f=xtune_linux_$2.tar.gz
+  tag=$1 f=xtune_linux_$2.tar.gz
   b=https://github.com/chethober/xtune/releases/download/$tag
   t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
   curl -fsSL -m 180 -o "$t/$f" "$b/$f"
