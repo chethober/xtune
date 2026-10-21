@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -452,7 +453,7 @@ func TestBackupRestoreKeepsIdentity(t *testing.T) {
 	if err := writeBackup(path, b, ""); err != nil {
 		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 { // no Unix modes there
 		t.Errorf("backup mode %v", fi.Mode().Perm())
 	}
 	if writeBackup(path, b, "") == nil {
