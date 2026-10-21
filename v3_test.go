@@ -449,13 +449,13 @@ func TestBackupRestoreKeepsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "b.json")
-	if err := writeBackup(path, b); err != nil {
+	if err := writeBackup(path, b, ""); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
 		t.Errorf("backup mode %v", fi.Mode().Perm())
 	}
-	if writeBackup(path, b) == nil {
+	if writeBackup(path, b, "") == nil {
 		t.Error("an existing backup must not be overwritten")
 	}
 	b, err = readBackup(path)
@@ -488,7 +488,7 @@ func TestBackupRestoreKeepsIdentity(t *testing.T) {
 	if _, err := seed(nr, b, "", func(s string) { t.Log(s) }); err == nil {
 		t.Error("restoring over an existing deployment must be refused")
 	}
-	notes := strings.Join(moveNotes(got, "203.0.113.7"), "\n")
+	notes := strings.Join(moveNotes(got, "203.0.113.7", false), "\n")
 	for _, want := range []string{"vpn.example.com", "cdn.example.com", "198.51.100.9", "subscription links stay the same", "uninstall --host 203.0.113.7"} {
 		if !strings.Contains(notes, want) {
 			t.Errorf("notes lack %q:\n%s", want, notes)

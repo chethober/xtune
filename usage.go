@@ -15,20 +15,66 @@ import (
 // Usage is what the enforce job measures, stored in usage.json next to state.json. Traffic
 // counters in Xray reset when it restarts, so totals are accumulated here every minute.
 type Usage struct {
-	Users     map[string]*UserUsage `json:"users"`
-	Blocks    []IPBlock             `json:"blocks,omitempty"`    // device-limit blocks
-	ActiveKey string                `json:"activeKey,omitempty"` // which users config.json was last written for
-	Updated   int64                 `json:"updated,omitempty"`
-	Notified  map[string]int64      `json:"notified,omitempty"` // alerts sent, so each is sent once
-	Failures  int                   `json:"failures,omitempty"` // enforce runs in a row the Xray API failed
+	Users     map[string]*UserUsage  `json:"users"`
+	Blocks    []IPBlock              `json:"blocks,omitempty"`    // device-limit blocks
+	ActiveKey string                 `json:"activeKey,omitempty"` // which users config.json was last written for
+	Updated   int64                  `json:"updated,omitempty"`
+	Notified  map[string]int64       `json:"notified,omitempty"` // alerts sent, so each is sent once
+	Failures  int                    `json:"failures,omitempty"` // enforce runs in a row the Xray API failed
+	Entries   map[string]*EntryUsage `json:"entries,omitempty"`  // traffic per deployed config, by entryKey
+	BackupAt  int64                  `json:"backupAt,omitempty"` // last backup the bot sent
+	SNIAt     int64                  `json:"sniAt,omitempty"`    // last check of the REALITY targets
+	Synced    map[string][2]int64    `json:"synced,omitempty"`   // follower: traffic already reported to the primary
+}
+
+// EntryUsage is the traffic of one deployed config. A config that stops carrying anything while
+// the others still do is probably blocked on the users' networks.
+type EntryUsage struct {
+	Bytes  int64 `json:"bytes"`
+	First  int64 `json:"first"`            // when it was first seen deployed
+	Active int64 `json:"active,omitempty"` // last run it carried traffic
 }
 
 type UserUsage struct {
-	Up       int64    `json:"up"`
-	Down     int64    `json:"down"`
-	LastSeen int64    `json:"lastSeen,omitempty"`
-	Online   []string `json:"online,omitempty"` // client IPs at the last check
+	Up       int64            `json:"up"`
+	Down     int64            `json:"down"`
+	LastSeen int64            `json:"lastSeen,omitempty"`
+	Online   []string         `json:"online,omitempty"` // client IPs at the last check
+	Daily    map[string]int64 `json:"daily,omitempty"`  // bytes per day (server date), the last historyDays days
 }
+
+// historyDays is how many days of per-user traffic are kept.
+const historyDays = 60
+
+func dayKey(t time.Time) string { return t.Format("2006-01-02") }
+
+// addDaily counts n bytes on now's day and drops days older than historyDays.
+func (uu *UserUsage) addDaily(now time.Time, n int64) {
+	if uu.Daily == nil {
+		uu.Daily = map[string]int64{}
+	}
+	uu.Daily[dayKey(now)] += n
+	if len(uu.Daily) > historyDays {
+		cut := dayKey(now.AddDate(0, 0, -historyDays))
+		for d := range uu.Daily {
+			if d < cut {
+				delete(uu.Daily, d)
+			}
+		}
+	}
+}
+
+// lastDays is the user's traffic on each of the n days up to now, oldest first.
+func (uu *UserUsage) lastDays(now time.Time, n int) []int64 {
+	out := make([]int64, n)
+	for i := range n {
+		out[i] = uu.Daily[dayKey(now.AddDate(0, 0, i-n+1))]
+	}
+	return out
+}
+
+// entryKey identifies a deployed config: a redeploy that moves it to another port starts over.
+func entryKey(e Entry) string { return fmt.Sprintf("%s/%d", e.ID, e.Port) }
 
 type IPBlock struct {
 	IP    string `json:"ip"`
@@ -262,12 +308,23 @@ func Enforce(r *Server) error {
 		saveUsage(r, us) // keeps the alert from repeating
 		return err
 	}
+	if st.Follow != nil {
+		changed, err := syncPrimary(st, us)
+		if err != nil {
+			fmt.Println(err) // the current users keep working; the next run retries
+		} else if changed {
+			if err := saveState(r, st); err != nil {
+				return err
+			}
+		}
+	}
 	if applyResets(st, us, now) {
 		if err := saveState(r, st); err != nil {
 			return err
 		}
 	}
 	notifyUsers(st, us, now)
+	notifyEntries(st, us, now)
 	if err := applyDeviceLimits(r, st, us, prev, now); err != nil {
 		return err
 	}
@@ -286,13 +343,22 @@ func Enforce(r *Server) error {
 		fmt.Println("reconcile:", err) // config.json is right; the next restart fixes the running set
 	}
 	us.Updated = now.Unix()
-	return saveUsage(r, us)
+	due := sniDue(st, us, now)
+	if err := saveUsage(r, us); err != nil {
+		return err
+	}
+	if due {
+		if err := checkSNIs(r); err != nil {
+			fmt.Println("REALITY targets:", err)
+		}
+	}
+	return nil
 }
 
 // collect adds the traffic since the last run and records online IPs. It returns the IPs each user
 // had online at the previous run.
 func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]string, error) {
-	out, err := r.xrayAPI(st, "statsquery", "-pattern", "user>>>", "-reset")
+	out, err := r.xrayAPI(st, "statsquery", "-reset") // users and inbounds
 	if err != nil {
 		return nil, err
 	}
@@ -305,17 +371,26 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 	if err := json.Unmarshal([]byte(out), &stats); err != nil {
 		return nil, fmt.Errorf("statsquery: %w", err)
 	}
+	byTag := map[string]int64{}
 	for _, s := range stats.Stat {
-		p := strings.Split(s.Name, ">>>") // user>>>NAME>>>traffic>>>uplink
+		p := strings.Split(s.Name, ">>>") // user>>>NAME>>>traffic>>>uplink, inbound>>>TAG>>>traffic>>>downlink
 		if len(p) != 4 || p[2] != "traffic" || s.Value <= 0 {
 			continue
 		}
-		if p[3] == "uplink" {
-			us.of(p[1]).Up += s.Value
-		} else {
-			us.of(p[1]).Down += s.Value
+		switch p[0] {
+		case "user":
+			uu := us.of(p[1])
+			if p[3] == "uplink" {
+				uu.Up += s.Value
+			} else {
+				uu.Down += s.Value
+			}
+			uu.addDaily(now, s.Value)
+		case "inbound":
+			byTag[p[1]] += s.Value
 		}
 	}
+	countEntries(st, us, byTag, now)
 	out, err = r.xrayAPI(st, "statsonlineiplist", "-all")
 	if err != nil {
 		return nil, err

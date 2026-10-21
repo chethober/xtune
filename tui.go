@@ -139,6 +139,11 @@ func runServerTUI() {
 				huh.NewOption("Client routing: direct country", "country"),
 				huh.NewOption("WARP: sites that refuse the server's IP", "warp"),
 				huh.NewOption("Alerts: Telegram / webhook", "notify"),
+				huh.NewOption("Telegram bot: manage users from Telegram", "bot"),
+				huh.NewOption("Plans: named limits for adding and renewing", "plans"),
+				huh.NewOption("Several servers under one subscription", "peers"),
+				huh.NewOption("Cloudflare: DNS records and SSL mode", "cloudflare"),
+				huh.NewOption("REALITY targets: check and refresh", "sni"),
 				huh.NewOption("Doctor: diagnose this server", "doctor"),
 				huh.NewOption("Backup", "backup"),
 				huh.NewOption("Update Xray", "update"),
@@ -165,6 +170,16 @@ func runServerTUI() {
 			showErr(t.warp())
 		case "notify":
 			showErr(t.notify())
+		case "bot":
+			showErr(t.bot())
+		case "plans":
+			showErr(t.plans())
+		case "peers":
+			showErr(t.peers())
+		case "cloudflare":
+			showErr(t.cloudflare())
+		case "sni":
+			showErr(t.snis())
 		case "doctor":
 			showErr(t.doctor())
 		case "backup":
@@ -461,6 +476,8 @@ func (t *tui) users() error {
 		if len(st.Users) > 0 {
 			opts = append(opts, huh.NewOption("Show links / subscription", "links"),
 				huh.NewOption("Set limits: quota, expiry, devices", "limits"),
+				huh.NewOption("Renew: extend expiry, usage from zero", "renew"),
+				huh.NewOption("Usage per day", "history"),
 				huh.NewOption("Enable / disable", "toggle"), huh.NewOption("Reset usage", "reset"),
 				huh.NewOption("Rotate credentials", "rotate"), huh.NewOption("New subscription link", "resub"),
 				huh.NewOption("Delete user", "del"))
@@ -524,8 +541,19 @@ func (t *tui) limitsForm(u User, name *string) (Limits, error) {
 func (t *tui) userAction(st *State, action string) error {
 	if action == "add" {
 		var name string
-		l, err := t.limitsForm(User{}, &name)
+		plan, err := t.pickPlan(st, "Plan", "Custom limits")
 		if err != nil {
+			return err
+		}
+		var l Limits
+		if plan != "" {
+			if err := huh.NewInput().Title("User name").Value(&name).Validate(func(s string) error {
+				return validUserName(strings.TrimSpace(s))
+			}).WithTheme(t.theme).Run(); err != nil {
+				return err
+			}
+			l.Plan = &plan
+		} else if l, err = t.limitsForm(User{}, &name); err != nil {
 			return err
 		}
 		st, u, err := AddUser(t.r, strings.TrimSpace(name), l)
@@ -559,6 +587,22 @@ func (t *tui) userAction(st *State, action string) error {
 		}
 		_, err = SetLimits(t.r, name, l)
 		return err
+	case "renew":
+		plan, err := t.pickPlan(st, "Renew "+name+" with", "Their current limits ("+orStr(u.Plan, fmt.Sprintf("+%d days", renewDays))+")")
+		if err != nil {
+			return err
+		}
+		_, nu, err := Renew(t.r, name, plan, 0)
+		if err != nil {
+			return err
+		}
+		fmt.Println(okStyle.Render(fmt.Sprintf("%s renewed: expires %s, usage from zero", name, fmtExpiry(nu.Expires, time.Now()))))
+		pause()
+	case "history":
+		if err := printUsageHistory(os.Stdout, t.r, name); err != nil {
+			return err
+		}
+		pause()
 	case "toggle":
 		on := true
 		if err := huh.NewSelect[bool]().Title(name).Options(huh.NewOption("Enable", true), huh.NewOption("Disable", false)).
@@ -728,6 +772,7 @@ func (t *tui) logs() error {
 		huh.NewOption("Deployed Xray (xray-autotune)", "xray-autotune"),
 		huh.NewOption("Subscription server (xray-autotune-sub)", "xray-autotune-sub"),
 		huh.NewOption("Usage and limits job (xray-autotune-enforce)", "xray-autotune-enforce"),
+		huh.NewOption("Telegram bot (xray-autotune-bot)", "xray-autotune-bot"),
 		huh.NewOption("Test instance (xray-autotune-test)", "xray-autotune-test"),
 	).Value(&unit).WithTheme(t.theme).Run(); err != nil {
 		return err

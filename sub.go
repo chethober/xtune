@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -166,7 +167,7 @@ func Serve() error {
 	if st.Sub.Mode == "" {
 		return fmt.Errorf("the subscription server is turned off")
 	}
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", st.Sub.Port), Handler: subHandler{},
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", st.Sub.Port), Handler: subHandler{r: r},
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second,
 		IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10,
 		ErrorLog: log.New(io.Discard, "", 0)} // scanners cause endless TLS handshake noise
@@ -213,6 +214,7 @@ func readLocal() (*State, *Usage, error) {
 
 type subHandler struct {
 	load func() (*State, *Usage, error)
+	r    *Server // for followers' reports
 }
 
 func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -221,20 +223,29 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	hd.Set("Referrer-Policy", "no-referrer")
 	hd.Set("X-Content-Type-Options", "nosniff")
 	hd.Set("X-Robots-Tag", "noindex, nofollow")
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		http.NotFound(w, req)
-		return
-	}
 	load := h.load
 	if load == nil {
 		load = readLocal
+	}
+	parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
+	isPeer := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "peer"
+	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer {
+		http.NotFound(w, req)
+		return
 	}
 	st, us, err := load()
 	if err != nil {
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
+	if isPeer {
+		if st.Sub.Mode == "" || parts[0] != st.Sub.Path {
+			http.NotFound(w, req)
+			return
+		}
+		h.servePeer(w, req, st, parts[2])
+		return
+	}
 	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 3 || parts[0] != st.Sub.Path ||
 		len(parts) == 3 && parts[2] != "json" {
 		http.NotFound(w, req)
@@ -289,6 +300,12 @@ type page struct {
 	SubURL, JSONURL, LastSeen     string
 	QR                            template.URL // generated here, so safe as a data: URL
 	Links                         []pageLink
+	History                       []histBar // daily traffic, oldest first; empty without any
+}
+
+type histBar struct {
+	Pct   int    // height relative to the busiest day
+	Title string // date and amount, shown on hover
 }
 
 func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page {
@@ -337,8 +354,19 @@ func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page
 		c.Scale = 6
 		p.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(c.PNG()))
 	}
-	for i, l := range st.Links(u) {
-		p.Links = append(p.Links, pageLink{Name: st.Entries[i].ID, URL: l})
+	p.Links = st.NamedLinks(u)
+	days := uu.lastDays(now, 30)
+	top := slices.Max(days)
+	for i, v := range days {
+		if top == 0 {
+			break
+		}
+		d := now.AddDate(0, 0, i-len(days)+1)
+		pct := 0
+		if v > 0 {
+			pct = max(int(v*100/top), 2)
+		}
+		p.History = append(p.History, histBar{Pct: pct, Title: fmtDate(d, lang) + ": " + num(fmtBytes(v))})
 	}
 	return p
 }
@@ -389,6 +417,7 @@ code{direction:ltr;text-align:left;flex:1;min-width:0;overflow:hidden;text-overf
 button{flex:none;font:inherit;font-size:13px;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
 .qr{display:block;margin:12px auto 0;width:220px;max-width:100%;image-rendering:pixelated;background:#fff;padding:8px;border-radius:8px}
 .dim{color:var(--dim);font-size:13px}
+.hist{display:flex;align-items:flex-end;gap:2px;height:56px;margin-top:6px;direction:ltr}.hist>i{flex:1;background:var(--acc);border-radius:2px 2px 0 0;opacity:.85}
 </style></head><body><main>
 <h1>{{.Name}}</h1>
 <span class="pill {{.StatusClass}}">{{.Status}}</span>
@@ -399,7 +428,8 @@ button{flex:none;font:inherit;font-size:13px;font-weight:600;color:#fff;backgrou
 <div><div class="k">{{.T.devices}}</div><div class="v">{{.Devices}}</div></div>
 {{if .Resets}}<div><div class="k">{{.T.resets}}</div><div class="v">{{.Resets}}</div></div>{{end}}
 </div>{{if .Percent}}<div class="bar"><i style="width:{{.Percent}}%"></i></div>{{end}}
-<p class="dim">{{.T.last}}: {{.LastSeen}}</p></div>
+<p class="dim">{{.T.last}}: {{.LastSeen}}</p>
+{{if .History}}<div class="k">{{.T.history}}</div><div class="hist">{{range .History}}<i style="height:{{.Pct}}%" title="{{.Title}}"></i>{{end}}</div>{{end}}</div>
 <div class="card"><h2>{{.T.subLink}}</h2>
 <div class="row"><code>{{.SubURL}}</code><button data-copy="{{.SubURL}}">{{.T.copy}}</button></div>
 {{if .QR}}<img class="qr" src="{{.QR}}" alt="{{.T.qrAlt}}">{{end}}

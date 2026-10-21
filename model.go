@@ -71,6 +71,9 @@ type User struct {
 	SubToken string `json:"subToken,omitempty"` // secret part of the user's subscription URL
 	Reset    string `json:"reset,omitempty"`    // usage starts from zero every period: monthly | weekly
 	ResetAt  int64  `json:"resetAt,omitempty"`  // unix seconds of the next reset
+	Plan     string `json:"plan,omitempty"`     // plan the user was added or renewed with
+	Telegram int64  `json:"telegram,omitempty"` // linked Telegram user ID (bot self-service)
+	Owner    int64  `json:"owner,omitempty"`    // reseller (Telegram user ID) who manages this user
 }
 
 // SubConfig is the subscription server: off when Mode is empty.
@@ -83,27 +86,32 @@ type SubConfig struct {
 
 // State is the server's deployment and user database, stored as state.json (root, 0600).
 type State struct {
-	Host        string    `json:"host"`
-	Domain      string    `json:"domain,omitempty"`    // direct (DNS-only) domain used instead of Host in links
-	CDNDomain   string    `json:"cdnDomain,omitempty"` // CDN-proxied domain for the cdn-* entries
-	RealityPriv string    `json:"realityPrivateKey"`
-	RealityPub  string    `json:"realityPublicKey"`
-	ShortID     string    `json:"shortId"`
-	VencDec     string    `json:"vlessDecryption"`
-	VencEnc     string    `json:"vlessEncryption"`
-	SSKey       string    `json:"ssServerKey"`
-	CertSNI     string    `json:"certSni"`
-	CertHash    string    `json:"certSha256"`
-	CertPEM     string    `json:"certPem"`
-	KeyPEM      string    `json:"keyPem"`
-	Entries     []Entry   `json:"entries"`
-	Users       []User    `json:"users"`
-	APIPort     int       `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
-	Country     string    `json:"country,omitempty"` // client configs send this country's sites direct
-	Sub         SubConfig `json:"sub"`
-	Check       *User     `json:"check,omitempty"` // hidden user `xtune check` measures the deployed configs with
-	Warp        *Warp     `json:"warp,omitempty"`  // Cloudflare WARP outbound for chosen sites
-	Notify      Notify    `json:"notify,omitzero"` // admin alerts
+	Host        string          `json:"host"`
+	Domain      string          `json:"domain,omitempty"`    // direct (DNS-only) domain used instead of Host in links
+	CDNDomain   string          `json:"cdnDomain,omitempty"` // CDN-proxied domain for the cdn-* entries
+	RealityPriv string          `json:"realityPrivateKey"`
+	RealityPub  string          `json:"realityPublicKey"`
+	ShortID     string          `json:"shortId"`
+	VencDec     string          `json:"vlessDecryption"`
+	VencEnc     string          `json:"vlessEncryption"`
+	SSKey       string          `json:"ssServerKey"`
+	CertSNI     string          `json:"certSni"`
+	CertHash    string          `json:"certSha256"`
+	CertPEM     string          `json:"certPem"`
+	KeyPEM      string          `json:"keyPem"`
+	Entries     []Entry         `json:"entries"`
+	Users       []User          `json:"users"`
+	APIPort     int             `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
+	Country     string          `json:"country,omitempty"` // client configs send this country's sites direct
+	Sub         SubConfig       `json:"sub"`
+	Check       *User           `json:"check,omitempty"`     // hidden user `xtune check` measures the deployed configs with
+	Warp        *Warp           `json:"warp,omitempty"`      // Cloudflare WARP outbound for chosen sites
+	Notify      Notify          `json:"notify,omitzero"`     // admin alerts
+	Bot         Bot             `json:"bot,omitzero"`        // Telegram bot for managing users
+	Plans       map[string]Plan `json:"plans,omitempty"`     // named sets of limits for adding and renewing users
+	Cloudflare  Cloudflare      `json:"cloudflare,omitzero"` // API token for DNS records and the SSL mode
+	Peers       *PeerHub        `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions
+	Follow      *Follow         `json:"follow,omitempty"`    // follower: the users come from a primary
 }
 
 // Knobs are client-side settings. Split applies to cdn-xhttp only.
@@ -305,7 +313,8 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 		cfg["api"] = J{"tag": "api", "listen": fmt.Sprintf("127.0.0.1:%d", st.APIPort),
 			"services": []string{"HandlerService", "StatsService", "RoutingService"}}
 		cfg["stats"] = J{}
-		cfg["policy"] = J{"levels": J{"0": J{"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true}}}
+		cfg["policy"] = J{"levels": J{"0": J{"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true}},
+			"system": J{"statsInboundUplink": true, "statsInboundDownlink": true}}
 	}
 	return cfg
 }
@@ -410,8 +419,10 @@ var countries = map[string][2]string{
 // ads are blocked. Domain strategy AsIs keeps DNS lookups for proxied sites off the local network.
 func (st *State) FailoverConfig(u User) J {
 	var obs []J
-	for _, e := range st.Entries {
-		obs = append(obs, st.Outbound(e, u, e.Knobs(), "proxy-"+e.ID))
+	for _, s := range st.servers() {
+		for _, e := range s.Entries {
+			obs = append(obs, s.Outbound(e, u, e.Knobs(), "proxy-"+e.ID))
+		}
 	}
 	obs = append(obs, fragOutbounds()...)
 	obs = append(obs, J{"tag": "direct", "protocol": "freedom"}, J{"tag": "block", "protocol": "blackhole"})

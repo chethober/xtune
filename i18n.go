@@ -23,6 +23,7 @@ var pageText = map[string]map[string]string{
 		"failover": "Automatic failover config",
 		"failHelp": "One Xray config with every server below. It keeps using the fastest one that works, so you switch automatically when one is blocked. Import it as a custom config (v2rayN: Add custom config).",
 		"single":   "Single configs", "monthly": "monthly, next on %s", "weekly": "weekly, next on %s",
+		"history": "Last 30 days",
 	},
 	"fa": {
 		"title": "اشتراک", "used": "مصرف‌شده", "quota": "سهمیه", "expires": "انقضا", "devices": "دستگاه‌ها",
@@ -34,6 +35,7 @@ var pageText = map[string]map[string]string{
 		"failover": "کانفیگ با جابه‌جایی خودکار",
 		"failHelp": "یک کانفیگ Xray که همهٔ سرورهای زیر را دارد. همیشه سریع‌ترین سرورِ در دسترس را به کار می‌برد، پس اگر یکی مسدود شود خودکار سراغ بعدی می‌رود. آن را به‌عنوان کانفیگ سفارشی وارد کنید (در v2rayN: Add custom config).",
 		"single":   "کانفیگ‌های تکی", "monthly": "ماهانه، بعدی در %s", "weekly": "هفتگی، بعدی در %s",
+		"history": "۳۰ روز گذشته",
 	},
 }
 

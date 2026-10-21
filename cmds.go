@@ -202,7 +202,15 @@ func cmdBackup(args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ExitOnError)
 	c := addConnFlags(fs)
 	out := fs.String("o", "", "backup file (default xtune-backup-HOST-DATE.json)")
+	encrypt := fs.Bool("encrypt", false, "encrypt with a passphrase (asked, or XTUNE_BACKUP_PASSWORD)")
 	parse(fs, args)
+	pass := ""
+	if *encrypt {
+		var err error
+		if pass, err = newPassphrase(); err != nil {
+			return err
+		}
+	}
 	r, err := target(c)
 	if err != nil {
 		return err
@@ -213,7 +221,7 @@ func cmdBackup(args []string) error {
 		return err
 	}
 	path := orStr(*out, backupName(b.State, time.Now()))
-	if err := writeBackup(path, b); err != nil {
+	if err := writeBackup(path, b, pass); err != nil {
 		return err
 	}
 	fmt.Printf("[+] backup of %s (%d users) written to %s\n", hostsOf(b.State), len(b.State.Users), path)
@@ -246,16 +254,17 @@ func cmdRestore(args []string) error {
 		return err
 	}
 	afterDeploy(r, st)
-	printNotes(st, oldHost)
+	printNotes(r, st, oldHost)
 	return nil
 }
 
-func printNotes(st *State, oldAddr string) {
+func printNotes(r *Server, st *State, oldAddr string) {
 	if oldAddr == st.Host {
 		oldAddr = ""
 	}
+	dns := pointAfterMove(r, st, func(s string) { fmt.Println(s) })
 	fmt.Println("\nNext:")
-	for _, n := range moveNotes(st, oldAddr) {
+	for _, n := range moveNotes(st, oldAddr, dns) {
 		fmt.Println("  - " + n)
 	}
 }
@@ -323,7 +332,7 @@ func cmdMigrate(args []string) error {
 		return err
 	}
 	afterDeploy(r, st)
-	printNotes(st, oldAddr)
+	printNotes(r, st, oldAddr)
 	return nil
 }
 
@@ -565,9 +574,9 @@ func printLinksQR(w io.Writer, st *State, name string) error {
 		fmt.Fprintf(w, "%s: subscription\n", u.Name)
 		return printQR(w, sub)
 	}
-	for i, l := range st.Links(*u) {
-		fmt.Fprintf(w, "\n%s: %s\n", u.Name, st.Entries[i].ID)
-		if err := printQR(w, l); err != nil {
+	for _, l := range st.NamedLinks(*u) {
+		fmt.Fprintf(w, "\n%s: %s\n", u.Name, l.Name)
+		if err := printQR(w, l.URL); err != nil {
 			return err
 		}
 	}

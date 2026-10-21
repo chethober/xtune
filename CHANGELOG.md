@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-21
+
+### Added
+- Blocked-config alerts: Xray now counts traffic per deployed config, and a config that carries nothing for 2 hours
+  while others are in use is reported (once, and again when it is back). The bot's `/status` shows each config's
+  last use.
+- Usage history: traffic per user per day, kept 60 days: `xtune users usage NAME`, a 30-day chart on the
+  subscription page, the last 7 days in the bot.
+- Plans (`xtune plans`): named limits for `users add --plan` and `/add NAME PLAN`. `xtune users renew NAME`
+  (and the bot's *Renew*) extends the expiry by the plan's days, from the current expiry, starts usage from zero
+  and enables the user.
+- Encrypted backups: `xtune backup --encrypt` (scrypt + AES-256-GCM); `restore` and `migrate --backup` ask for the
+  passphrase (or read `XTUNE_BACKUP_PASSWORD`). `xtune bot backup on --every 24` sends admins one on a schedule;
+  `/backup` sends one now.
+- Bot: Persian (`xtune bot lang fa`); resellers who manage only their own users within a user count and total
+  quota (`xtune bot resellers`); user self-service (`xtune bot self-service on`): users link their Telegram with
+  their subscription link or an invite link, see their usage and links, and are warned at 80% and 100% of their
+  quota and before and at expiry.
+- Several servers under one subscription: `xtune peers enable` on a primary, `xtune follow PEER_URL` on others.
+  Followers take the primary's users and report their traffic to it every minute; the primary's subscriptions and
+  failover config include every server's configs.
+- Cloudflare API (`xtune cloudflare`): `migrate` and `domains` update the DNS records, `cloudflare ssl` sets the
+  SSL/TLS mode to Full, and `doctor` reads it from the API.
+- Weekly REALITY target check: failing or slow targets are replaced (with subscriptions) or reported;
+  `xtune sni check|refresh` runs it now.
+- Server TUI: plans, renew, usage per day, several servers, Cloudflare, REALITY targets, and the bot's
+  resellers, self-service, backups and language.
+- Telegram management bot (`xtune bot enable`, or *Telegram bot* in the server TUI): list users, add them with
+  limits, change limits, enable/disable, reset usage, rotate keys, reset subscription links and delete users, and
+  get links with QR codes, from Telegram. It runs as the `xray-autotune-bot` unit, long-polls Telegram (no open
+  port) and answers only its admins, who pair by messaging the bot or are set with `--admins` /
+  `xtune bot admins ID,ID`. Destructive actions ask for confirmation, and commands sent while the bot was down
+  for more than 10 minutes are dropped. With no alerts set up, enabling it sends alerts to the admin.
+- `xtune doctor` checks the bot; deploys, restores and `self-update` keep it running.
+
 ## [0.3.0] - 2026-10-17
 
 ### Added
@@ -83,6 +118,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.4.0]: https://github.com/chethober/xtune/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chethober/xtune/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chethober/xtune/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chethober/xtune/releases/tag/v0.1.0

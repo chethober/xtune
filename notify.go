@@ -81,6 +81,28 @@ func alert(st *State, us *Usage, key string, cond bool, text string) {
 	us.Notified[key] = time.Now().Unix()
 }
 
+// sendUserMsg tells a user something through the bot. A variable, so tests can capture messages.
+var sendUserMsg = func(token string, chat int64, text string) error { return newTG(token).send(chat, text, nil) }
+
+// userAlert is alert for a user with a linked Telegram account: sent once while cond holds.
+func userAlert(st *State, us *Usage, key string, chat int64, cond bool, text string) {
+	if !cond {
+		delete(us.Notified, key)
+		return
+	}
+	if us.Notified[key] != 0 {
+		return
+	}
+	if err := sendUserMsg(st.Bot.Token, chat, text); err != nil {
+		fmt.Println(strings.ReplaceAll(err.Error(), st.Bot.Token, "***")) // retried at the next run
+		return
+	}
+	if us.Notified == nil {
+		us.Notified = map[string]int64{}
+	}
+	us.Notified[key] = time.Now().Unix()
+}
+
 // xrayDownAfter is how many enforce runs in a row must fail before an alert: a restart is not one.
 const xrayDownAfter = 3
 
@@ -123,6 +145,18 @@ func notifyUsers(st *State, us *Usage, now time.Time) {
 		alert(st, us, u.Name+":expiring", on && u.Expires > 0 && !expired && exp.Sub(now) < expiringSoon,
 			fmt.Sprintf("%s expires on %s", u.Name, fmtExpiry(u.Expires, now)))
 		alert(st, us, u.Name+":expired", on && expired, u.Name+" has expired and was disconnected")
+		if st.Bot.On() && st.Bot.SelfService && u.Telegram != 0 {
+			lang := orStr(st.Bot.Lang, "en")
+			quota := fmtBytes(u.Quota)
+			if lang == "fa" {
+				quota = faDigits(quota)
+			}
+			tell := func(key string, cond bool, text string) { userAlert(st, us, u.Name+":tg-"+key, u.Telegram, cond, text) }
+			tell("quota80", on && u.Quota > 0 && used*10 >= u.Quota*8 && !over, tr(lang, "u_quota80", int(used*100/max(u.Quota, 1)), quota))
+			tell("quota", on && over, tr(lang, "u_quota", quota))
+			tell("expiring", on && u.Expires > 0 && !expired && exp.Sub(now) < expiringSoon, tr(lang, "u_expiring", fmtDate(exp, lang)))
+			tell("expired", on && expired, tr(lang, "u_expired"))
+		}
 	}
 	// alerts of deleted users
 	for k := range us.Notified {

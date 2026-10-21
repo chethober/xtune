@@ -164,12 +164,13 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 		st.VencDec, st.VencEnc, st.SSKey = old.VencDec, old.VencEnc, old.SSKey
 		st.CertSNI, st.CertHash, st.CertPEM, st.KeyPEM = old.CertSNI, old.CertHash, old.CertPEM, old.KeyPEM
 		st.Users, st.APIPort, st.Country, st.Sub = old.Users, old.APIPort, old.Country, old.Sub
-		st.Check, st.Warp, st.Notify = old.Check, old.Warp, old.Notify
+		st.Check, st.Warp, st.Notify, st.Bot = old.Check, old.Warp, old.Notify, old.Bot
+		st.Plans, st.Cloudflare, st.Peers, st.Follow = old.Plans, old.Cloudflare, old.Peers, old.Follow
 	}
 	if err := Apply(r, st); err != nil {
 		return st, err
 	}
-	return st, restartSub(r, st)
+	return st, startServices(r, st)
 }
 
 func deployChoice(best []*Variant, n int) []*Variant {
@@ -199,14 +200,6 @@ func requireState(r *Server) (*State, error) {
 	return st, nil
 }
 
-func (st *State) Links(u User) []string {
-	var out []string
-	for _, e := range st.Entries {
-		out = append(out, st.Link(e, u, e.Knobs()))
-	}
-	return out
-}
-
 // Subscription is the base64 body most clients accept as an imported subscription.
 func (st *State) Subscription(u User) string {
 	return base64.StdEncoding.EncodeToString([]byte(strings.Join(st.Links(u), "\n")))
@@ -230,6 +223,8 @@ type Limits struct {
 	Days    *int     // expiry N days from now, 0 = never
 	Devices *int     // 0 = unlimited
 	Reset   *string  // usage reset period: monthly | weekly | "" (never)
+	Plan    *string  // plan name, recorded on the user; withPlan fills the other fields from it
+	Owner   *int64   // reseller who manages the user
 }
 
 var resetPeriods = []string{"monthly", "weekly"}
@@ -268,6 +263,12 @@ func (l Limits) apply(u *User) {
 	if l.Devices != nil {
 		u.Devices = *l.Devices
 	}
+	if l.Plan != nil {
+		u.Plan = *l.Plan
+	}
+	if l.Owner != nil {
+		u.Owner = *l.Owner
+	}
 }
 
 // changeUser loads the state under the server lock, lets fn change it and commits the result.
@@ -276,6 +277,9 @@ func changeUser(r *Server, name string, fn func(st *State, u *User) error) (*Sta
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
+	}
+	if st.Follow != nil {
+		return nil, errFollower(st)
 	}
 	_, u := st.User(name)
 	if u == nil {
@@ -301,8 +305,14 @@ func AddUser(r *Server, name string, l Limits) (*State, User, error) {
 	if err != nil {
 		return nil, User{}, err
 	}
+	if st.Follow != nil {
+		return nil, User{}, errFollower(st)
+	}
 	if _, u := st.User(name); u != nil {
 		return nil, User{}, fmt.Errorf("user %q already exists", name)
+	}
+	if l, err = l.withPlan(st); err != nil {
+		return nil, User{}, err
 	}
 	u := NewUser(name)
 	l.apply(&u)
@@ -318,6 +328,9 @@ func DeleteUser(r *Server, name string) error {
 	st, err := requireState(r)
 	if err != nil {
 		return err
+	}
+	if st.Follow != nil {
+		return errFollower(st)
 	}
 	i, _ := st.User(name)
 	if i < 0 {
@@ -338,7 +351,14 @@ func SetLimits(r *Server, name string, l Limits) (*State, error) {
 			return nil, err
 		}
 	}
-	return changeUser(r, name, func(_ *State, u *User) error { l.apply(u); return nil })
+	return changeUser(r, name, func(st *State, u *User) error {
+		l, err := l.withPlan(st)
+		if err != nil {
+			return err
+		}
+		l.apply(u)
+		return nil
+	})
 }
 
 // RotateUser issues new credentials, invalidating the user's old links.

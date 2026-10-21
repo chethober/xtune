@@ -98,6 +98,13 @@ func Doctor(r *Server) *doctor {
 			d.fail("the subscription server is %s (see: xtune logs --unit xray-autotune-sub)", orStr(ss.Sub, "not running"))
 		}
 	}
+	if st.Bot.On() {
+		if ss.Bot == "active" {
+			d.ok("Telegram bot is running")
+		} else {
+			d.fail("the Telegram bot is %s (see: xtune logs --unit xray-autotune-bot)", orStr(ss.Bot, "not running"))
+		}
+	}
 	info, err := r.Helper("doctor")
 	if err != nil {
 		d.fail("server checks: %v", err)
@@ -212,7 +219,18 @@ var cdnGet = func(url string) (*http.Response, error) {
 }
 
 // doctorCDN asks the CDN for the CDN entry's path: the answer shows whether it reaches the server.
+// With a Cloudflare token, the SSL/TLS mode is also read from the API.
 func doctorCDN(d *doctor, st *State) {
+	if st.Cloudflare.Token != "" && st.CDNDomain != "" && hasCDN(st.Entries) {
+		switch mode, err := cfSSL(st.Cloudflare.Token, st.CDNDomain, false); {
+		case err != nil:
+			d.warn("could not read the SSL/TLS mode from Cloudflare: %v", err)
+		case mode == "full":
+			d.ok("Cloudflare SSL/TLS mode of %s is Full", st.CDNDomain)
+		default:
+			d.fail("Cloudflare SSL/TLS mode of %s is %s; the CDN entry needs Full: run xtune cloudflare ssl on the server", st.CDNDomain, mode)
+		}
+	}
 	for _, e := range st.Entries {
 		if !e.CDN() || st.CDNDomain == "" {
 			continue

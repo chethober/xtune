@@ -35,7 +35,7 @@ On your computer (client):
   xtune check     [conn] [--network NAME]  quick check of the deployed configs from this network
   xtune history   [--host H] [-n N]        past tunes and checks
   xtune doctor    [conn]                   diagnose services, ports, DNS, the CDN, clocks and certificates
-  xtune backup    [conn] [-o FILE]         save the deployment (keys, users, usage) to a local file
+  xtune backup    [conn] [-o FILE] [--encrypt]   save the deployment (keys, users, usage) to a local file
   xtune restore   [conn] FILE              rebuild a backup on a new server, configs as they were
   xtune migrate   [conn | --backup FILE] --to [user@]host[:port] [--no-tune] [tune flags]
                                            move the deployment to a new server, keeping users and links
@@ -53,14 +53,25 @@ On the server (as root):
   xtune users     limit NAME [--quota GB] [--days N] [--devices N] [--reset monthly|weekly|none]
                                            (0 = unlimited / never; --reset starts usage from zero each period)
   xtune users     links NAME [--json] [--qr]
+  xtune users     add|limit NAME --plan P  a plan's limits (flags given override them)
+  xtune users     renew NAME [--plan P] [--days N]   extend expiry, usage from zero, enable
+  xtune users     usage NAME               traffic per day, the last 30 days
   xtune users     enable|disable|rotate|reset-usage|reset-sub|del NAME
+  xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
   xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable | lang en|fa|auto]
   xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
   xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
   xtune warp      [status | on [--domains D,D] [--all] | off]   chosen sites (default: AI services) via WARP
+  xtune bot       [status | enable [--admins ID,ID] | admins ID,ID | disable]   manage users from Telegram
+  xtune bot       lang en|fa | self-service on|off | backup on [--every H] | backup off
+  xtune bot       resellers [list | add ID [--name N] [--users N] [--quota GB] | del ID]
+  xtune peers     [status | enable | remove NAME | disable]   let other servers join this one's subscriptions
+  xtune follow    [PEER_URL [--name N] | off]   take users from a primary, add this server's configs to it
+  xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
+  xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
   xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
-  (internal, run by systemd: xtune enforce, xtune serve)
+  (internal, run by systemd: xtune enforce, xtune serve, xtune bot run)
 
 Connection flags (conn):
   --host H --port 22 --user root --key PATH --password-env VAR --profile NAME
@@ -101,6 +112,18 @@ func main() {
 		err = cmdNotify(args)
 	case "warp":
 		err = cmdWarp(args)
+	case "bot":
+		err = cmdBot(args)
+	case "peers":
+		err = cmdPeers(args)
+	case "follow":
+		err = cmdFollow(args)
+	case "plans":
+		err = cmdPlans(args)
+	case "cloudflare", "cf":
+		err = cmdCloudflare(args)
+	case "sni":
+		err = cmdSNI(args)
 	case "check":
 		err = cmdCheck(args)
 	case "history":
@@ -539,6 +562,7 @@ func cmdUsers(args []string) error {
 	days := fs.Int("days", 0, "expire N days from now (0 = never)")
 	devices := fs.Int("devices", 0, "simultaneous devices (client IPs), 0 = unlimited")
 	reset := fs.String("reset", "", "start usage from zero every period: monthly, weekly or none")
+	plan := fs.String("plan", "", "add, limit, renew: a plan's limits (xtune plans); flags given override them")
 	asJSON := fs.Bool("json", false, "machine-readable output (list, links)")
 	asQR := fs.Bool("qr", false, "links: show QR codes in the terminal")
 	pos := parse(fs, args)
@@ -569,6 +593,9 @@ func cmdUsers(args []string) error {
 			p = ""
 		}
 		l.Reset = &p
+	}
+	if set["plan"] {
+		l.Plan = plan
 	}
 	show := func(st *State, err error) error {
 		switch {
@@ -615,6 +642,19 @@ func cmdUsers(args []string) error {
 		return show(st, err)
 	case "reset-usage":
 		return ResetUsage(r, pos[1])
+	case "renew":
+		d := 0
+		if set["days"] {
+			d = *days
+		}
+		_, u, err := Renew(r, pos[1], *plan, d)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s renewed: expires %s, usage from zero\n", u.Name, fmtExpiry(u.Expires, time.Now()))
+		return nil
+	case "usage":
+		return printUsageHistory(os.Stdout, r, pos[1])
 	case "reset-sub":
 		return show(ResetSubLink(r, pos[1]))
 	}
@@ -798,6 +838,17 @@ func cmdDomains(args []string) error {
 	}
 	if set["cdn"] {
 		c = strings.TrimSpace(*cdn)
+	}
+	if st.Cloudflare.Token != "" && (d != "" || c != "") {
+		ip, err := serverIP(st.Host)
+		if err != nil {
+			return err
+		}
+		next := *st
+		next.Domain, next.CDNDomain = d, c
+		if err := CloudflarePoint(&next, ip, func(s string) { fmt.Println("DNS " + s) }); err != nil {
+			return err
+		}
 	}
 	st, added, err := SetDomains(r, d, c, func(s string) { fmt.Println(s) })
 	if err != nil {

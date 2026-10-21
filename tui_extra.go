@@ -60,7 +60,7 @@ func (t *tui) backup() error {
 		Value(&path).WithTheme(t.theme).Run(); err != nil {
 		return err
 	}
-	if err := writeBackup(strings.TrimSpace(path), b); err != nil {
+	if err := writeBackup(strings.TrimSpace(path), b, ""); err != nil {
 		return err
 	}
 	fmt.Println(okStyle.Render(fmt.Sprintf("saved %d users and the server keys to %s", len(b.State.Users), path)))
@@ -108,7 +108,7 @@ func (t *tui) move() error {
 		return err
 	}
 	afterDeploy(nr, st)
-	printNotes(st, t.r.Conn.Host)
+	printNotes(nr, st, t.r.Conn.Host)
 	save := true
 	huh.NewConfirm().Title("Save the new server as a profile?").Value(&save).WithTheme(t.theme).Run()
 	if save {
@@ -276,6 +276,97 @@ func (t *tui) notify() error {
 		return err
 	}
 	fmt.Println(okStyle.Render("alerts: " + n.describe()))
+	pause()
+	return nil
+}
+
+func (t *tui) bot() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nTelegram bot") + "  " + st.Bot.describe())
+	fmt.Println(dimStyle.Render("Admins list, add, limit, enable/disable and delete users and get their links and QR codes\n" +
+		"from Telegram. The bot polls Telegram, so no port is opened; it answers only its admins."))
+	b := st.Bot
+	choice := "on"
+	opts := []huh.Option[string]{huh.NewOption("Turn on / change the token", "on")}
+	if b.On() {
+		opts = append(opts, huh.NewOption("Change admins", "admins"), huh.NewOption("Resellers", "resellers"),
+			huh.NewOption("User self-service: users see their own usage", "self"),
+			huh.NewOption("Scheduled encrypted backups", "backup"), huh.NewOption("Language", "lang"),
+			huh.NewOption("Turn off", "off"))
+	}
+	opts = append(opts, huh.NewOption("Back", "back"))
+	if err := huh.NewSelect[string]().Title("Telegram bot").Options(opts...).Value(&choice).WithTheme(t.theme).Run(); err != nil || choice == "back" {
+		return err
+	}
+	ids := fmtIDs(b.Admins)
+	adminsInput := huh.NewInput().Title("Admin user IDs").
+		Description("Comma-separated Telegram user IDs. Leave empty to pair: you message the bot\n" +
+			"and confirm here. Anyone else who messages the bot is told their ID.").Value(&ids)
+	switch choice {
+	case "resellers", "self", "backup", "lang":
+		return t.botSetting(st, choice)
+	case "on":
+		tok := ""
+		desc := "Create a bot with @BotFather and paste its token."
+		switch {
+		case b.Token != "":
+			desc += " Empty keeps the current one."
+		case st.Notify.TelegramToken != "":
+			desc += " Empty uses the alerts bot."
+		}
+		if err := huh.NewForm(huh.NewGroup(
+			huh.NewInput().Title("Bot token").Description(desc).EchoMode(huh.EchoModePassword).Value(&tok),
+			adminsInput,
+		)).WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+		b.Token = orStr(strings.TrimSpace(tok), orStr(b.Token, st.Notify.TelegramToken))
+		if b.Token == "" {
+			return errors.New("a bot token is needed")
+		}
+	case "admins":
+		if err := adminsInput.WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+	case "off":
+		if _, err := SetBot(t.r, Bot{}); err != nil {
+			return err
+		}
+		fmt.Println(okStyle.Render("Telegram bot: off"))
+		pause()
+		return nil
+	}
+	if b.Admins, err = parseIDs(ids); err != nil {
+		return err
+	}
+	if len(b.Admins) == 0 {
+		if b.On() || st.Bot.On() {
+			// the running bot would take the pairing message
+			if _, err := SetBot(t.r, Bot{}); err != nil {
+				return err
+			}
+		}
+		id, err := pairAdmin(b.Token, 3*time.Minute, func(s string) { fmt.Println(s) }, func(u tgUser) (bool, error) {
+			ok := false
+			err := huh.NewConfirm().Title(fmt.Sprintf("Make %s (ID %d) an admin?", u, u.ID)).Value(&ok).WithTheme(t.theme).Run()
+			return ok, err
+		})
+		if err != nil {
+			return err
+		}
+		b.Admins = []int64{id}
+	}
+	name, err := SetBot(t.r, b)
+	if err != nil {
+		return err
+	}
+	fmt.Println(okStyle.Render(fmt.Sprintf("Telegram bot @%s: %s", name, b.describe())))
+	if err := alertsToBot(t.r, st, b, func(s string) { fmt.Println(dimStyle.Render(s)) }); err != nil {
+		return err
+	}
 	pause()
 	return nil
 }

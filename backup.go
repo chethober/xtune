@@ -33,24 +33,38 @@ func TakeBackup(r *Server) (*Backup, error) {
 	return &Backup{Version: version, Created: time.Now().Unix(), State: st, Usage: us}, nil
 }
 
-// writeBackup saves b readable by the owner only. It holds every secret of the deployment.
-func writeBackup(path string, b *Backup) error {
+// writeBackup saves b readable by the owner only, encrypted when pass is set. It holds every
+// secret of the deployment.
+func writeBackup(path string, b *Backup, pass string) error {
+	data, err := backupBytes(b, pass)
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", " ")
-	if err := enc.Encode(b); err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
 	}
 	return f.Close()
 }
 
+func backupBytes(b *Backup, pass string) ([]byte, error) {
+	data, err := json.MarshalIndent(b, "", " ")
+	if err != nil || pass == "" {
+		return data, err
+	}
+	return seal(data, pass)
+}
+
 func readBackup(path string) (*Backup, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		return nil, err
+	}
+	if raw, err = unseal(raw, backupPassphrase); err != nil {
 		return nil, err
 	}
 	var b Backup
@@ -142,7 +156,7 @@ func Restore(r *Server, b *Backup, log func(string)) (*State, error) {
 	if err := Apply(r, st); err != nil {
 		return nil, err
 	}
-	return st, restartSub(r, st)
+	return st, startServices(r, st)
 }
 
 // installXtune puts xtune on the server, where users are managed and limits enforced.
@@ -154,13 +168,13 @@ func installXtune(r *Server, log func(string)) error {
 }
 
 // moveNotes tells the admin what is left to do after a deployment moved to a new server.
-func moveNotes(st *State, oldAddr string) []string {
+func moveNotes(st *State, oldAddr string, dnsDone bool) []string {
 	ip := st.Host
 	var notes []string
-	if st.Domain != "" {
+	if st.Domain != "" && !dnsDone {
 		notes = append(notes, fmt.Sprintf("point the DNS record of %s (DNS only) at %s", st.Domain, ip))
 	}
-	if st.CDNDomain != "" {
+	if st.CDNDomain != "" && !dnsDone {
 		notes = append(notes, fmt.Sprintf("point the CDN record of %s (proxied) at %s", st.CDNDomain, ip))
 	}
 	switch {
@@ -170,6 +184,9 @@ func moveNotes(st *State, oldAddr string) []string {
 		notes = append(notes, "links contain the server's IP, so send users their new links (sudo xtune users links NAME)")
 	default:
 		notes = append(notes, "once DNS points at the new server, users' links work again; send new links to users of configs that changed")
+	}
+	if st.Bot.On() {
+		notes = append(notes, "the Telegram bot now runs on this server: until the old one is removed, both answer it in turn")
 	}
 	if oldAddr != "" {
 		notes = append(notes, "when everyone has moved, remove xtune from the old server: xtune uninstall --host "+oldAddr)
