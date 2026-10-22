@@ -7,7 +7,8 @@
 **Find the Xray configs that actually get through *your* network, deploy them, and manage users on the server, all from one binary.**
 
 xtune connects to your VPS over SSH, starts a temporary matrix of [Xray](https://github.com/XTLS/Xray-core) inbounds
-(REALITY, XHTTP, VLESS Encryption, Hysteria2, …), and measures every variant **from the machine you run it on**.
+(REALITY, XHTTP, VLESS Encryption, Hysteria2, WireGuard, …), plus, if you want them, SSH and DNS tunnels, OpenVPN and
+IKEv2, and measures every variant **from the machine you run it on**.
 Run it from inside the censored network your users are on and it tells you what works there today, not what works in theory.
 
 ## Install
@@ -24,6 +25,8 @@ irm https://raw.githubusercontent.com/chethober/xtune/main/install.ps1 | iex
 
 Or `go install github.com/chethober/xtune@latest`, or grab a binary from [Releases](https://github.com/chethober/xtune/releases).
 Both installers verify the release checksum before installing.
+On Android, xtune looks names up through Termux's resolver settings, then public resolvers; set `XTUNE_DNS=IP[,IP]`
+to choose them yourself.
 
 ## Quick start
 
@@ -43,6 +46,7 @@ The same features as plain commands:
 ```sh
 # on your computer
 xtune tune    --host 203.0.113.10 --deploy 3 --domain vpn.example.com --cdn cdn.example.com
+xtune tune    --host 203.0.113.10 --protocols all --dns-domain t.example.com   # + SSH/DNS tunnels, OpenVPN, IKEv2
 xtune console --host 203.0.113.10          # the server's TUI, over SSH
 xtune xray    --host 203.0.113.10 status   # local and server versions
 xtune xray    --host 203.0.113.10 update
@@ -59,10 +63,12 @@ xtune users list                           # status, usage, quota, expiry, devic
 xtune users add carol --quota 50 --days 30 --devices 2 --reset monthly
 xtune users limit carol --quota 100        # 0 = unlimited / never
 xtune users links carol --qr               # QR code in the terminal (--json for scripts)
+xtune users profiles carol --out carol/    # .ovpn, .sswan, .mobileconfig, WireGuard .conf, DNS tunnel details
 xtune users enable|disable|rotate|reset-usage|reset-sub|del carol
 xtune sub enable                           # public subscription links (through the CDN domain by default)
 xtune sub lang fa                          # Persian pages (default: the browser's language)
 xtune domains --direct vpn.example.com --cdn cdn.example.com
+xtune domains --dns t.example.com          # the DNS tunnel's zone (NS record made with a Cloudflare token)
 xtune country ir                           # Iranian sites go direct in the failover config
 xtune notify telegram --chat 123456789     # alerts: quota, expiry, Xray down (asks for the bot token)
 xtune bot enable                           # manage users from Telegram (asks for the bot token, then pairs you)
@@ -80,7 +86,8 @@ Non-root users need sudo: you are prompted, or set `XTUNE_SUDO_PASSWORD`.
 | | |
 |---|---|
 | **Tune** | Starts a test matrix on free ports and tests each variant through a local Xray: reliability (fresh connections), latency, then sustained download/upload, which catches "fast for 3 seconds, then throttled". |
-| **Test matrix** | VLESS + REALITY (TCP/Vision on the 3 fastest camouflage SNIs, a high port, XHTTP, gRPC), VLESS Encryption (post-quantum, TCP and XHTTP), Hysteria2 (a common UDP port such as 443, plus a high port), Shadowsocks-2022 |
+| **Test matrix** | VLESS + REALITY (TCP/Vision on the 3 fastest camouflage SNIs, a high port, XHTTP, gRPC), VLESS Encryption (post-quantum, TCP and XHTTP), Hysteria2 (a common UDP port such as 443, plus a high port), Shadowsocks-2022, WireGuard (a standard and a high UDP port, MTU 1420 and 1280) |
+| **Other protocols** | `--protocols` adds, for the apps that speak them: **SSH tunnels** (xtune's own SSH server: plain, opening with a WebSocket upgrade as HTTP Injector payloads do, over TLS, and through the CDN domain), a **DNS tunnel** (dnstt, built in; `--dns-domain` names a zone delegated to the server, and each resolver is a variant: `--resolvers` you name, this network's, public UDP ones, DoH, DoT), **OpenVPN** (UDP and TCP) and **IKEv2** (built into phones and Windows). SSH and the DNS tunnel are measured like the Xray configs; for OpenVPN and IKEv2 only whether and how fast the handshake answers, since bringing a VPN up needs root. Deploy keeps the best working config of each protocol you asked for, besides the top N. |
 | **Port hopping** | When the server has iptables, a Hysteria2 entry that listens on one port while a 1000-port UDP range is forwarded to it; the client keeps changing ports, which gets past per-port UDP blocking. Needs a recent Xray in the client (tested with 26.10.10); share links carry the range as `mport=`. |
 | **Client knobs** | uTLS fingerprint (chrome, firefox, safari, edge, randomized), TLS ClientHello fragmentation, XHTTP mode, all tested per config. With a CDN domain, also a *split* CDN entry: uploads go through the CDN, downloads straight from the server. |
 | **Honest ranking** | Within 10% of the best score, the simplest settings win: fragmentation or exotic fingerprints are only recommended when they measurably help. |
@@ -93,8 +100,8 @@ Non-root users need sudo: you are prompted, or set `XTUNE_SUDO_PASSWORD`.
 | **REALITY targets** | Weekly, the server re-probes the sites its REALITY configs imitate. A target that stopped answering with TLS 1.3 + HTTP/2, or became slow, is replaced by the fastest working candidate when users get configs through subscriptions; otherwise you get an alert, and `xtune sni refresh` does it. |
 | **Several servers** | `xtune peers enable` on one server (the primary) and `xtune follow PEER_URL` on others: followers take the primary's users and report their traffic to it every minute, and the primary's subscriptions and failover config list every server's configs. When one server's IP is blocked, users fail over to another. Quotas count traffic on all servers; device limits are per server. |
 | **Cloudflare** | `xtune cloudflare token` saves an API token (Zone:Read, DNS:Edit, Zone Settings:Edit). Then `migrate` points the direct and CDN records at the new server, `xtune domains` creates or updates them, `xtune cloudflare ssl` sets the SSL/TLS mode to *Full*, and `doctor` reads the mode from the API. |
-| **Users** | Managed on the server only: add, list, enable/disable, rotate and delete, with share links (`vless://`, `hysteria2://`, `ss://`). Changes go live through Xray's API: nobody else is disconnected. |
-| **Limits** | Per-user traffic quota, expiry date and device limit (simultaneous client IPs), and optionally a monthly or weekly usage reset. A job runs every minute: it adds up traffic from Xray's stats, records who is online, takes over-quota and expired users off, and blocks extra devices for 10 minutes. Traffic per day is kept for 60 days (`xtune users usage NAME`, a chart on the subscription page, the bot). |
+| **Users** | Managed on the server only: add, list, enable/disable, rotate and delete, with share links (`vless://`, `hysteria2://`, `ss://`, `wireguard://`, `ssh://` for plain SSH) and profile files for the apps that have no links (OpenVPN, IKEv2, the WireGuard app, SSH and DNS tunnel apps such as HTTP Injector): `xtune users profiles`, the subscription page and the bot offer them. SSH and the VPNs log in with the user's name and a password derived from their keys (rotating the user changes it). Changes go live through Xray's API: nobody else is disconnected (with WireGuard deployed, Xray restarts, since its API cannot add WireGuard users). |
+| **Limits** | Per-user traffic quota, expiry date and device limit (simultaneous client IPs), and optionally a monthly or weekly usage reset. A job runs every minute: it adds up traffic from Xray's stats (and the SSH tunnels' and VPNs' counters), records who is online, takes over-quota and expired users off (disconnecting their VPN sessions), and blocks extra devices for 10 minutes (SSH and OpenVPN refuse them at login). Traffic per day is kept for 60 days (`xtune users usage NAME`, a chart on the subscription page, the bot). |
 | **Plans** | Named sets of limits: `xtune plans add basic --quota 50 --days 30 --devices 2 --reset monthly`, then `users add carol --plan basic`. `users renew carol` (or the bot's *Renew*) extends the expiry by the plan's days from the current expiry, starts usage from zero and enables the user. |
 | **Alerts** | Optional Telegram bot or webhook (Slack, Discord, ...): a user at 80% and 100% of their quota, 3 days before and at expiry, and the deployed Xray not answering. Each alert is sent once. |
 | **Telegram bot** | `xtune bot enable` runs a bot for managing users from your phone: list users with their usage, add them with limits or a plan (`/add carol 50 30 2`, `/add dave basic`), change limits, renew, enable, disable, reset usage, rotate keys or delete them (with a confirmation), and get their links and QR codes. It polls Telegram, so no port is opened, and answers only its admins: you pair by messaging the bot and confirming on the server, or pass `--admins ID,ID`. If no alerts are set up, they go to the admin through the same bot. Also: **Persian** (`xtune bot lang fa`); **resellers** (`xtune bot resellers add ID --users 20 --quota 1000`) who see and manage only the users they add, within a user count and a total quota; **user self-service** (`xtune bot self-service on`): users link their Telegram by sending their subscription link or opening an invite link, then see their usage and links and are warned before their quota or time runs out; **scheduled backups** (`xtune bot backup on --every 24`): admins get an encrypted backup file, restorable with `migrate --backup`. |
@@ -122,9 +129,16 @@ Everything lives in `/opt/xray-autotune` (root, mode 0700), including the server
 - For Hysteria2 port hopping: NAT rules (iptables/ip6tables, comment `xtune`) forwarding the UDP range to the entry's port.
   They are recorded, restored when Xray starts after a reboot, and removed on cleanup.
 - `xray-autotune`: only if you deploy.
+- With `--protocols ssh` or `dnstt`: `xray-autotune-tunnels`, xtune's SSH and DNS tunnel server (no system accounts;
+  the DNS tunnel's UDP port gets port 53 forwarded to it with a NAT rule, like port hopping).
+- With `--protocols openvpn` or `ikev2`: the distribution's `openvpn` and strongSwan packages (`apt`/`dnf`),
+  `xray-autotune-ovpn-*` units, `/etc/swanctl/conf.d/xtune.conf` with `xtune-ikev2` files in `/etc/swanctl/x509`
+  and `/private`, IP forwarding (`/etc/sysctl.d/90-xtune-vpn.conf`) and iptables rules (comment `xtune-vpn`) that
+  NAT the clients' ranges (10.68.0.0/16, 10.69.0.0/16) and keep them away from private addresses. Uninstalling
+  removes all of that and turns strongSwan back off if xtune turned it on; the packages stay installed.
 - Firewall rules (ufw/firewalld) only for ports it opens, and only if a firewall is active. They are removed again on cleanup.
 
-Panels, nginx and other Xray installs are not modified. Deployed configs block clients from reaching the
+Panels, nginx and other Xray installs are not modified; other strongSwan connections are left alone. Deployed configs block clients from reaching the
 server's private and localhost addresses. `xtune uninstall` removes everything listed above.
 
 The server needs Linux (amd64 or arm64) with systemd, `bash` and `curl`. Your machine needs nothing; xtune downloads Xray if none is found

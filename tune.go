@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,7 +48,33 @@ type TuneOpts struct {
 	Domain, CDNDomain             string   // optional direct and CDN-proxied domains
 	KeepTest                      bool     // leave the server test instance running (it expires by itself)
 	Network                       string   // name of the network measured from, for the history
+	Protocols                     []string // opt-in protocol families: ssh, dnstt, openvpn, ikev2
+	DNSDomain                     string   // zone delegated to the server, for the DNS tunnel
+	Resolvers                     []string // DNS tunnel resolvers to try first ("udp:IP:53", "doh:URL", "dot:HOST:853")
 	Log                           func(string)
+}
+
+// optionalProtocols can be added to the test matrix with --protocols.
+var optionalProtocols = []string{"ssh", "dnstt", "openvpn", "ikev2"}
+
+// parseProtocols checks a --protocols list; "all" means every optional protocol.
+func parseProtocols(list string) ([]string, error) {
+	var out []string
+	for _, p := range strings.Split(list, ",") {
+		p = strings.TrimSpace(p)
+		switch {
+		case p == "":
+		case p == "all":
+			return append([]string(nil), optionalProtocols...), nil
+		case p == "vpn":
+			out = append(out, "openvpn", "ikev2")
+		case contains2s(optionalProtocols, p):
+			out = append(out, p)
+		default:
+			return nil, fmt.Errorf("unknown protocol %q (choose from %s, vpn, all)", p, strings.Join(optionalProtocols, ", "))
+		}
+	}
+	return out, nil
 }
 
 func (o *TuneOpts) defaults() {
@@ -88,6 +115,18 @@ type Variant struct {
 	Down, Up   float64
 	Benched    bool
 	Score      float64
+
+	dial      func(ctx context.Context, network, addr string) (net.Conn, error) // non-Xray tunnels
+	handshake func(ctx context.Context) (time.Duration, error)                  // VPNs: handshake only
+}
+
+// client is an HTTP client through the variant: its local Xray inbound, or its own dialer.
+func (v *Variant) client(timeout time.Duration) *http.Client {
+	if v.dial == nil {
+		return socksClient(v.port, timeout)
+	}
+	return &http.Client{Transport: uaTransport{&http.Transport{Proxy: nil, DialContext: v.dial,
+		DisableKeepAlives: true, TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout}}}
 }
 
 // ---------------------------------------------------------------- plan
@@ -125,6 +164,19 @@ func cdnEntry(used map[string]map[int]bool, taken map[int]bool) (Entry, bool) {
 // PlanEntries picks REALITY targets and ports for the test matrix. With cdn, a CDN entry is
 // added first, because only a few ports pass through the CDN.
 func PlanEntries(probeOut string, cdn bool) ([]Entry, []string) {
+	return planEntries(probeOut, PlanOpts{CDN: cdn})
+}
+
+// PlanOpts are what the test matrix holds besides the default configs.
+type PlanOpts struct {
+	CDN       bool
+	Protocols []string // opt-in families, see optionalProtocols
+	DNS       bool     // a DNS tunnel domain is set
+	IKEBusy   bool     // UDP 500 is taken by something other than xtune's IKEv2
+}
+
+func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
+	cdn := o.CDN
 	type sni struct {
 		t    float64
 		host string
@@ -148,9 +200,15 @@ func PlanEntries(probeOut string, cdn bool) ([]Entry, []string) {
 	}
 	taken := map[int]bool{}
 	var cdnE []Entry
+	want := func(p string) bool { return slices.Contains(o.Protocols, p) }
 	if cdn {
 		if e, ok := cdnEntry(used, taken); ok {
 			cdnE = append(cdnE, e)
+		}
+		if want("ssh") { // SSH over WebSocket through the CDN, on another of its few ports
+			if e, ok := cdnEntry(used, taken); ok {
+				cdnE = append(cdnE, Entry{ID: "cdn-ssh", Kind: "cdn-ssh", Port: e.Port})
+			}
 		}
 	}
 	port := func(proto string, preferred bool) int {
@@ -192,11 +250,34 @@ func PlanEntries(probeOut string, cdn bool) ([]Entry, []string) {
 		Entry{ID: "hy2-hiport", Kind: "hysteria2", Port: port("udp", false)},
 		Entry{ID: "ss2022", Kind: "ss2022", Port: port("tcp", false)},
 	)
-	if strings.Contains(probeOut, "\nHOP yes") || strings.HasPrefix(probeOut, "HOP yes") {
+	nat := strings.Contains(probeOut, "\nHOP yes") || strings.HasPrefix(probeOut, "HOP yes")
+	if nat {
 		// port hopping: the server forwards a UDP range to one port, the client keeps changing ports
 		if hop, ok := hopRange(used["udp"], taken); ok {
 			E = append(E, Entry{ID: "hy2-hop", Kind: "hysteria2", Port: port("udp", false), Hop: hop})
 		}
+	}
+	E = append(E, Entry{ID: "wg", Kind: "wireguard", Port: port("udp", false)},
+		Entry{ID: "wg-std", Kind: "wireguard", Port: port("udp", true)})
+	if want("ssh") {
+		E = append(E, Entry{ID: "ssh", Kind: "ssh", Port: port("tcp", true)},
+			Entry{ID: "ssh-hiport", Kind: "ssh", Port: port("tcp", false)},
+			Entry{ID: "ssh-tls", Kind: "ssh-tls", Port: port("tcp", true), SNI: hosts[0]})
+	}
+	if want("dnstt") && o.DNS && nat && !used["udp"][53] {
+		// public UDP 53 is forwarded to the tunnel's port (systemd-resolved keeps 127.0.0.53:53)
+		E = append(E, Entry{ID: "dnstt", Kind: "dnstt", Port: port("udp", false)})
+	}
+	if want("openvpn") {
+		p := 1194
+		if used["udp"][p] || taken[p] {
+			p = port("udp", false)
+		}
+		taken[p] = true
+		E = append(E, Entry{ID: "ovpn-udp", Kind: "openvpn-udp", Port: p}, Entry{ID: "ovpn-tcp", Kind: "openvpn-tcp", Port: port("tcp", true)})
+	}
+	if want("ikev2") && !o.IKEBusy {
+		E = append(E, Entry{ID: "ikev2", Kind: "ikev2", Port: 500})
 	}
 	return append(E, cdnE...), hosts
 }
@@ -228,11 +309,19 @@ func portSpecs(es []Entry) []string {
 		if e.Hop != "" {
 			specs = append(specs, fmt.Sprintf("hop:%s:%d", e.Hop, e.Port))
 		}
+		switch e.Kind {
+		case "dnstt": // resolvers ask on port 53
+			specs = append(specs, fmt.Sprintf("hop:53-53:%d", e.Port))
+		case "ikev2": // NAT traversal
+			specs = append(specs, "4500/udp")
+		}
 	}
 	return specs
 }
 
-func ExpandVariants(entries []Entry, depth string) []*Variant {
+// ExpandVariants lists every client setting to measure for each entry. resolvers are tried first
+// for the DNS tunnel, before this machine's and the public ones.
+func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Variant {
 	fps := []string{"chrome", "firefox", "randomized"}
 	modes := []string{"auto", "packet-up", "stream-one"}
 	if depth == "deep" {
@@ -273,6 +362,26 @@ func ExpandVariants(entries []Entry, depth string) []*Variant {
 			for _, m := range modes {
 				ks = append(ks, Knobs{Frag: "none", Mode: m})
 			}
+		case e.Kind == "wireguard": // a smaller MTU gets past paths that drop large UDP packets
+			ks = []Knobs{{Frag: "none", MTU: 1420}, {Frag: "none", MTU: 1280}}
+		case e.Kind == "ssh" || e.Kind == "ssh-tls": // plain, or opening with a WebSocket upgrade request
+			ks = []Knobs{{Frag: "none"}, {Frag: "none", Mode: "ws"}}
+		case e.Kind == "cdn-ssh":
+			ks = []Knobs{{Frag: "none", Mode: "ws"}}
+		case e.Kind == "dnstt":
+			rs := append(resolvers, localResolvers()...)
+			if depth == "deep" {
+				rs = append(rs, dnsResolvers...)
+			} else {
+				rs = append(rs, dnsResolvers[0], dnsResolvers[1], dnsResolvers[3])
+			}
+			seen := map[string]bool{}
+			for _, r := range rs {
+				if !seen[r] {
+					seen[r] = true
+					ks = append(ks, Knobs{Frag: "none", Resolver: r})
+				}
+			}
 		default:
 			ks = []Knobs{{Frag: "none"}}
 		}
@@ -297,6 +406,12 @@ func ExpandVariants(entries []Entry, depth string) []*Variant {
 			}
 			if e.Hop != "" {
 				v.Label += " hop=" + e.Hop
+			}
+			if k.MTU != 0 {
+				v.Label += fmt.Sprintf(" mtu=%d", k.MTU)
+			}
+			if k.Resolver != "" {
+				v.Label += " via=" + k.Resolver
 			}
 			out = append(out, v)
 		}
@@ -331,7 +446,24 @@ func freePorts(n int) ([]int, error) {
 	return ports, nil
 }
 
-func startHarness(bin string, st *State, u User, vs []*Variant, dir string) (*harness, error) {
+// startHarness gets every variant ready to measure: Xray variants through one local Xray, SSH and
+// DNS tunnels through xtune's own client, VPNs as handshake probes. On a test instance (testPeers),
+// WireGuard variants connect as the test peers wgTestPeers adds.
+func startHarness(bin string, st *State, u User, all []*Variant, dir string, testPeers bool) (*harness, error) {
+	var vs []*Variant
+	for _, v := range all {
+		switch e := v.Entry; {
+		case e.HandshakeOnly():
+			v.handshake = func(ctx context.Context) (time.Duration, error) { return st.vpnHandshake(ctx, e) }
+		case e.SSH():
+			v.dial = st.tunnelDial(e, u, v.K)
+		default:
+			vs = append(vs, v)
+		}
+	}
+	if len(vs) == 0 {
+		return &harness{}, nil
+	}
 	ports, err := freePorts(len(vs))
 	if err != nil {
 		return nil, err
@@ -341,7 +473,11 @@ func startHarness(bin string, st *State, u User, vs []*Variant, dir string) (*ha
 		v.port = ports[i]
 		cfg["inbounds"] = append(cfg["inbounds"].([]J), J{"tag": fmt.Sprintf("in%d", i), "listen": "127.0.0.1",
 			"port": v.port, "protocol": "socks", "settings": J{"udp": true}})
-		cfg["outbounds"] = append(cfg["outbounds"].([]J), st.Outbound(v.Entry, u, v.K, fmt.Sprintf("out%d", i)))
+		ou := u
+		if v.Entry.Kind == "wireguard" && testPeers {
+			ou = wgVariantUser(u, v.K)
+		}
+		cfg["outbounds"] = append(cfg["outbounds"].([]J), st.Outbound(v.Entry, ou, v.K, fmt.Sprintf("out%d", i)))
 		rules := cfg["routing"].(J)["rules"].([]J)
 		cfg["routing"].(J)["rules"] = append(rules, J{"inboundTag": []string{fmt.Sprintf("in%d", i)}, "outboundTag": fmt.Sprintf("out%d", i)})
 	}
@@ -377,6 +513,9 @@ func startHarness(bin string, st *State, u User, vs []*Variant, dir string) (*ha
 
 func (h *harness) stop() {
 	h.once.Do(func() {
+		if h.cmd == nil {
+			return
+		}
 		if h.cmd.Process != nil {
 			h.cmd.Process.Kill()
 			h.cmd.Wait()
@@ -403,20 +542,30 @@ func socksClient(port int, timeout time.Duration) *http.Client {
 }
 
 func probe(v *Variant, n int) {
-	c := socksClient(v.port, 8*time.Second)
+	timeout := 8 * time.Second
+	if v.Entry.Kind == "dnstt" { // a fresh tunnel, SSH login and request, all over DNS
+		timeout = 30 * time.Second
+	}
+	c := v.client(timeout)
 	var ok []int
 	for i := 0; i < n; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		req, _ := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		t0 := time.Now()
-		resp, err := c.Do(req)
-		ms := int(time.Since(t0).Milliseconds())
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+		var good bool
+		if v.handshake != nil {
+			_, err := v.handshake(ctx)
+			good = err == nil
+		} else {
+			req, _ := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+			resp, err := c.Do(req)
+			if err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			good = err == nil && resp.StatusCode == 204
 		}
+		ms := int(time.Since(t0).Milliseconds())
 		cancel()
-		good := err == nil && resp.StatusCode == 204
 		if i == 0 && good {
 			v.Cold = ms
 		}
@@ -459,7 +608,7 @@ func (c *countReader) Read(p []byte) (int, error) {
 }
 
 func download(v *Variant, secs int, log func(string)) float64 {
-	c := socksClient(v.port, 10*time.Second)
+	c := v.client(10 * time.Second)
 	for {
 		mirrorsMu.Lock()
 		if len(mirrors) == 0 {
@@ -503,7 +652,7 @@ func download(v *Variant, secs int, log func(string)) float64 {
 
 func upload(v *Variant, secs int) float64 {
 	upOnce.Do(func() { upPayload = make([]byte, 16<<20); rand.Read(upPayload) })
-	c := socksClient(v.port, 10*time.Second)
+	c := v.client(10 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secs)*time.Second)
 	defer cancel()
 	cr := &countReader{r: bytes.NewReader(upPayload)}
@@ -554,6 +703,9 @@ func simplicity(v *Variant) int {
 	if v.K.Split != "" {
 		s += 8
 	}
+	if v.K.MTU != 0 && v.K.MTU != 1420 {
+		s += 2
+	}
 	return s
 }
 
@@ -579,7 +731,7 @@ func pick(vs []*Variant) *Variant {
 
 // RunTests screens every variant, then benchmarks the best of each (entry, fragment, mode) group.
 func RunTests(o TuneOpts, st *State, u User, vs []*Variant) error {
-	h, err := startHarness(o.XrayBin, st, u, vs, o.Out)
+	h, err := startHarness(o.XrayBin, st, u, vs, o.Out, true)
 	if err != nil {
 		return err
 	}
@@ -607,12 +759,14 @@ func RunTests(o TuneOpts, st *State, u User, vs []*Variant) error {
 	wg.Wait()
 
 	var alive []*Variant
+	answered := false
 	for _, v := range vs {
-		if v.Ok > 0 {
+		if v.Ok > 0 && v.handshake == nil { // VPNs only answer a handshake: nothing to benchmark
 			alive = append(alive, v)
 		}
+		answered = answered || v.Ok > 0
 	}
-	if len(alive) == 0 {
+	if !answered {
 		return fmt.Errorf("nothing connected - the server may be blocked from this network (see %s/xray.log)", o.Out)
 	}
 	sort.SliceStable(alive, func(i, j int) bool {
@@ -715,14 +869,18 @@ func Report(w io.Writer, o TuneOpts, st *State, u User, vs []*Variant) ([]*Varia
 	}
 	defer lf.Close()
 	for i, v := range best {
-		link := st.Link(v.Entry, u, v.K)
+		link := st.Link(v.Entry, u, v.K) // "" for VPNs and the DNS tunnel, which take profile files
 		note := ""
 		if v.K.Frag != "none" {
 			note = "  (best result used client-side TLS fragment " + v.K.Frag + ")"
 		}
 		fmt.Fprintf(w, "%2d. %7.2f  %-56s down=%s up=%s warm=%sms%s\n", i+1, v.Score, v.Label, benchStr(v, v.Down), benchStr(v, v.Up), ms(v.Warm), note)
-		fmt.Fprintln(lf, link)
-		writeJSON(filepath.Join(o.Out, "client_"+v.Entry.ID+".json"), ClientConfig(st.Outbound(v.Entry, u, v.K, "proxy")))
+		if link != "" {
+			fmt.Fprintln(lf, link)
+		}
+		if v.Entry.Xray() {
+			writeJSON(filepath.Join(o.Out, "client_"+v.Entry.ID+".json"), ClientConfig(st.Outbound(v.Entry, u, v.K, "proxy")))
+		}
 	}
 	return best, nil
 }
@@ -756,7 +914,18 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, snis := PlanEntries(probeOut, o.CDNDomain != "")
+	if o.DNSDomain != "" && !slices.Contains(o.Protocols, "dnstt") {
+		o.Protocols = append(o.Protocols, "dnstt")
+	}
+	plan := PlanOpts{CDN: o.CDNDomain != "", Protocols: o.Protocols, DNS: o.DNSDomain != "",
+		IKEBusy: usedPorts(probeOut)["udp"][500] && !strings.Contains(probeOut, "IKE ours")}
+	if slices.Contains(o.Protocols, "dnstt") && o.DNSDomain == "" {
+		o.Log("[!] the DNS tunnel needs --dns-domain (a zone delegated to this server with an NS record); skipping it")
+	}
+	if plan.IKEBusy && slices.Contains(o.Protocols, "ikev2") {
+		o.Log("[!] UDP port 500 is taken by another IPsec server; skipping IKEv2")
+	}
+	entries, snis := planEntries(probeOut, plan)
 	if o.CDNDomain != "" && !hasCDN(entries) {
 		o.Log("[!] no CDN port (" + fmt.Sprint(cdnPorts) + ") is free on the server; skipping the CDN entry")
 	}
@@ -778,19 +947,52 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 		}
 		entries = keep
 	}
+	if entries, err = o.prepareExtras(r, entries); err != nil {
+		return nil, err
+	}
 	o.Log("[*] REALITY targets (fastest TLS1.3+h2 from the server): " + strings.Join(snis, ", "))
 	st, err := NewState(r.Conn.Host, o.XrayBin)
 	if err != nil {
 		return nil, err
 	}
 	entries = supported(o.XrayBin, st, entries, o.Log)
-	st.Domain, st.CDNDomain = o.Domain, o.CDNDomain
+	st.Domain, st.CDNDomain, st.DNSDomain = o.Domain, o.CDNDomain, o.DNSDomain
+	if hasEngine(entries, "openvpn") || hasEngine(entries, "ikev2") {
+		if err := st.ensureVPNCert(); err != nil {
+			return nil, err
+		}
+	}
+	if slices.ContainsFunc(entries, func(e Entry) bool { return e.Kind == "dnstt" }) { // its zone must be delegated here
+		d := &doctor{}
+		doctorTunnelDNS(d, &State{Host: r.Conn.Host, DNSDomain: o.DNSDomain, Entries: []Entry{{Kind: "dnstt"}}})
+		for _, f := range d.out {
+			if f.Level == "fail" {
+				o.Log("[!] " + f.Text)
+			}
+		}
+	}
 	tuneUser := NewUser("tune")
+	tuneUser.WGIP = wgSubnet.Addr().Next().Next().String()
 	testDir := remoteDir + "/test"
-	cfg := st.ServerConfig(entries, []User{tuneUser})
+	cfg := st.ServerConfig(entries, wgTestPeers(tuneUser, entries))
 	testCerts(cfg, testDir)
 	cfgJSON, _ := json.MarshalIndent(cfg, "", " ")
-	for p, c := range map[string]string{testDir + "/hy.crt": st.CertPEM, testDir + "/hy.key": st.KeyPEM, remoteDir + "/test.json": string(cfgJSON)} {
+	files := map[string]string{testDir + "/hy.crt": st.CertPEM, testDir + "/hy.key": st.KeyPEM, remoteDir + "/test.json": string(cfgJSON)}
+	var extras []string
+	if hasEngine(entries, "tunnel") {
+		tc, _ := json.MarshalIndent(st.TunnelConf(entries, []User{tuneUser}, ""), "", " ")
+		files[testDir+"/tunnels.json"] = string(tc)
+		extras = append(extras, "tunnels")
+	}
+	for p, c := range st.vpnFiles(entries, []User{tuneUser}, testDir+"/vpn") {
+		files[p] = c
+	}
+	for _, x := range vpnSpecs(entries) {
+		if !strings.HasPrefix(x, "net:") {
+			extras = append(extras, x)
+		}
+	}
+	for p, c := range files {
 		if err := r.Upload(p, []byte(c), "600"); err != nil {
 			return nil, err
 		}
@@ -807,6 +1009,13 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	if out, err := r.Helper(append([]string{"start"}, specs...)...); err != nil || !strings.HasSuffix(out, "active") {
 		return nil, fmt.Errorf("server test instance failed to start: %v %s", err, out)
 	}
+	if len(extras) > 0 {
+		out, err := r.Helper(append([]string{"test-extras"}, extras...)...)
+		if err != nil {
+			return nil, fmt.Errorf("server test tunnels failed to start: %v %s", err, out)
+		}
+		entries = dropFailedExtras(entries, out, o.Log)
+	}
 	var ids []string
 	for _, e := range entries {
 		ids = append(ids, fmt.Sprintf("%s:%d", e.ID, e.Port))
@@ -814,7 +1023,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	o.Log("[*] test inbounds: " + strings.Join(ids, ", "))
 	time.Sleep(time.Second)
 
-	vs := ExpandVariants(entries, o.Depth)
+	vs := ExpandVariants(entries, o.Depth, o.Resolvers...)
 	if err := RunTests(o, st, tuneUser, vs); err != nil {
 		return nil, err
 	}
@@ -825,6 +1034,50 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	}
 	o.Log(buf.String())
 	return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Best: best}, nil
+}
+
+// prepareExtras gets the server ready for the opt-in protocols: xtune itself runs the SSH and DNS
+// tunnels, and OpenVPN and strongSwan come from the distribution. Protocols the server cannot run
+// are dropped with a warning; the rest of the tune goes on.
+func (o *TuneOpts) prepareExtras(r *Server, entries []Entry) ([]Entry, error) {
+	if hasEngine(entries, "tunnel") {
+		if err := EnsureServerXtune(r, o.Log); err != nil {
+			o.Log("[!] the SSH and DNS tunnels need xtune on the server, which failed: " + err.Error() + "; skipping them")
+			entries = filterEntries(entries, func(e Entry) bool { return !e.SSH() })
+		}
+	}
+	if hasEngine(entries, "openvpn") || hasEngine(entries, "ikev2") {
+		o.Log("[*] installing OpenVPN and strongSwan on the server if needed")
+		if out, err := r.Helper("vpn-install"); err != nil || !strings.HasSuffix(out, "ok") {
+			o.Log(fmt.Sprintf("[!] OpenVPN/strongSwan could not be installed (%v %s); skipping them", err, tail(out, 200)))
+			entries = filterEntries(entries, func(e Entry) bool { return !e.HandshakeOnly() })
+		}
+	}
+	return entries, nil
+}
+
+// dropFailedExtras removes the entries whose test service did not start, from the helper's
+// "SPEC STATE" lines.
+func dropFailedExtras(entries []Entry, out string, log func(string)) []Entry {
+	failed := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[1] != "active" {
+			failed[f[0]] = true
+			log("[!] test service " + f[0] + " did not start on the server; skipping it")
+		}
+	}
+	return filterEntries(entries, func(e Entry) bool {
+		switch e.Engine() {
+		case "tunnel":
+			return !failed["tunnels"]
+		case "openvpn":
+			return !failed["openvpn:"+e.ID]
+		case "ikev2":
+			return !failed["ikev2"]
+		}
+		return true
+	})
 }
 
 // supported drops entries whose client settings the local Xray cannot run (port hopping needs a

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +30,9 @@ On your computer (client):
   xtune tune      [conn] [tune flags]      find the configs that get through from this network, deploy them
                   --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
                   --network NAME           name of this network (ISP), for the history and merged deploys
+                  --protocols LIST         also test ssh, dnstt, openvpn, ikev2 (vpn = both VPNs, all = every one)
+                  --dns-domain Z           zone delegated to the server (NS record): the DNS tunnel
+                  --resolvers LIST         DNS tunnel: also try these (udp:IP:53, doh:URL, dot:HOST:853)
                   --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
   xtune measure   FILE [--network NAME] [--report OUT]   measure a shared test from this network (no SSH)
   xtune deploy    [conn] [-n N] [REPORT ...]   deploy the shared test, so every network gets a config that works
@@ -53,6 +57,7 @@ On the server (as root):
   xtune users     limit NAME [--quota GB] [--days N] [--devices N] [--reset monthly|weekly|none]
                                            (0 = unlimited / never; --reset starts usage from zero each period)
   xtune users     links NAME [--json] [--qr]
+  xtune users     profiles NAME [--out DIR]   files for apps without share links (OpenVPN, IKEv2, WireGuard, DNS tunnel)
   xtune users     add|limit NAME --plan P  a plan's limits (flags given override them)
   xtune users     renew NAME [--plan P] [--days N]   extend expiry, usage from zero, enable
   xtune users     usage NAME               traffic per day, the last 30 days
@@ -71,7 +76,7 @@ On the server (as root):
   xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
   xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
   xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
-  (internal, run by systemd: xtune enforce, xtune serve, xtune bot run)
+  (internal, run by systemd: xtune enforce, xtune serve, xtune bot run, xtune tunnels run, xtune vpn-auth)
 
 Connection flags (conn):
   --host H --port 22 --user root --key PATH --password-env VAR --profile NAME
@@ -149,6 +154,12 @@ func main() {
 		}
 	case "serve":
 		err = Serve()
+	case "tunnels":
+		err = cmdTunnels(args)
+	case "vpn-auth":
+		err = cmdVPNAuth(args)
+	case "vpn-mgmt":
+		err = cmdVPNMgmt(args)
 	case "logs":
 		err = cmdLogs(args)
 	case "uninstall":
@@ -329,6 +340,9 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Domain, "domain", "", "direct (DNS-only) domain used in links instead of the IP (default: the deployed one)")
 	fs.StringVar(&o.CDNDomain, "cdn", "", "CDN-proxied domain: adds a VLESS+XHTTP+TLS entry through the CDN (default: the deployed one)")
 	fs.StringVar(&o.Network, "network", "", "name of this network (ISP), for the history and merged deploys")
+	fs.StringVar(&o.DNSDomain, "dns-domain", "", "zone delegated to the server with an NS record: adds a DNS tunnel (default: the deployed one)")
+	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers, e.g. udp:10.0.0.1:53,doh:https://dns.example/dns-query")
+	protocols := fs.String("protocols", "", "also test: ssh, dnstt, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
@@ -337,21 +351,20 @@ func cmdTune(args []string) error {
 	if *only != "" {
 		o.Only = strings.Split(*only, ",")
 	}
+	var err error
+	if o.Protocols, err = parseProtocols(*protocols); err != nil {
+		return err
+	}
+	if o.Resolvers, err = parseResolvers(*resolvers); err != nil {
+		return err
+	}
 	r, err := connect(c)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	if set := flagsSet(fs); !set["domain"] || !set["cdn"] {
-		if old, _ := LoadState(r); old != nil {
-			if !set["domain"] {
-				o.Domain = old.Domain
-			}
-			if !set["cdn"] {
-				o.CDNDomain = old.CDNDomain
-			}
-		}
-	}
+	old, _ := LoadState(r)
+	o.inherit(old, flagsSet(fs))
 	o.XrayBin, err = EnsureLocalXray(*c.xray, r, func(s string) { fmt.Println(s) })
 	if err != nil {
 		return err
@@ -565,6 +578,7 @@ func cmdUsers(args []string) error {
 	plan := fs.String("plan", "", "add, limit, renew: a plan's limits (xtune plans); flags given override them")
 	asJSON := fs.Bool("json", false, "machine-readable output (list, links)")
 	asQR := fs.Bool("qr", false, "links: show QR codes in the terminal")
+	outDir := fs.String("out", ".", "profiles: directory to write the files to")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
@@ -655,6 +669,12 @@ func cmdUsers(args []string) error {
 		return nil
 	case "usage":
 		return printUsageHistory(os.Stdout, r, pos[1])
+	case "profiles":
+		st, err := requireState(r)
+		if err != nil {
+			return err
+		}
+		return writeProfiles(os.Stdout, st, pos[1], *outDir)
 	case "reset-sub":
 		return show(ResetSubLink(r, pos[1]))
 	}
@@ -711,6 +731,42 @@ func printLinks(w io.Writer, st *State, name string) error {
 	}
 	if st.SubURL(*u) == "" {
 		fmt.Fprintf(w, "\n%s\n", st.Subscription(*u))
+	}
+	if ps := st.Profiles(*u); len(ps) > 0 {
+		fmt.Fprintf(w, "\nFiles for apps without share links (xtune users profiles %s writes them):\n", u.Name)
+		for _, p := range ps {
+			where := p.File
+			if sub := st.SubURL(*u); sub != "" {
+				where = sub + "/f/" + url.PathEscape(p.File)
+			}
+			fmt.Fprintf(w, "  %-34s %s\n", p.Name, where)
+		}
+		if st.hasLogin() {
+			fmt.Fprintf(w, "SSH / VPN login: user name %s, password %s\n", u.Name, tunnelPassword(*u))
+		}
+	}
+	return nil
+}
+
+// writeProfiles writes the user's profile files into dir.
+func writeProfiles(w io.Writer, st *State, name, dir string) error {
+	_, u := st.User(name)
+	if u == nil {
+		return fmt.Errorf("no user %q", name)
+	}
+	ps := st.Profiles(*u)
+	if len(ps) == 0 {
+		return fmt.Errorf("the deployment has no configs that need profile files")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for _, p := range ps {
+		path := filepath.Join(dir, p.File)
+		if err := os.WriteFile(path, []byte(p.Body), 0o600); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "%-34s %s\n", p.Name, path)
 	}
 	return nil
 }
@@ -818,6 +874,7 @@ func cmdDomains(args []string) error {
 	fs := flag.NewFlagSet("domains", flag.ExitOnError)
 	direct := fs.String("direct", "", "direct (DNS-only) domain; --direct= clears it")
 	cdn := fs.String("cdn", "", "CDN-proxied domain; --cdn= clears it and removes the CDN entry")
+	dnsZone := fs.String("dns", "", "zone delegated to the server for the DNS tunnel; --dns= clears it")
 	parse(fs, args)
 	r, err := OpenLocal()
 	if err != nil {
@@ -828,6 +885,11 @@ func cmdDomains(args []string) error {
 		return err
 	}
 	set := flagsSet(fs)
+	if set["dns"] {
+		if st, err = SetDNSDomain(r, strings.TrimSpace(*dnsZone), func(s string) { fmt.Println(s) }); err != nil {
+			return err
+		}
+	}
 	if !set["direct"] && !set["cdn"] {
 		printAddresses(os.Stdout, st)
 		return nil
@@ -873,6 +935,9 @@ func printAddresses(w io.Writer, st *State) {
 	}
 	if st.CDNDomain != "" && !hasCDN(st.Entries) {
 		fmt.Fprintln(w, "CDN entry:        none deployed (save the CDN domain again to add one)")
+	}
+	if st.DNSDomain != "" {
+		fmt.Fprintf(w, "DNS tunnel zone:  %s (NS record pointing at %s, an A record for the server)\n", st.DNSDomain, nsHost(st.DNSDomain))
 	}
 }
 

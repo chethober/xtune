@@ -31,10 +31,12 @@ func TestCheckEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ports, _ := freePorts(3)
+	ports, _ := freePorts(6)
 	st.Entries = []Entry{{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: ports[0]}, {ID: "ss2022", Kind: "ss2022", Port: ports[1]},
 		// one-port "range": the client still runs its port-hopping code against the real server
-		{ID: "hy2-hop", Kind: "hysteria2", Port: ports[2], Hop: itoa(ports[2]) + "-" + itoa(ports[2])}}
+		{ID: "hy2-hop", Kind: "hysteria2", Port: ports[2], Hop: itoa(ports[2]) + "-" + itoa(ports[2])},
+		{ID: "wg", Kind: "wireguard", Port: ports[3], MTU: 1280},
+		{ID: "ssh", Kind: "ssh", Port: ports[4], Mode: "ws"}, {ID: "ssh-tls", Kind: "ssh-tls", Port: ports[5], SNI: "www.bing.com"}}
 	st.Users = []User{NewUser("ann")}
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
@@ -64,6 +66,12 @@ func TestCheckEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { srv.Process.Kill(); srv.Wait() }()
+	// the SSH tunnels: xtune's own server, in this process, with the config the deploy wrote
+	var tc TunnelConf
+	json.Unmarshal([]byte(fs.files[remoteDir+"/tunnels.json"]), &tc)
+	tc.Stats = filepath.Join(dir, "tunnels-stats.json")
+	writeJSON(filepath.Join(dir, "tunnels.json"), tc)
+	go runTunnels(filepath.Join(dir, "tunnels.json"), nil)
 	time.Sleep(time.Second)
 
 	res, _, err := Check(r, bin, 3, 4, dir, func(s string) { t.Log(s) })

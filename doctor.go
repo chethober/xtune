@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,13 @@ func Doctor(r *Server) *doctor {
 			d.fail("the Telegram bot is %s (see: xtune logs --unit xray-autotune-bot)", orStr(ss.Bot, "not running"))
 		}
 	}
+	if hasEngine(st.Entries, "tunnel") {
+		if ss.Tunnels == "active" {
+			d.ok("SSH / DNS tunnel server is running")
+		} else {
+			d.fail("the SSH / DNS tunnel server is %s (see: xtune logs --unit xray-autotune-tunnels)", orStr(ss.Tunnels, "not running"))
+		}
+	}
 	info, err := r.Helper("doctor")
 	if err != nil {
 		d.fail("server checks: %v", err)
@@ -130,6 +138,13 @@ func Doctor(r *Server) *doctor {
 	if n, _ := strconv.Atoi(fields["HOPRULES"]); hops > 0 && n == 0 {
 		d.fail("port hopping is deployed but its forwarding rules are missing: restart Xray to restore them (sudo systemctl restart xray-autotune)")
 	}
+	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") {
+		if n, _ := strconv.Atoi(fields["VPNRULES"]); n == 0 || fields["FORWARD"] != "1" {
+			d.fail("VPN clients connect but cannot reach the internet: IP forwarding or the NAT rules are missing (redeploy, or restart xray-autotune)")
+		} else {
+			d.ok("VPN forwarding and NAT are in place")
+		}
+	}
 	switch ss.FW {
 	case "ufw", "firewalld":
 		d.ok("firewall %s is active; xtune opens its own ports in it", ss.FW)
@@ -137,9 +152,38 @@ func Doctor(r *Server) *doctor {
 		d.ok("no host firewall active (check your provider's firewall allows the deployed ports)")
 	}
 	doctorDNS(d, st)
+	doctorTunnelDNS(d, st)
 	doctorCDN(d, st)
 	doctorCerts(d, st)
 	return d
+}
+
+// doctorTunnelDNS checks that the DNS tunnel's zone is delegated to the server.
+func doctorTunnelDNS(d *doctor, st *State) {
+	if !slices.ContainsFunc(st.Entries, func(e Entry) bool { return e.Kind == "dnstt" }) {
+		return
+	}
+	nss, err := net.LookupNS(st.DNSDomain)
+	if err != nil || len(nss) == 0 {
+		d.fail("DNS tunnel: %s has no NS record (add %s NS %s, and %s A <server IP>)", st.DNSDomain, st.DNSDomain, nsHost(st.DNSDomain), nsHost(st.DNSDomain))
+		return
+	}
+	server := map[string]bool{}
+	if ips, err := net.LookupHost(st.Host); err == nil {
+		for _, ip := range ips {
+			server[ip] = true
+		}
+	}
+	for _, ns := range nss {
+		ips, _ := net.LookupHost(strings.TrimSuffix(ns.Host, "."))
+		for _, ip := range ips {
+			if server[ip] {
+				d.ok("DNS tunnel: %s is delegated to this server (%s)", st.DNSDomain, strings.TrimSuffix(ns.Host, "."))
+				return
+			}
+		}
+	}
+	d.fail("DNS tunnel: the name server of %s does not resolve to %s", st.DNSDomain, st.Host)
 }
 
 func doctorClock(d *doctor, r *Server, f map[string]string) {

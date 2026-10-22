@@ -93,7 +93,7 @@ func (w *rateWriter) rates(el time.Duration) throughput {
 
 // sustained downloads for secs seconds through the variant from the first mirror that answers.
 func sustained(v *Variant, secs int, log func(string)) throughput {
-	c := socksClient(v.port, 10*time.Second)
+	c := v.client(10 * time.Second)
 	mirrorsMu.Lock()
 	ms := append([]string(nil), mirrors...)
 	mirrorsMu.Unlock()
@@ -152,7 +152,7 @@ func Check(r *Server, xrayBin string, probes, secs int, out string, log func(str
 	for _, e := range supported(xrayBin, st, st.Entries, log) {
 		vs = append(vs, &Variant{Entry: e, K: e.Knobs(), Label: fmt.Sprintf("%s:%d", e.ID, e.Port), Cold: -1, Warm: -1})
 	}
-	h, err := startHarness(xrayBin, st, *st.Check, vs, out)
+	h, err := startHarness(xrayBin, st, *st.Check, vs, out, false)
 	if err != nil {
 		return nil, st, err
 	}
@@ -169,11 +169,14 @@ func Check(r *Server, xrayBin string, probes, secs int, out string, log func(str
 	for _, v := range vs {
 		c := CheckResult{ID: v.Entry.ID, Label: v.Label, Ok: v.Ok, N: v.N, Warm: v.Warm}
 		var t throughput
-		if v.Ok > 0 {
+		if v.Ok > 0 && v.handshake == nil {
 			t = sustained(v, secs, log)
 		}
 		c.Down, c.Early, c.Late = t.Avg, t.Early, t.Late
 		c.Status = checkStatus(c, t)
+		if v.handshake != nil && c.Status == "slow" { // a VPN that answers its handshake: all we can tell
+			c.Status = "ok"
+		}
 		log(fmt.Sprintf("  %-34s ok=%d/%d warm=%5s down=%6.2f Mbps (first third %.2f, last %.2f)  %s",
 			v.Label, v.Ok, v.N, ms(v.Warm), t.Avg, t.Early, t.Late, c.Status))
 		res = append(res, c)

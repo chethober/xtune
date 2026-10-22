@@ -50,8 +50,9 @@ const pendingFile = remoteDir + "/pending.json"
 
 // publicState is what clients need to connect: no private keys.
 func publicState(st *State) *State {
-	return &State{Host: st.Host, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub, ShortID: st.ShortID,
-		VencEnc: st.VencEnc, SSKey: st.SSKey, CertSNI: st.CertSNI, CertHash: st.CertHash}
+	p := st.public()
+	p.Entries = nil
+	return p
 }
 
 // Share stores the tune on the server for a later deploy and returns the bundle for testers.
@@ -103,7 +104,7 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 		return nil, err
 	}
 	entries := supported(o.XrayBin, b.State, b.Entries, o.Log)
-	vs := ExpandVariants(entries, b.Depth)
+	vs := ExpandVariants(entries, b.Depth, o.Resolvers...)
 	err := RunTests(o, b.State, b.User, vs)
 	if err != nil && !strings.Contains(err.Error(), "nothing connected") {
 		return nil, err

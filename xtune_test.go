@@ -275,6 +275,7 @@ type fakeServer struct {
 	online   string                       // statsonlineiplist output
 	sib      []string                     // last sib arguments
 	helper   map[string]string            // canned output of other helper commands
+	calls    []string                     // helper commands run, with their arguments
 	restarts int
 	apiCalls int
 }
@@ -301,6 +302,10 @@ func (f *fakeServer) api(args []string) (string, error) {
 	case "inbounduser":
 		var us []J
 		for email, c := range f.live[tag] {
+			if strings.HasPrefix(tag, "wg") {
+				us = append(us, J{"email": email, "account": J{"publicKey": c}})
+				continue
+			}
 			us = append(us, J{"email": email, "account": J{"id": c}})
 		}
 		b, _ := json.Marshal(J{"users": us})
@@ -350,6 +355,9 @@ func (f *fakeServer) api(args []string) (string, error) {
 }
 
 func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
+	if _, args, ok := strings.Cut(cmd, "helper.sh "); ok {
+		f.calls = append(f.calls, strings.ReplaceAll(args, "'", ""))
+	}
 	switch {
 	case strings.HasPrefix(cmd, remoteDir+"/xray api "):
 		out, err := f.api(strings.Fields(strings.TrimPrefix(cmd, remoteDir+"/xray api ")))
@@ -368,6 +376,13 @@ func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
 		json.Unmarshal([]byte(f.files[remoteDir+"/config.json"]), &cfg)
 		for _, ib := range cfg.Inbounds {
 			f.live[ib["tag"].(string)] = map[string]string{}
+			if ib["protocol"] == "wireguard" {
+				for _, p := range ib["settings"].(map[string]any)["peers"].([]any) {
+					p := p.(map[string]any)
+					f.live[ib["tag"].(string)][p["email"].(string)] = p["publicKey"].(string)
+				}
+				continue
+			}
 			for _, c := range ib["settings"].(map[string]any)["clients"].([]any) {
 				c := c.(map[string]any)
 				cred, _ := c["id"].(string)

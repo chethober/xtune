@@ -54,6 +54,7 @@ type peerUser struct {
 	Name  string `json:"name"`
 	UUID  string `json:"uuid"`
 	SSKey string `json:"ssKey"`
+	WGIP  string `json:"wgIp,omitempty"` // the follower's WireGuard peers must use the primary's addresses
 }
 
 type peerReply struct {
@@ -64,7 +65,8 @@ type peerReply struct {
 func (st *State) public() *State {
 	return &State{Host: st.Host, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
 		ShortID: st.ShortID, VencEnc: st.VencEnc, SSKey: st.SSKey, CertSNI: st.CertSNI, CertHash: st.CertHash,
-		Entries: st.Entries}
+		WGPub: st.WGPub, SSHHostPub: st.SSHHostPub, DNSTTPub: st.DNSTTPub, DNSDomain: st.DNSDomain,
+		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries}
 }
 
 // servers are this deployment and, on a primary, the followers that reported recently, with
@@ -100,7 +102,9 @@ func (st *State) NamedLinks(u User) []pageLink {
 	var out []pageLink
 	for _, s := range st.servers() {
 		for _, e := range s.Entries {
-			out = append(out, pageLink{Name: e.ID, URL: s.Link(e, u, e.Knobs())})
+			if l := s.Link(e, u, e.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
+				out = append(out, pageLink{Name: e.ID, URL: l})
+			}
 		}
 	}
 	return out
@@ -213,7 +217,7 @@ func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
 	rep := &peerReply{Users: []peerUser{}}
 	for _, u := range st.activeUsers(us, now) {
 		if st.Check == nil || u.Name != st.Check.Name {
-			rep.Users = append(rep.Users, peerUser{u.Name, u.UUID, u.SSKey})
+			rep.Users = append(rep.Users, peerUser{u.Name, u.UUID, u.SSKey, u.WGIP})
 		}
 	}
 	return rep, nil
@@ -292,7 +296,7 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 		if validUserName(p.Name) != nil || p.UUID == "" {
 			continue
 		}
-		u := User{Name: p.Name, UUID: p.UUID, SSKey: p.SSKey, Enabled: true, Created: time.Now().Unix()}
+		u := User{Name: p.Name, UUID: p.UUID, SSKey: p.SSKey, WGIP: p.WGIP, Enabled: true, Created: time.Now().Unix()}
 		if _, old := st.User(p.Name); old != nil {
 			u.Created, u.SubToken = old.Created, old.SubToken
 		}
@@ -301,7 +305,7 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 	same := len(users) == len(st.Users)
 	for i := 0; same && i < len(users); i++ {
 		a, b := users[i], st.Users[i]
-		same = a.Name == b.Name && a.UUID == b.UUID && a.SSKey == b.SSKey && b.Enabled && b.Quota == 0 && b.Expires == 0 && b.Devices == 0
+		same = a.Name == b.Name && a.UUID == b.UUID && a.SSKey == b.SSKey && a.WGIP == b.WGIP && b.Enabled && b.Quota == 0 && b.Expires == 0 && b.Devices == 0
 	}
 	st.Users = users
 	return !same, nil

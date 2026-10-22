@@ -24,6 +24,8 @@ var pageText = map[string]map[string]string{
 		"failHelp": "One Xray config with every server below. It keeps using the fastest one that works, so you switch automatically when one is blocked. Import it as a custom config (v2rayN: Add custom config).",
 		"single":   "Single configs", "monthly": "monthly, next on %s", "weekly": "weekly, next on %s",
 		"history": "Last 30 days",
+		"files":   "Other apps", "download": "Download",
+		"filesHelp": "For OpenVPN, IKEv2 (strongSwan on Android; iPhone, iPad and Mac open the profile directly), the WireGuard app and SSH or DNS tunnel apps (HTTP Injector, NetMod). They log in with the user name and password above.",
 	},
 	"fa": {
 		"title": "اشتراک", "used": "مصرف‌شده", "quota": "سهمیه", "expires": "انقضا", "devices": "دستگاه‌ها",
@@ -36,6 +38,8 @@ var pageText = map[string]map[string]string{
 		"failHelp": "یک کانفیگ Xray که همهٔ سرورهای زیر را دارد. همیشه سریع‌ترین سرورِ در دسترس را به کار می‌برد، پس اگر یکی مسدود شود خودکار سراغ بعدی می‌رود. آن را به‌عنوان کانفیگ سفارشی وارد کنید (در v2rayN: Add custom config).",
 		"single":   "کانفیگ‌های تکی", "monthly": "ماهانه، بعدی در %s", "weekly": "هفتگی، بعدی در %s",
 		"history": "۳۰ روز گذشته",
+		"files":   "برنامه‌های دیگر", "download": "دانلود",
+		"filesHelp": "برای OpenVPN، IKEv2 (در اندروید برنامهٔ strongSwan؛ آیفون، آیپد و مک پروفایل را مستقیم باز می‌کنند)، برنامهٔ WireGuard و برنامه‌های تونل SSH یا DNS (HTTP Injector، NetMod). ورود با نام کاربری و رمز بالا انجام می‌شود.",
 	},
 }
 

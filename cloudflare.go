@@ -155,7 +155,8 @@ func cfPoint(token, name, ip string, proxied bool) (string, error) {
 	return fmt.Sprintf("%s -> %s (%s)", name, ip, mode), nil
 }
 
-// CloudflarePoint points the direct domain (DNS only) and the CDN domain (proxied) at ip.
+// CloudflarePoint points the direct domain (DNS only) and the CDN domain (proxied) at ip, and
+// delegates the DNS tunnel's zone to the server.
 func CloudflarePoint(st *State, ip string, log func(string)) error {
 	if st.Cloudflare.Token == "" {
 		return errors.New("no Cloudflare token: xtune cloudflare token")
@@ -163,8 +164,21 @@ func CloudflarePoint(st *State, ip string, log func(string)) error {
 	if net.ParseIP(ip) == nil {
 		return fmt.Errorf("%q is not an IP address", ip)
 	}
-	if st.Domain == "" && st.CDNDomain == "" {
-		return errors.New("no domains to point (xtune domains --direct D --cdn C)")
+	if st.Domain == "" && st.CDNDomain == "" && st.DNSDomain == "" {
+		return errors.New("no domains to point (xtune domains --direct D --cdn C --dns Z)")
+	}
+	if st.DNSDomain != "" {
+		ns := nsHost(st.DNSDomain)
+		msg, err := cfPoint(st.Cloudflare.Token, ns, ip, false)
+		if err != nil {
+			return err
+		}
+		log(msg)
+		msg, err = cfNS(st.Cloudflare.Token, st.DNSDomain, ns)
+		if err != nil {
+			return err
+		}
+		log(msg)
 	}
 	for _, d := range []struct {
 		name    string
@@ -180,6 +194,39 @@ func CloudflarePoint(st *State, ip string, log func(string)) error {
 		log(msg)
 	}
 	return nil
+}
+
+// nsHost is the name server name xtune uses for a DNS tunnel zone: t.example.com is served by
+// ns-t.example.com.
+func nsHost(zone string) string { return "ns-" + zone }
+
+// cfNS delegates zone to the name server ns with an NS record.
+func cfNS(token, zone, ns string) (string, error) {
+	z, err := cfZone(token, zone)
+	if err != nil {
+		return "", err
+	}
+	var recs []cfRecord
+	if err := cfCall(token, "GET", "/zones/"+z+"/dns_records?name="+url.QueryEscape(zone), nil, &recs); err != nil {
+		return "", err
+	}
+	done := false
+	for _, rec := range recs {
+		switch {
+		case rec.Type == "NS" && strings.EqualFold(rec.Content, ns) && !done:
+			done = true
+		default: // a delegated name can have no other records
+			if err := cfCall(token, "DELETE", "/zones/"+z+"/dns_records/"+rec.ID, nil, nil); err != nil {
+				return "", err
+			}
+		}
+	}
+	if !done {
+		if err := cfCall(token, "POST", "/zones/"+z+"/dns_records", cfRecord{Type: "NS", Name: zone, Content: ns, TTL: 1}, nil); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("%s NS %s (DNS tunnel)", zone, ns), nil
 }
 
 // cfSSL reads the SSL/TLS mode of domain's zone, and sets it to Full when fix is set and it is not.
@@ -328,7 +375,7 @@ func cmdCloudflare(args []string) error {
 // pointAfterMove updates the DNS records, from the new server, after a migrate. It reports
 // whether it did, so the admin is not told to do it by hand.
 func pointAfterMove(r *Server, st *State, log func(string)) bool {
-	if st.Cloudflare.Token == "" || st.Domain == "" && st.CDNDomain == "" {
+	if st.Cloudflare.Token == "" || st.Domain == "" && st.CDNDomain == "" && st.DNSDomain == "" {
 		return false
 	}
 	ip, err := serverIP(st.Host)

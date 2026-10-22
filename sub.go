@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -246,8 +247,8 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		h.servePeer(w, req, st, parts[2])
 		return
 	}
-	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 3 || parts[0] != st.Sub.Path ||
-		len(parts) == 3 && parts[2] != "json" {
+	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 4 || parts[0] != st.Sub.Path ||
+		len(parts) == 3 && parts[2] != "json" || len(parts) == 4 && parts[2] != "f" {
 		http.NotFound(w, req)
 		return
 	}
@@ -271,6 +272,16 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	hd.Set("Profile-Update-Interval", "6")
 	hd.Set("Profile-Web-Page-Url", st.SubURL(*u))
 	switch {
+	case len(parts) == 4: // a profile file
+		for _, p := range st.Profiles(*u) {
+			if p.File == parts[3] {
+				hd.Set("Content-Type", p.Type)
+				hd.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", p.File))
+				io.WriteString(w, p.Body)
+				return
+			}
+		}
+		http.NotFound(w, req)
 	case len(parts) == 3:
 		hd.Set("Content-Type", "application/json")
 		b, _ := json.MarshalIndent(st.FailoverConfig(*u), "", "  ")
@@ -300,7 +311,9 @@ type page struct {
 	SubURL, JSONURL, LastSeen     string
 	QR                            template.URL // generated here, so safe as a data: URL
 	Links                         []pageLink
-	History                       []histBar // daily traffic, oldest first; empty without any
+	Files                         []pageLink // profile files, for apps without share links
+	Login                         string     // "name / password" for the SSH and VPN apps
+	History                       []histBar  // daily traffic, oldest first; empty without any
 }
 
 type histBar struct {
@@ -355,6 +368,12 @@ func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page
 		p.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(c.PNG()))
 	}
 	p.Links = st.NamedLinks(u)
+	for _, f := range st.Profiles(u) {
+		p.Files = append(p.Files, pageLink{Name: f.Name, URL: p.SubURL + "/f/" + url.PathEscape(f.File)})
+	}
+	if st.hasLogin() {
+		p.Login = u.Name + " / " + tunnelPassword(u)
+	}
 	days := uu.lastDays(now, 30)
 	top := slices.Max(days)
 	for i, v := range days {
@@ -414,7 +433,7 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:0 0 10px}
 .bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:12px}.bar>i{display:block;height:100%;background:var(--acc)}
 .row{display:flex;gap:8px;align-items:center;margin-top:8px}
 code{direction:ltr;text-align:left;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
-button{flex:none;font:inherit;font-size:13px;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
+button,.btn{flex:none;text-decoration:none;font:inherit;font-size:13px;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
 .qr{display:block;margin:12px auto 0;width:220px;max-width:100%;image-rendering:pixelated;background:#fff;padding:8px;border-radius:8px}
 .dim{color:var(--dim);font-size:13px}
 .hist{display:flex;align-items:flex-end;gap:2px;height:56px;margin-top:6px;direction:ltr}.hist>i{flex:1;background:var(--acc);border-radius:2px 2px 0 0;opacity:.85}
@@ -439,6 +458,10 @@ button{flex:none;font:inherit;font-size:13px;font-weight:600;color:#fff;backgrou
 <p class="dim">{{.T.failHelp}}</p></div>
 <div class="card"><h2>{{.T.single}}</h2>
 {{range .Links}}<div class="row"><code title="{{.Name}}">{{.URL}}</code><button data-copy="{{.URL}}">{{$.T.copy}}</button></div>{{end}}</div>
+{{if or .Files .Login}}<div class="card"><h2>{{.T.files}}</h2>
+{{range .Files}}<div class="row"><code>{{.Name}}</code><a class="btn" href="{{.URL}}" download>{{$.T.download}}</a></div>{{end}}
+{{if .Login}}<div class="row"><code>{{.Login}}</code><button data-copy="{{.Login}}">{{.T.copy}}</button></div>{{end}}
+<p class="dim">{{.T.filesHelp}}</p></div>{{end}}
 </main><script>
 var copyText={{.T.copy}},copiedText={{.T.copied}};
 document.querySelectorAll("button[data-copy]").forEach(function(b){b.addEventListener("click",function(){

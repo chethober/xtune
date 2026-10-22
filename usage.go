@@ -25,6 +25,7 @@ type Usage struct {
 	BackupAt  int64                  `json:"backupAt,omitempty"` // last backup the bot sent
 	SNIAt     int64                  `json:"sniAt,omitempty"`    // last check of the REALITY targets
 	Synced    map[string][2]int64    `json:"synced,omitempty"`   // follower: traffic already reported to the primary
+	Extra     map[string][2]int64    `json:"extra,omitempty"`    // SSH tunnel and VPN counters at the last run
 }
 
 // EntryUsage is the traffic of one deployed config. A config that stops carrying anything while
@@ -201,10 +202,60 @@ func (r *Server) xrayAPI(st *State, cmd string, args ...string) (string, error) 
 }
 
 func credential(e Entry, u User) string {
-	if e.Kind == "ss2022" {
+	switch e.Kind {
+	case "ss2022":
 		return u.SSKey
+	case "wireguard":
+		_, pub := wgUserKey(u)
+		return pub
 	}
 	return u.UUID // VLESS id, Hysteria2 auth
+}
+
+// wgLive reports whether the running WireGuard inbound has exactly these users. Xray cannot add
+// WireGuard users through its API, so a difference means a restart.
+func wgLive(out string, want map[string]string) bool {
+	var res struct {
+		Users []map[string]any `json:"users"`
+	}
+	if json.Unmarshal([]byte(out), &res) != nil || len(res.Users) != len(want) {
+		return false
+	}
+	for _, u := range res.Users {
+		email, _ := u["email"].(string)
+		w, ok := want[email]
+		if !ok {
+			return false
+		}
+		if key := findKey(u, "publicKey", "public_key"); key != "" && key != w {
+			return false
+		}
+	}
+	return true
+}
+
+// findKey returns the first string value under one of the names, anywhere in v.
+func findKey(v any, names ...string) string {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, n := range names {
+			if s, ok := x[n].(string); ok {
+				return s
+			}
+		}
+		for _, y := range x {
+			if s := findKey(y, names...); s != "" {
+				return s
+			}
+		}
+	case []any:
+		for _, y := range x {
+			if s := findKey(y, names...); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 var (
@@ -226,10 +277,20 @@ func countIs(re *regexp.Regexp, out string, want int) bool {
 func reconcile(r *Server, st *State, active []User) error {
 	var add []J
 	adds := 0
-	for _, e := range st.Entries {
+	for _, e := range filterEntries(st.Entries, Entry.Xray) {
 		out, err := r.xrayAPI(st, "inbounduser", "-tag="+e.ID)
 		if err != nil {
 			return err
+		}
+		if e.Kind == "wireguard" {
+			want := map[string]string{}
+			for _, u := range active {
+				want[u.Name] = credential(e, u)
+			}
+			if !wgLive(out, want) {
+				return fmt.Errorf("WireGuard users changed: Xray needs a restart")
+			}
+			continue
 		}
 		var res struct {
 			Users []struct {
@@ -302,7 +363,7 @@ func Enforce(r *Server) error {
 		return err
 	}
 	now := time.Now()
-	prev, err := collect(r, st, us, now)
+	prev, sessions, err := collect(r, st, us, now)
 	notifyXray(st, us, err)
 	if err != nil {
 		saveUsage(r, us) // keeps the alert from repeating
@@ -329,6 +390,9 @@ func Enforce(r *Server) error {
 		return err
 	}
 	active := st.activeUsers(us, now)
+	if err := kickInactive(r, active, sessions); err != nil {
+		fmt.Println("disconnecting VPN sessions:", err)
+	}
 	if key := activeKey(st, active); key != us.ActiveKey {
 		if err := writeConfig(r, st, active); err != nil {
 			return err
@@ -357,10 +421,10 @@ func Enforce(r *Server) error {
 
 // collect adds the traffic since the last run and records online IPs. It returns the IPs each user
 // had online at the previous run.
-func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]string, error) {
+func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]string, []vpnSession, error) {
 	out, err := r.xrayAPI(st, "statsquery", "-reset") // users and inbounds
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var stats struct {
 		Stat []struct {
@@ -369,7 +433,7 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 		} `json:"stat"`
 	}
 	if err := json.Unmarshal([]byte(out), &stats); err != nil {
-		return nil, fmt.Errorf("statsquery: %w", err)
+		return nil, nil, fmt.Errorf("statsquery: %w", err)
 	}
 	byTag := map[string]int64{}
 	for _, s := range stats.Stat {
@@ -390,10 +454,11 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 			byTag[p[1]] += s.Value
 		}
 	}
+	extraOnline, sessions := collectExtra(r, st, us, now, byTag)
 	countEntries(st, us, byTag, now)
 	out, err = r.xrayAPI(st, "statsonlineiplist", "-all")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var online struct {
 		Users []struct {
@@ -405,7 +470,7 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 		} `json:"users"`
 	}
 	if err := json.Unmarshal([]byte(out), &online); err != nil {
-		return nil, fmt.Errorf("statsonlineiplist: %w", err)
+		return nil, nil, fmt.Errorf("statsonlineiplist: %w", err)
 	}
 	prev := map[string][]string{}
 	for name, uu := range us.Users {
@@ -421,7 +486,18 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 			uu.LastSeen = now.Unix()
 		}
 	}
-	return prev, nil
+	for name, ips := range extraOnline {
+		uu := us.of(name)
+		for _, ip := range ips {
+			if !contains2s(uu.Online, ip) {
+				uu.Online = append(uu.Online, ip)
+			}
+		}
+		if len(uu.Online) > 0 {
+			uu.LastSeen = now.Unix()
+		}
+	}
+	return prev, sessions, nil
 }
 
 // applyDeviceLimits blocks, for a while, the client IPs a user has beyond their device limit. IPs

@@ -29,13 +29,15 @@ func LoadState(r *Server) (*State, error) {
 	return &st, nil
 }
 
-// saveState writes state.json and the certificate. Users get a subscription token if they lack one.
+// saveState writes state.json and the certificate. Users get a subscription token and a
+// WireGuard address if they lack one.
 func saveState(r *Server, st *State) error {
 	for i := range st.Users {
 		if st.Users[i].SubToken == "" {
 			st.Users[i].SubToken = randHex(16)
 		}
 	}
+	st.assignWGIPs()
 	stJSON, _ := json.MarshalIndent(st, "", " ")
 	for _, f := range []struct{ path, body string }{
 		{remoteDir + "/state.json", string(stJSON)},
@@ -49,20 +51,51 @@ func saveState(r *Server, st *State) error {
 	return nil
 }
 
-// writeConfig writes config.json for the active users and checks it with Xray, without a restart.
+// writeConfig writes config.json for the active users and checks it with Xray, without a restart,
+// and the active users of the SSH tunnels and VPNs, which pick them up by themselves.
 func writeConfig(r *Server, st *State, active []User) error {
 	cfgJSON, _ := json.MarshalIndent(st.ServerConfig(st.Entries, active), "", " ")
 	if err := r.Upload(remoteDir+"/config.json", cfgJSON, "600"); err != nil {
 		return err
 	}
-	_, err := r.Helper("check")
-	return err
+	if _, err := r.Helper("check"); err != nil {
+		return err
+	}
+	if hasEngine(st.Entries, "tunnel") {
+		tc, _ := json.MarshalIndent(st.TunnelConf(st.Entries, active, tunnelStatsFile), "", " ")
+		if err := r.Upload(remoteDir+"/tunnels.json", tc, "600"); err != nil {
+			return err
+		}
+	}
+	if !hasEngine(st.Entries, "openvpn") && !hasEngine(st.Entries, "ikev2") {
+		return nil
+	}
+	for p, c := range st.vpnFiles(st.Entries, active, vpnDir) {
+		if err := r.Upload(p, []byte(c), "600"); err != nil {
+			return err
+		}
+	}
+	if hasEngine(st.Entries, "ikev2") {
+		_, err := r.Helper("vpn-reload")
+		return err
+	}
+	return nil
 }
+
+const tunnelStatsFile = remoteDir + "/tunnels-stats.json"
 
 // Apply saves everything and restarts the service; used when entries or ports change.
 func Apply(r *Server, st *State) error {
 	if st.APIPort == 0 {
 		st.APIPort = pickAPIPort(st)
+	}
+	if _, err := st.ensureKeys(); err != nil {
+		return err
+	}
+	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") {
+		if err := st.ensureVPNCert(); err != nil { // the address may have changed
+			return err
+		}
 	}
 	us, err := LoadUsage(r)
 	if err != nil {
@@ -123,7 +156,8 @@ func pickAPIPort(st *State) int {
 	}
 }
 
-// restart (re)starts xray-autotune with the saved config and opens the entries' firewall ports.
+// restart (re)starts xray-autotune with the saved config and opens the entries' firewall ports,
+// then the tunnel server and VPNs the entries need (stopping those they no longer need).
 func restart(r *Server, st *State) error {
 	out, err := r.Helper(append([]string{"apply"}, portSpecs(st.Entries)...)...)
 	if err != nil {
@@ -131,6 +165,24 @@ func restart(r *Server, st *State) error {
 	}
 	if !strings.HasSuffix(out, "active") || strings.HasSuffix(out, "inactive") {
 		return fmt.Errorf("xray-autotune did not start: %s", out)
+	}
+	specs := vpnSpecs(st.Entries)
+	if len(specs) > 0 { // a restored or migrated deployment may land on a server without them
+		if out, err := r.Helper("vpn-install"); err != nil || !strings.HasSuffix(out, "ok") {
+			return fmt.Errorf("installing OpenVPN/strongSwan: %v %s", err, tail(out, 200))
+		}
+	}
+	if hasEngine(st.Entries, "tunnel") {
+		specs = append([]string{"tunnels"}, specs...)
+	}
+	out, err = r.Helper(append([]string{"extras"}, specs...)...)
+	if err != nil {
+		return fmt.Errorf("tunnels and VPNs: %w", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] != "active" {
+			return fmt.Errorf("%s did not start (%s)", f[0], f[1])
+		}
 	}
 	return nil
 }
@@ -160,9 +212,7 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 		return nil, err
 	}
 	if old != nil {
-		st.RealityPriv, st.RealityPub, st.ShortID = old.RealityPriv, old.RealityPub, old.ShortID
-		st.VencDec, st.VencEnc, st.SSKey = old.VencDec, old.VencEnc, old.SSKey
-		st.CertSNI, st.CertHash, st.CertPEM, st.KeyPEM = old.CertSNI, old.CertHash, old.CertPEM, old.KeyPEM
+		st.keepIdentity(old)
 		st.Users, st.APIPort, st.Country, st.Sub = old.Users, old.APIPort, old.Country, old.Sub
 		st.Check, st.Warp, st.Notify, st.Bot = old.Check, old.Warp, old.Notify, old.Bot
 		st.Plans, st.Cloudflare, st.Peers, st.Follow = old.Plans, old.Cloudflare, old.Peers, old.Follow
@@ -173,6 +223,9 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	return st, startServices(r, st)
 }
 
+// deployChoice is the top n, plus a working CDN config, plus the best working config of each
+// opt-in protocol that was tested (SSH, the DNS tunnel and the VPNs serve their own apps, so they
+// do not compete with the Xray configs for a place).
 func deployChoice(best []*Variant, n int) []*Variant {
 	if n <= 0 {
 		return nil
@@ -181,9 +234,18 @@ func deployChoice(best []*Variant, n int) []*Variant {
 		n = len(best)
 	}
 	chosen := append([]*Variant(nil), best[:n]...)
+	have := map[string]bool{}
+	for _, v := range chosen {
+		have[v.Entry.family()] = true
+	}
 	for _, v := range best[n:] {
-		if v.Entry.CDN() {
+		f := v.Entry.family()
+		switch {
+		case v.Entry.CDN():
 			chosen = append(chosen, v)
+		case f != "" && !have[f] && v.Ok > 0:
+			chosen = append(chosen, v)
+			have[f] = true
 		}
 	}
 	return chosen
@@ -416,6 +478,41 @@ func countryList() string {
 }
 
 // ---------------------------------------------------------------- addresses
+
+// SetDNSDomain changes the DNS tunnel's zone ("" removes the DNS tunnel). With a Cloudflare
+// token, the zone is delegated to the server.
+func SetDNSDomain(r *Server, zone string, log func(string)) (*State, error) {
+	zone = strings.TrimSuffix(strings.ToLower(zone), ".")
+	if zone != "" && (strings.ContainsAny(zone, "/: ") || strings.Count(zone, ".") < 2) {
+		return nil, fmt.Errorf("%q: use a subdomain such as t.example.com", zone)
+	}
+	defer r.lock()()
+	st, err := requireState(r)
+	if err != nil {
+		return nil, err
+	}
+	st.DNSDomain = zone
+	if zone == "" {
+		st.Entries = filterEntries(st.Entries, func(e Entry) bool { return e.Kind != "dnstt" })
+	}
+	if zone != "" && st.Cloudflare.Token != "" {
+		ip, err := serverIP(st.Host)
+		if err != nil {
+			return nil, err
+		}
+		next := *st
+		next.Domain, next.CDNDomain = "", ""
+		if err := CloudflarePoint(&next, ip, func(s string) { log("DNS " + s) }); err != nil {
+			return nil, err
+		}
+	} else if zone != "" {
+		log(fmt.Sprintf("add these DNS records: %s A <server IP> (DNS only), and %s NS %s", nsHost(zone), zone, nsHost(zone)))
+	}
+	if zone != "" && !slices.ContainsFunc(st.Entries, func(e Entry) bool { return e.Kind == "dnstt" }) {
+		log("re-run a tune with --protocols dnstt to add the DNS tunnel")
+	}
+	return st, Apply(r, st)
+}
 
 // SetDomains changes the direct and CDN domains used in links. Setting a CDN domain on a deployment
 // without a CDN entry adds one with default settings (re-tune to measure it); clearing it removes

@@ -646,7 +646,13 @@ func (q *botReq) links(name, note string) ([]reply, error) {
 		}
 		sb.WriteString(item)
 	}
+	if st.hasLogin() {
+		fmt.Fprintf(&sb, "SSH / VPN: <code>%s</code> / <code>%s</code>\n", esc(u.Name), esc(tunnelPassword(*u)))
+	}
 	flush()
+	for _, p := range st.Profiles(*u) { // OpenVPN, IKEv2, WireGuard and DNS tunnel apps import files
+		out = append(out, reply{file: []byte(p.Body), fileName: p.File, text: esc(p.Name)})
+	}
 	qrOf := func(text, caption string) {
 		c, err := qr.Encode(text, qr.M)
 		if err != nil {

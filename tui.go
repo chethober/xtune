@@ -397,13 +397,11 @@ func (t *tui) tune() error {
 	if err != nil {
 		return err
 	}
-	if old != nil {
-		o.Domain, o.CDNDomain = old.Domain, old.CDNDomain
-	}
+	o.inherit(old, nil)
 	rounds := "2"
 	err = huh.NewForm(huh.NewGroup(
 		huh.NewNote().Title("Tune").Description("Starts a temporary test matrix on the server (REALITY on several SNIs/ports,\n"+
-			"XHTTP, gRPC, VLESS Encryption, Hysteria2, Shadowsocks-2022, CDN) and measures each\n"+
+			"XHTTP, gRPC, VLESS Encryption, Hysteria2, Shadowsocks-2022, WireGuard, CDN) and measures each\n"+
 			"variant from THIS computer. Run it from the network your users are on."),
 		huh.NewSelect[string]().Title("Depth").Options(
 			huh.NewOption("Smart (~50 variants, ~8 min)", "smart"), huh.NewOption("Deep (~75 variants, ~20 min)", "deep")).Value(&o.Depth),
@@ -414,11 +412,23 @@ func (t *tui) tune() error {
 		huh.NewInput().Title("CDN domain (optional)").
 			Description("A CDN-proxied (orange cloud) record for the server, SSL/TLS mode \"Full\".\n"+
 				"Adds a VLESS + XHTTP + TLS entry that goes through the CDN.").Value(&o.CDNDomain),
+	), huh.NewGroup(
+		huh.NewMultiSelect[string]().Title("Other protocols (optional)").
+			Description("WireGuard is always tested. These run besides Xray and serve their own apps.").
+			Options(
+				huh.NewOption("SSH tunnel (HTTP Injector, NetMod, NapsternetV; also over TLS and the CDN)", "ssh"),
+				huh.NewOption("DNS tunnel (dnstt / SlowDNS; slow, for when only DNS gets through)", "dnstt"),
+				huh.NewOption("OpenVPN (UDP and TCP; handshake checked only)", "openvpn"),
+				huh.NewOption("IKEv2 (built into phones and Windows; handshake checked only)", "ikev2"),
+			).Value(&o.Protocols),
+		huh.NewInput().Title("DNS tunnel zone (for the DNS tunnel)").
+			Description("A subdomain delegated to the server: t.example.com NS ns-t.example.com,\n"+
+				"and ns-t.example.com A <server IP>. xtune adds both with a Cloudflare token.").Value(&o.DNSDomain),
 	)).WithTheme(t.theme).Run()
 	if err != nil {
 		return err
 	}
-	o.Domain, o.CDNDomain = strings.TrimSpace(o.Domain), strings.TrimSpace(o.CDNDomain)
+	o.Domain, o.CDNDomain, o.DNSDomain = strings.TrimSpace(o.Domain), strings.TrimSpace(o.CDNDomain), strings.TrimSpace(o.DNSDomain)
 	o.Rounds = atoiOr(rounds, 2)
 	fmt.Println(dimStyle.Render("Ctrl+C stops the test and cleans up the server."))
 	var res *TuneResult

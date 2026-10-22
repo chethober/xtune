@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-10-23
+
+### Fixed
+- Android (Termux): downloads and every other lookup failed with `lookup github.com on [::1]:53: connection refused`
+  (#4). Without cgo, Go reads nameservers only from `/etc/resolv.conf`, which Android does not have; xtune now asks
+  `XTUNE_DNS` (comma-separated), Termux's own resolv.conf, then public resolvers, moving on when one does not answer.
+
+### Added
+- WireGuard, served by Xray: part of the default test matrix (a high port and a standard UDP port, MTU 1420 and 1280),
+  with per-user keys and addresses, traffic accounting, quotas, `wireguard://` links and a `.conf` file for the
+  official apps. Xray cannot add WireGuard users through its API, so user changes restart Xray when WireGuard is
+  deployed.
+- `tune --protocols ssh,dnstt,openvpn,ikev2` (or `vpn`, `all`) adds opt-in protocols to the test; a re-tune keeps
+  testing the ones that are deployed, and deploy keeps the best working config of each besides the top N.
+  - SSH tunnel: xtune's own SSH server (`xray-autotune-tunnels`), TCP forwarding only, no system accounts. Plain,
+    plain with a WebSocket upgrade request first (HTTP Injector style payloads are answered), over TLS ("SSH-SSL"),
+    and through the CDN domain. Plain SSH gets `ssh://` links (host key pinned); every SSH config also comes as a
+    settings file for HTTP Injector style apps (server, port, SNI, payload, login).
+  - DNS tunnel (dnstt, embedded): `--dns-domain t.example.com` (or `xtune domains --dns`), delegated to the server
+    with an NS record (made through the Cloudflare API when a token is set). Variants per resolver: `--resolvers`,
+    this network's, public UDP resolvers, DoH and DoT. It carries the SSH tunnel, the layout SlowDNS apps expect.
+  - OpenVPN (UDP and TCP) and IKEv2 (strongSwan, EAP-MSCHAPv2), installed from the distribution's packages, with a
+    CA of the deployment's own. Users log in with their name and password; `.ovpn`, `.sswan` (strongSwan app) and
+    `.mobileconfig` (iPhone, iPad, Mac) profiles. Client ranges are NATed and kept away from private addresses.
+    Tuning measures only whether and how fast their handshake answers: bringing a VPN up needs root on the client.
+- Traffic, online devices, quotas, expiry and disabling apply to the SSH tunnels and VPNs too: the enforce job reads
+  their counters and disconnects users who may no longer connect. Device limits are enforced at login for SSH and
+  OpenVPN.
+- `xtune users profiles NAME [--out DIR]` writes a user's profile files; the subscription page offers them for
+  download with the SSH/VPN login, and the bot sends them with the links.
+- `doctor` checks the tunnel server, VPN forwarding and NAT, and the DNS tunnel's delegation.
+
 ## [0.4.0] - 2026-10-21
 
 ### Added
@@ -118,6 +150,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.5.0]: https://github.com/chethober/xtune/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chethober/xtune/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chethober/xtune/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chethober/xtune/compare/v0.1.0...v0.2.0

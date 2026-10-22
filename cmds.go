@@ -40,10 +40,16 @@ func cmdMeasure(args []string) error {
 	fs.IntVar(&o.Rounds, "rounds", 2, "benchmark rounds (median)")
 	fs.StringVar(&o.Out, "out", "xtune-results", "results directory")
 	report := fs.String("report", "", "report file (default xtune-report-NETWORK.json)")
+	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers (udp:IP:53, doh:URL, dot:HOST:853)")
 	pos := parse(fs, args)
 	if len(pos) != 1 {
 		return errors.New("measure: pass the bundle file")
 	}
+	rs, err := parseResolvers(*resolvers)
+	if err != nil {
+		return err
+	}
+	o.Resolvers = rs
 	var b Bundle
 	if err := readJSONFile(pos[0], &b); err != nil {
 		return err
@@ -54,7 +60,6 @@ func cmdMeasure(args []string) error {
 	if o.Network == "" {
 		o.Network, _ = cliPrompt("Name of this network (e.g. the ISP)", false)
 	}
-	var err error
 	if o.XrayBin, err = EnsureLocalXray(*xray, nil, func(s string) { fmt.Println(s) }); err != nil {
 		return err
 	}
@@ -360,7 +365,7 @@ func MoveTo(r *Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string)
 	if o.XrayBin, err = EnsureLocalXray(xrayFlag, r, o.Log); err != nil {
 		return nil, err
 	}
-	o.Domain, o.CDNDomain = seeded.Domain, seeded.CDNDomain
+	o.inherit(seeded, nil)
 	var res *TuneResult
 	if err := guarded(r, func() error { var e error; res, e = Tune(r, o); return e }); err != nil {
 		r.Helper("cleanup") // nothing runs yet, so this removes the copied deployment too

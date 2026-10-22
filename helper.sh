@@ -57,6 +57,99 @@ hop_restore() {
     esac
   done < "$f"
 }
+# VPN client ranges are NATed out of the server and kept away from private addresses. The ranges
+# are recorded in $D/vpn.nets so the rules come back after a reboot and go on uninstall.
+vpn_rules() {
+  local op=$1 net=$2 ins=-I
+  [ "$op" = -A ] || ins=$op
+  iptables -t nat "$op" POSTROUTING -s "$net" ! -d "$net" -m comment --comment xtune-vpn -j MASQUERADE 2>/dev/null &&
+  iptables -t mangle "$op" FORWARD -s "$net" -p tcp --tcp-flags SYN,RST SYN -m comment --comment xtune-vpn -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null &&
+  iptables "$ins" FORWARD -d "$net" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment xtune-vpn -j ACCEPT 2>/dev/null &&
+  iptables "$ins" FORWARD -s "$net" -m comment --comment xtune-vpn -j ACCEPT 2>/dev/null || return 1
+  # inserted last, so they come first
+  for p in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8; do
+    iptables "$ins" FORWARD -s "$net" -d "$p" -m comment --comment xtune-vpn -j DROP 2>/dev/null || return 1
+  done
+}
+vpn_net_up() {
+  sysctl -qw net.ipv4.ip_forward=1
+  echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/90-xtune-vpn.conf
+  for net in "$@"; do
+    vpn_rules -C "$net" || vpn_rules -A "$net" || { echo "iptables failed for $net" >&2; return 1; }
+    grep -qxF "$net" $D/vpn.nets 2>/dev/null || echo "$net" >> $D/vpn.nets
+  done
+}
+vpn_net_down() {
+  [ -f $D/vpn.nets ] || return 0
+  while read -r net; do while vpn_rules -D "$net"; do :; done; done < $D/vpn.nets
+  rm -f $D/vpn.nets /etc/sysctl.d/90-xtune-vpn.conf
+}
+vpn_net_restore() {
+  [ -f $D/vpn.nets ] || return 0
+  while read -r net; do vpn_rules -C "$net" || vpn_rules -A "$net" || true; done < $D/vpn.nets
+}
+swan_unit() {
+  for u in strongswan strongswan-swanctl; do
+    if systemctl cat "$u" >/dev/null 2>&1; then echo "$u"; return; fi
+  done
+  echo strongswan
+}
+SWANCONF=/etc/swanctl/conf.d/xtune.conf
+# swan_install DIR puts xtune's strongSwan config, certificate and key where swanctl loads them
+swan_install() {
+  install -m 644 "$1/ikev2.crt" /etc/swanctl/x509/xtune-ikev2.crt
+  install -m 600 "$1/ikev2.key" /etc/swanctl/private/xtune-ikev2.key
+  install -m 600 "$1/swanctl.conf" $SWANCONF
+}
+swan_remove() { rm -f $SWANCONF /etc/swanctl/x509/xtune-ikev2.crt /etc/swanctl/private/xtune-ikev2.key; }
+swan_load() { swanctl --load-creds --clear >/dev/null 2>&1 && swanctl --load-pools >/dev/null 2>&1 && swanctl --load-conns >/dev/null 2>&1; }
+# unit_file NAME DESCRIPTION EXEC writes a deployed service that restarts on failure
+unit_file() {
+  cat > "$U/$1.service" <<EOF
+[Unit]
+Description=$2
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=$3
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+# extras_stop stops the deployed tunnel and VPN services, except those named
+extras_stop() {
+  local keep=" $* " u
+  for u in $(systemctl list-unit-files --no-legend 'xray-autotune-tunnels.service' 'xray-autotune-ovpn-*.service' 2>/dev/null | awk '{print $1}'); do
+    case $keep in *" ${u%.service} "*) continue ;; esac
+    systemctl disable --now "$u" >/dev/null 2>&1 || true
+    rm -f "$U/$u"
+  done
+  case $keep in *" ikev2 "*) ;; *)
+    if [ -f $SWANCONF ] && [ ! -f $D/test/ikev2-temp ]; then
+      swan_remove
+      if command -v swanctl >/dev/null; then
+        swanctl --terminate --ike xtune-ikev2 --force >/dev/null 2>&1 || true
+        swan_load || true
+      fi
+      # strongSwan goes back off if xtune turned it on
+      if [ -f $D/swan-ours ]; then systemctl disable --now "$(swan_unit)" >/dev/null 2>&1 || true; rm -f $D/swan-ours; fi
+    fi ;;
+  esac
+}
+test_stop_extras() {
+  for u in $(systemctl list-units --all --no-legend 'xray-autotune-test-*' 2>/dev/null | awk '{print $1}'); do
+    systemctl stop "$u" 2>/dev/null || true
+    systemctl reset-failed "$u" 2>/dev/null || true
+  done
+  if [ -f $D/test/ikev2-temp ]; then
+    swan_remove
+    swan_load 2>/dev/null || true
+    if [ -f $D/test/swan-was-off ]; then systemctl stop "$(swan_unit)" 2>/dev/null || true; fi
+  fi
+}
 # link puts the server copy of xtune on PATH, unless another xtune install is already there
 link() {
   if [ -L $LINK ] || [ ! -e $LINK ]; then ln -sfn $XT $LINK; else echo "note: $LINK is not xtune's link; left as is" >&2; fi
@@ -90,6 +183,7 @@ EOF
   systemctl enable --now xray-autotune-enforce.timer >/dev/null 2>&1
 }
 remove_units() {
+  extras_stop; test_stop_extras
   systemctl disable --now xray-autotune xray-autotune-test xray-autotune-sub xray-autotune-bot xray-autotune-enforce.timer >/dev/null 2>&1 || true
   rm -f $U/xray-autotune.service $U/xray-autotune-sub.service $U/xray-autotune-bot.service $U/xray-autotune-enforce.service $U/xray-autotune-enforce.timer
   systemctl daemon-reload
@@ -104,6 +198,7 @@ status)
   echo "SUB $(systemctl is-active xray-autotune-sub 2>/dev/null || true)"
   echo "TIMER $(systemctl is-active xray-autotune-enforce.timer 2>/dev/null || true)"
   echo "BOT $(systemctl is-active xray-autotune-bot 2>/dev/null || true)"
+  echo "TUNNELS $(systemctl is-active xray-autotune-tunnels 2>/dev/null || true)"
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then echo "FW ufw"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then echo "FW firewalld"
   else echo "FW none"; fi
@@ -161,14 +256,123 @@ probe)
     echo "SNI $h $(curl -so /dev/null --tlsv1.3 --http2 -m 4 -w '%{http_version} %{time_appconnect}' "https://$h/" 2>/dev/null || echo fail)"
   done
   ss -Htuln | awk '{print "USED", $1, $5}'
+  if [ -f $SWANCONF ]; then echo "IKE ours"; fi
   if command -v iptables >/dev/null && iptables -t nat -S PREROUTING >/dev/null 2>&1; then echo "HOP yes"; else echo "HOP no"; fi ;;
 doctor)
   echo "TIME $(date +%s)"
   echo "NTP $(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
   echo "HOPRULES $( (iptables -t nat -S PREROUTING 2>/dev/null || true) | grep -c 'comment xtune' || true)"
+  echo "VPNRULES $( (iptables -t nat -S POSTROUTING 2>/dev/null || true) | grep -c 'comment xtune-vpn' || true)"
+  echo "FORWARD $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
   ss -Htuln | awk '{print "USED", $1, $5}' ;;
 hop-restore)
-  hop_restore $D/fw.deployed ;;
+  hop_restore $D/fw.deployed; vpn_net_restore ;;
+vpn-install)
+  # OpenVPN and strongSwan (swanctl, EAP-MSCHAPv2) from the distribution
+  need=""
+  command -v openvpn >/dev/null || need=1
+  command -v swanctl >/dev/null || need=1
+  if [ -n "$need" ]; then
+    if command -v apt-get >/dev/null; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null
+      # EAP-Identity is in the extra plugins; EAP-MSCHAPv2 moved to extauth (Debian 11+, Ubuntu 22.04+)
+      apt-get install -y -qq openvpn strongswan-swanctl charon-systemd libcharon-extra-plugins >/dev/null
+      apt-get install -y -qq libcharon-extauth-plugins >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null; then
+      dnf install -y -q epel-release >/dev/null 2>&1 || true
+      dnf install -y -q openvpn strongswan >/dev/null
+    else
+      echo "no apt-get or dnf: install openvpn and strongswan (swanctl) yourself" >&2; exit 1
+    fi
+  fi
+  # the distribution's own OpenVPN server units stay off; xtune runs its own
+  command -v openvpn >/dev/null && command -v swanctl >/dev/null && echo ok ;;
+test-extras)
+  # test instances of the tunnel server and VPNs; they expire with the Xray test instance
+  for spec in "$@"; do
+    case $spec in
+      tunnels)
+        systemd-run --quiet --unit=xray-autotune-test-tunnels --property=RuntimeMaxSec=7200 $XT tunnels run $D/test/tunnels.json ;;
+      openvpn:*)
+        id=${spec#openvpn:}
+        systemd-run --quiet --unit="xray-autotune-test-ovpn-$id" --property=RuntimeMaxSec=7200 \
+          "$(command -v openvpn)" --cd $D/test/vpn --config "$D/test/vpn/$id.conf" ;;
+      ikev2)
+        su=$(swan_unit)
+        if [ ! -f $SWANCONF ]; then
+          systemctl is-active "$su" >/dev/null 2>&1 || touch $D/test/swan-was-off
+          swan_install $D/test/vpn; touch $D/test/ikev2-temp
+        fi
+        systemctl start "$su"; sleep 1; swan_load ;;
+    esac
+  done
+  sleep 1
+  for spec in "$@"; do
+    case $spec in
+      tunnels) echo "tunnels $(systemctl is-active xray-autotune-test-tunnels 2>/dev/null || true)" ;;
+      openvpn:*) echo "$spec $(systemctl is-active "xray-autotune-test-ovpn-${spec#openvpn:}" 2>/dev/null || true)" ;;
+      ikev2) echo "ikev2 $(systemctl is-active "$(swan_unit)" 2>/dev/null || true)" ;;
+    esac
+  done ;;
+extras)
+  # the deployed tunnel server and VPNs: start those named, stop the others, NAT the VPN ranges
+  keep="" nets=""
+  for spec in "$@"; do
+    case $spec in
+      tunnels)
+        unit_file xray-autotune-tunnels "xtune SSH and DNS tunnels" "$XT tunnels run $D/tunnels.json"
+        keep="$keep xray-autotune-tunnels" ;;
+      openvpn:*)
+        id=${spec#openvpn:}
+        unit_file "xray-autotune-ovpn-$id" "OpenVPN $id (managed by xtune)" "$(command -v openvpn) --cd $D/vpn --config $D/vpn/$id.conf"
+        keep="$keep xray-autotune-ovpn-$id" ;;
+      ikev2)
+        swan_install $D/vpn; rm -f $D/test/ikev2-temp $D/test/swan-was-off
+        keep="$keep ikev2" ;;
+      net:*) nets="$nets ${spec#net:}" ;;
+    esac
+  done
+  # shellcheck disable=SC2086
+  extras_stop $keep
+  vpn_net_down
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then vpn_net_up $nets; fi
+  systemctl daemon-reload
+  for u in $keep; do
+    case $u in
+      ikev2)
+        su=$(swan_unit)
+        if ! systemctl is-enabled "$su" >/dev/null 2>&1; then touch $D/swan-ours; fi
+        systemctl enable --now "$su" >/dev/null 2>&1; sleep 1; swan_load ;;
+      *) systemctl enable "$u" >/dev/null 2>&1; systemctl restart "$u" ;;
+    esac
+  done
+  sleep 1
+  for u in $keep; do
+    case $u in
+      ikev2) echo "ikev2 $(systemctl is-active "$(swan_unit)" 2>/dev/null || true)" ;;
+      *) echo "$u $(systemctl is-active "$u" 2>/dev/null || true)" ;;
+    esac
+  done ;;
+vpn-reload)
+  # new user secrets for strongSwan; OpenVPN reads its users file on every login
+  if [ -f $SWANCONF ] && [ -f $D/vpn/swanctl.conf ]; then install -m 600 $D/vpn/swanctl.conf $SWANCONF; swan_load; fi
+  echo ok ;;
+vpn-sessions)
+  # what the enforce job counts: OpenVPN status files and strongSwan's SAs
+  for f in "$D"/vpn/*.status; do [ -f "$f" ] && { echo "### ovpn $(basename "$f" .status)"; cat "$f"; }; done
+  if [ -f $SWANCONF ] && command -v swanctl >/dev/null; then echo "### ike"; swanctl --list-sas --raw 2>/dev/null || true; fi ;;
+vpn-kick)
+  # vpn-kick ovpn:ID:USER | ike:UNIQUEID
+  for k in "$@"; do
+    case $k in
+      ovpn:*) IFS=: read -r _ id user <<< "$k"
+        $XT vpn-mgmt "$D/vpn/$id.sock" "kill $user" >/dev/null 2>&1 || true ;;
+      ike:*) swanctl --terminate --ike-id "${k#ike:}" --force >/dev/null 2>&1 || true ;;
+    esac
+  done
+  echo ok ;;
 start)
   systemctl stop xray-autotune-test 2>/dev/null || true
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
@@ -179,6 +383,7 @@ start)
 stop-test)
   systemctl stop xray-autotune-test 2>/dev/null || true
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
+  test_stop_extras
   fw_close $D/fw.test
   rm -rf $D/test.json $D/test ;;
 check)
@@ -262,13 +467,14 @@ cleanup)
   # remove test leftovers; the whole dir goes only if nothing is deployed
   systemctl stop xray-autotune-test 2>/dev/null || true
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
+  test_stop_extras
   fw_close $D/fw.test
   if [ -f /etc/systemd/system/xray-autotune.service ]; then rm -rf $D/test.json $D/test; echo kept-deployed
   else unlink_xt; rm -rf $D; echo removed; fi ;;
 uninstall)
   remove_units
-  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub
+  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; vpn_net_down
   unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|start|stop-test|check|apply|sub-enable|sub-disable|bot-enable|bot-disable|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|bot-enable|bot-disable|cleanup|uninstall" >&2; exit 2 ;;
 esac

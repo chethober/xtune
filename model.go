@@ -24,25 +24,30 @@ import (
 
 // Entry is one server inbound. FP/Mode/Frag are the client-side knobs tuning picked for it.
 type Entry struct {
-	ID      string `json:"id"`
-	Kind    string `json:"kind"` // reality-tcp reality-xhttp reality-grpc vlessenc-tcp vlessenc-xhttp cdn-xhttp hysteria2 ss2022
-	Port    int    `json:"port"`
-	SNI     string `json:"sni,omitempty"`
-	Path    string `json:"path,omitempty"`
-	Svc     string `json:"svc,omitempty"`
-	Primary bool   `json:"primary,omitempty"`
-	FP      string `json:"fp,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Frag    string `json:"frag,omitempty"`
-	Split   string `json:"split,omitempty"` // cdn-xhttp: "cdn-up" uploads through the CDN and downloads straight from the server
-	Hop     string `json:"hop,omitempty"`   // hysteria2: UDP port range forwarded to Port, for port hopping ("20000-20999")
+	ID       string `json:"id"`
+	Kind     string `json:"kind"` // see kinds
+	Port     int    `json:"port"`
+	SNI      string `json:"sni,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Svc      string `json:"svc,omitempty"`
+	Primary  bool   `json:"primary,omitempty"`
+	FP       string `json:"fp,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+	Frag     string `json:"frag,omitempty"`
+	Split    string `json:"split,omitempty"`    // cdn-xhttp: "cdn-up" uploads through the CDN and downloads straight from the server
+	Hop      string `json:"hop,omitempty"`      // hysteria2: UDP port range forwarded to Port, for port hopping ("20000-20999")
+	MTU      int    `json:"mtu,omitempty"`      // wireguard: tunnel MTU
+	Resolver string `json:"resolver,omitempty"` // dnstt: the resolver clients send queries through
 }
 
 // Knobs are the client settings tuning picked for the entry.
-func (e Entry) Knobs() Knobs { return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split} }
+func (e Entry) Knobs() Knobs {
+	return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split, MTU: e.MTU, Resolver: e.Resolver}
+}
 
 func (e Entry) Proto() string {
-	if e.Kind == "hysteria2" {
+	switch e.Kind {
+	case "hysteria2", "wireguard", "dnstt", "openvpn-udp", "ikev2":
 		return "udp"
 	}
 	return "tcp"
@@ -53,7 +58,7 @@ func (e Entry) VlessEnc() bool { return strings.HasPrefix(e.Kind, "vlessenc") }
 // CDN entries are reached through the CDN domain: TLS ends at the CDN, which forwards to the origin.
 func (e Entry) CDN() bool { return strings.HasPrefix(e.Kind, "cdn") }
 func (e Entry) Net() string {
-	if i := strings.Index(e.Kind, "-"); i > 0 && (e.Reality() || e.VlessEnc() || e.CDN()) {
+	if i := strings.Index(e.Kind, "-"); i > 0 && e.Xray() && (e.Reality() || e.VlessEnc() || e.CDN()) {
 		return e.Kind[i+1:]
 	}
 	return ""
@@ -74,6 +79,7 @@ type User struct {
 	Plan     string `json:"plan,omitempty"`     // plan the user was added or renewed with
 	Telegram int64  `json:"telegram,omitempty"` // linked Telegram user ID (bot self-service)
 	Owner    int64  `json:"owner,omitempty"`    // reseller (Telegram user ID) who manages this user
+	WGIP     string `json:"wgIp,omitempty"`     // WireGuard tunnel address
 }
 
 // SubConfig is the subscription server: off when Mode is empty.
@@ -112,10 +118,29 @@ type State struct {
 	Cloudflare  Cloudflare      `json:"cloudflare,omitzero"` // API token for DNS records and the SSL mode
 	Peers       *PeerHub        `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions
 	Follow      *Follow         `json:"follow,omitempty"`    // follower: the users come from a primary
+
+	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
+	WGPub      string `json:"wgPublicKey,omitempty"`
+	SSHHostKey string `json:"sshHostKey,omitempty"` // SSH tunnel host key (OpenSSH PEM)
+	SSHHostPub string `json:"sshHostPub,omitempty"` // authorized_keys format; clients pin it
+	DNSTTKey   string `json:"dnsttKey,omitempty"`   // DNS tunnel Noise key (hex)
+	DNSTTPub   string `json:"dnsttPub,omitempty"`
+	DNSDomain  string `json:"dnsDomain,omitempty"` // zone delegated to the server for the DNS tunnel
+	VPNCA      string `json:"vpnCa,omitempty"`     // CA for OpenVPN and IKEv2 (PEM); clients trust it
+	VPNCAKey   string `json:"vpnCaKey,omitempty"`
+	VPNCert    string `json:"vpnCert,omitempty"` // server certificate, for VPNName
+	VPNKey     string `json:"vpnKey,omitempty"`
+	VPNName    string `json:"vpnName,omitempty"` // the address the server certificate is for
 }
 
-// Knobs are client-side settings. Split applies to cdn-xhttp only.
-type Knobs struct{ FP, Frag, Mode, Split string }
+// Knobs are client-side settings. Split applies to cdn-xhttp only, MTU to wireguard, Resolver to
+// dnstt; Mode is the XHTTP mode, or for SSH entries "ws" when the client opens with a WebSocket
+// upgrade request.
+type Knobs struct {
+	FP, Frag, Mode, Split string
+	MTU                   int
+	Resolver              string
+}
 
 var fragNames = []string{"none", "frag-mild", "frag-aggr"}
 var fragments = map[string]map[string]string{
@@ -165,6 +190,9 @@ func NewState(host, xrayBin string) (*State, error) {
 		return nil, fmt.Errorf("could not parse `xray vlessenc` output")
 	}
 	if err := st.makeCert(); err != nil {
+		return nil, err
+	}
+	if _, err := st.ensureKeys(); err != nil {
 		return nil, err
 	}
 	return st, nil
@@ -250,6 +278,9 @@ func (st *State) inbound(e Entry, users []User) J {
 		ib["protocol"] = "shadowsocks"
 		ib["settings"] = J{"method": "2022-blake3-aes-128-gcm", "password": st.SSKey, "clients": cl, "network": "tcp,udp"}
 		return ib
+	case "wireguard":
+		st.wgInbound(ib, users)
+		return ib
 	}
 	var cl []J
 	for _, u := range users {
@@ -295,7 +326,7 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 	}
 	ibs := []J{}
 	if len(enabled) > 0 {
-		for _, e := range entries {
+		for _, e := range filterEntries(entries, Entry.Xray) {
 			ibs = append(ibs, st.inbound(e, enabled))
 		}
 	}
@@ -335,6 +366,8 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	case "ss2022":
 		return J{"tag": tag, "protocol": "shadowsocks", "settings": J{"servers": []J{{"address": st.Addr(), "port": e.Port,
 			"method": "2022-blake3-aes-128-gcm", "password": st.SSKey + ":" + u.SSKey}}}}
+	case "wireguard":
+		return st.wgOutbound(e, u, k, tag)
 	}
 	enc, flow := "none", ""
 	if e.VlessEnc() {
@@ -419,9 +452,11 @@ var countries = map[string][2]string{
 // ads are blocked. Domain strategy AsIs keeps DNS lookups for proxied sites off the local network.
 func (st *State) FailoverConfig(u User) J {
 	var obs []J
+	first := ""
 	for _, s := range st.servers() {
-		for _, e := range s.Entries {
+		for _, e := range filterEntries(s.Entries, Entry.Xray) {
 			obs = append(obs, s.Outbound(e, u, e.Knobs(), "proxy-"+e.ID))
+			first = orStr(first, "proxy-"+e.ID)
 		}
 	}
 	obs = append(obs, fragOutbounds()...)
@@ -433,8 +468,8 @@ func (st *State) FailoverConfig(u User) J {
 	}
 	rules = append(rules, J{"network": "tcp,udp", "balancerTag": "auto"})
 	balancer := J{"tag": "auto", "selector": []string{"proxy-"}, "strategy": J{"type": "leastPing"}}
-	if len(st.Entries) > 0 {
-		balancer["fallbackTag"] = "proxy-" + st.Entries[0].ID
+	if first != "" {
+		balancer["fallbackTag"] = first
 	}
 	return J{"remarks": "xtune - " + u.Name, "log": J{"loglevel": "warning"}, "inbounds": clientInbounds(), "outbounds": obs,
 		"burstObservatory": J{"subjectSelector": []string{"proxy-"},
@@ -454,6 +489,15 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 		return fmt.Sprintf("hysteria2://%s@%s?sni=%s&alpn=h3&pinSHA256=%s%s#%s", u.UUID, hostPort, st.CertSNI, st.CertHash, hop, name)
 	case "ss2022":
 		return fmt.Sprintf("ss://%s@%s#%s", url.QueryEscape("2022-blake3-aes-128-gcm:"+st.SSKey+":"+u.SSKey), hostPort, name)
+	case "wireguard":
+		return st.wgLink(e, u, k, name)
+	case "ssh": // ssh:// cannot say TLS or a WebSocket opener: those come as profile files
+		if k.Mode == "" {
+			return st.sshLink(e, u, name)
+		}
+	}
+	if !e.Xray() { // no link scheme: these come as profile files (see Profiles)
+		return ""
 	}
 	q := url.Values{"type": {e.Net()}, "encryption": {"none"}, "security": {"none"}}
 	if e.VlessEnc() {
