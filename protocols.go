@@ -208,6 +208,7 @@ func wgVariantUser(u User, k Knobs) User {
 	a := u
 	a.Name = fmt.Sprintf("%s-mtu%d", u.Name, k.MTU)
 	a.UUID = fmt.Sprintf("%s/mtu%d", u.UUID, k.MTU)
+	a.wgOnly = true
 	if ip, err := netip.ParseAddr(u.WGIP); err == nil {
 		a.WGIP = ip.Next().String()
 	}

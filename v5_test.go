@@ -656,3 +656,19 @@ func TestWireGuardHarnessPeers(t *testing.T) {
 		t.Errorf("test peers: %+v", peers)
 	}
 }
+
+// The MTU test peers are WireGuard keys only: their UUIDs are not valid for VLESS, Hysteria and the rest.
+func TestWireGuardTestPeersOnlyOnWireGuard(t *testing.T) {
+	st := keyedState(t)
+	u := NewUser("tune")
+	u.WGIP = "10.66.0.2"
+	entries := []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "wg", Kind: "wireguard", Port: 51820}}
+	cfg := st.ServerConfig(entries, wgTestPeers(u, entries))
+	for _, ib := range cfg["inbounds"].([]J) {
+		b, _ := json.Marshal(ib)
+		alias := strings.Contains(string(b), "/mtu1280") || strings.Contains(string(b), "tune-mtu1280")
+		if (ib["tag"] == "wg") != alias {
+			t.Errorf("inbound %v: MTU test peer present = %v", ib["tag"], alias)
+		}
+	}
+}

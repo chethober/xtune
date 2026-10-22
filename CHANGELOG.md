@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-10-23
+
+### Fixed
+- `tune` with WireGuard and any other Xray protocol: the server test instance failed to start with
+  `common/uuid: invalid UUID: <uuid>/mtu1280`. The MTU 1280 test peer, which exists only to get a WireGuard key of
+  its own, was also added to the VLESS, Hysteria and Shadowsocks inbounds; it now goes on WireGuard inbounds only.
+
 ## [0.5.0] - 2026-10-23
 
 ### Fixed
@@ -150,6 +157,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.5.1]: https://github.com/chethober/xtune/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/chethober/xtune/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chethober/xtune/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chethober/xtune/compare/v0.2.0...v0.3.0

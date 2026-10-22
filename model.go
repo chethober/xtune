@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,8 @@ type User struct {
 	Telegram int64  `json:"telegram,omitempty"` // linked Telegram user ID (bot self-service)
 	Owner    int64  `json:"owner,omitempty"`    // reseller (Telegram user ID) who manages this user
 	WGIP     string `json:"wgIp,omitempty"`     // WireGuard tunnel address
+
+	wgOnly bool // a WireGuard test peer (wgVariantUser): its UUID is not a real UUID
 }
 
 // SubConfig is the subscription server: off when Mode is empty.
@@ -327,7 +330,11 @@ func (st *State) ServerConfig(entries []Entry, users []User) J {
 	ibs := []J{}
 	if len(enabled) > 0 {
 		for _, e := range filterEntries(entries, Entry.Xray) {
-			ibs = append(ibs, st.inbound(e, enabled))
+			us := enabled
+			if e.Kind != "wireguard" {
+				us = slices.DeleteFunc(slices.Clone(enabled), func(u User) bool { return u.wgOnly })
+			}
+			ibs = append(ibs, st.inbound(e, us))
 		}
 	}
 	obs := []J{{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}}
