@@ -3,11 +3,11 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-10-24
 
 ### Added
 - Public profiles (`xtune public`): pools of users for sharing a server with a community through the open-source
-  community VPN bot (github.com/chethober/bots, `chthvpnbot`). `xtune public add NAME` takes per-member limits (or a
+  community VPN bot [@chthvpnbot](https://t.me/chthvpnbot) (open source: github.com/chethober/bots, `chthvpnbot`). `xtune public add NAME` takes per-member limits (or a
   plan) and a member cap, and prints a connect link on the subscription server. The bot joins and removes members
   through it (`POST <link>/join`, `POST <link>/leave` with `{"label": "..."}`, `GET <link>` for the pool's members,
   slots and protocols). Each member is an ordinary user `NAME-LABEL` with their own subscription link. Also
@@ -168,6 +168,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.6.0]: https://github.com/chethober/xtune/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/chethober/xtune/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/chethober/xtune/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chethober/xtune/compare/v0.3.0...v0.4.0
