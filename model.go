@@ -81,6 +81,7 @@ type User struct {
 	Telegram int64  `json:"telegram,omitempty"` // linked Telegram user ID (bot self-service)
 	Owner    int64  `json:"owner,omitempty"`    // reseller (Telegram user ID) who manages this user
 	WGIP     string `json:"wgIp,omitempty"`     // WireGuard tunnel address
+	Pool     string `json:"pool,omitempty"`     // public profile the user is a member of
 
 	wgOnly bool // a WireGuard test peer (wgVariantUser): its UUID is not a real UUID
 }
@@ -95,32 +96,33 @@ type SubConfig struct {
 
 // State is the server's deployment and user database, stored as state.json (root, 0600).
 type State struct {
-	Host        string          `json:"host"`
-	Domain      string          `json:"domain,omitempty"`    // direct (DNS-only) domain used instead of Host in links
-	CDNDomain   string          `json:"cdnDomain,omitempty"` // CDN-proxied domain for the cdn-* entries
-	RealityPriv string          `json:"realityPrivateKey"`
-	RealityPub  string          `json:"realityPublicKey"`
-	ShortID     string          `json:"shortId"`
-	VencDec     string          `json:"vlessDecryption"`
-	VencEnc     string          `json:"vlessEncryption"`
-	SSKey       string          `json:"ssServerKey"`
-	CertSNI     string          `json:"certSni"`
-	CertHash    string          `json:"certSha256"`
-	CertPEM     string          `json:"certPem"`
-	KeyPEM      string          `json:"keyPem"`
-	Entries     []Entry         `json:"entries"`
-	Users       []User          `json:"users"`
-	APIPort     int             `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
-	Country     string          `json:"country,omitempty"` // client configs send this country's sites direct
-	Sub         SubConfig       `json:"sub"`
-	Check       *User           `json:"check,omitempty"`     // hidden user `xtune check` measures the deployed configs with
-	Warp        *Warp           `json:"warp,omitempty"`      // Cloudflare WARP outbound for chosen sites
-	Notify      Notify          `json:"notify,omitzero"`     // admin alerts
-	Bot         Bot             `json:"bot,omitzero"`        // Telegram bot for managing users
-	Plans       map[string]Plan `json:"plans,omitempty"`     // named sets of limits for adding and renewing users
-	Cloudflare  Cloudflare      `json:"cloudflare,omitzero"` // API token for DNS records and the SSL mode
-	Peers       *PeerHub        `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions
-	Follow      *Follow         `json:"follow,omitempty"`    // follower: the users come from a primary
+	Host        string                 `json:"host"`
+	Domain      string                 `json:"domain,omitempty"`    // direct (DNS-only) domain used instead of Host in links
+	CDNDomain   string                 `json:"cdnDomain,omitempty"` // CDN-proxied domain for the cdn-* entries
+	RealityPriv string                 `json:"realityPrivateKey"`
+	RealityPub  string                 `json:"realityPublicKey"`
+	ShortID     string                 `json:"shortId"`
+	VencDec     string                 `json:"vlessDecryption"`
+	VencEnc     string                 `json:"vlessEncryption"`
+	SSKey       string                 `json:"ssServerKey"`
+	CertSNI     string                 `json:"certSni"`
+	CertHash    string                 `json:"certSha256"`
+	CertPEM     string                 `json:"certPem"`
+	KeyPEM      string                 `json:"keyPem"`
+	Entries     []Entry                `json:"entries"`
+	Users       []User                 `json:"users"`
+	APIPort     int                    `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
+	Country     string                 `json:"country,omitempty"` // client configs send this country's sites direct
+	Sub         SubConfig              `json:"sub"`
+	Check       *User                  `json:"check,omitempty"`     // hidden user `xtune check` measures the deployed configs with
+	Warp        *Warp                  `json:"warp,omitempty"`      // Cloudflare WARP outbound for chosen sites
+	Notify      Notify                 `json:"notify,omitzero"`     // admin alerts
+	Bot         Bot                    `json:"bot,omitzero"`        // Telegram bot for managing users
+	Plans       map[string]Plan        `json:"plans,omitempty"`     // named sets of limits for adding and renewing users
+	Cloudflare  Cloudflare             `json:"cloudflare,omitzero"` // API token for DNS records and the SSL mode
+	Peers       *PeerHub               `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions
+	Follow      *Follow                `json:"follow,omitempty"`    // follower: the users come from a primary
+	Public      map[string]*PublicPool `json:"public,omitempty"`    // public profiles: pools of users shared through a bot
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`

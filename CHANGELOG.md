@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Public profiles (`xtune public`): pools of users for sharing a server with a community through the open-source
+  community VPN bot (github.com/chethober/bots, `chthvpnbot`). `xtune public add NAME` takes per-member limits (or a
+  plan) and a member cap, and prints a connect link on the subscription server. The bot joins and removes members
+  through it (`POST <link>/join`, `POST <link>/leave` with `{"label": "..."}`, `GET <link>` for the pool's members,
+  slots and protocols). Each member is an ordinary user `NAME-LABEL` with their own subscription link. Also
+  `public list|limit|link|token|pause|resume|del`. Members expired for over a week are removed; joins are capped at
+  30 a minute per pool.
+
 ## [0.5.1] - 2026-10-23
 
 ### Fixed

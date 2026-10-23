@@ -63,6 +63,8 @@ On the server (as root):
   xtune users     usage NAME               traffic per day, the last 30 days
   xtune users     enable|disable|rotate|reset-usage|reset-sub|del NAME
   xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
+  xtune public    [list | add NAME [--quota GB] [--days N] [--devices N] [--plan P] [--members N]]
+  xtune public    limit|link|token|pause|resume|del NAME   pools of users shared through the community VPN bot
   xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable | lang en|fa|auto]
   xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
@@ -125,6 +127,8 @@ func main() {
 		err = cmdFollow(args)
 	case "plans":
 		err = cmdPlans(args)
+	case "public":
+		err = cmdPublic(args)
 	case "cloudflare", "cf":
 		err = cmdCloudflare(args)
 	case "sni":

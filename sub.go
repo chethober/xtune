@@ -230,7 +230,9 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
 	isPeer := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "peer"
-	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer {
+	isPub := len(parts) >= 3 && parts[1] == "pub" &&
+		(len(parts) == 3 && req.Method == http.MethodGet || len(parts) == 4 && req.Method == http.MethodPost)
+	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub {
 		http.NotFound(w, req)
 		return
 	}
@@ -245,6 +247,14 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		h.servePeer(w, req, st, parts[2])
+		return
+	}
+	if isPub {
+		if st.Sub.Mode == "" || parts[0] != st.Sub.Path {
+			http.NotFound(w, req)
+			return
+		}
+		h.servePublic(w, req, st, parts)
 		return
 	}
 	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 4 || parts[0] != st.Sub.Path ||
