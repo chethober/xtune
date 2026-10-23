@@ -45,6 +45,49 @@ func (st *State) SubURL(u User) string {
 	return "https://" + hostPort(h, st.Sub.Port) + "/" + st.Sub.Path + "/" + u.SubToken
 }
 
+// botBase is where the connect and management links point: port 443 when the server listens there.
+func (st *State) botBase() string {
+	h := subHost(st)
+	if h == "" {
+		return ""
+	}
+	if st.Sub.Port == 443 || st.Sub.Port443 {
+		if strings.Contains(h, ":") {
+			h = "[" + h + "]"
+		}
+		return "https://" + h + "/" + st.Sub.Path
+	}
+	return "https://" + hostPort(h, st.Sub.Port) + "/" + st.Sub.Path
+}
+
+// ensurePort443 makes the subscription server also listen on 443 when nothing else uses it, so
+// serverless bots can reach the connect and management links. It reports whether 443 is reachable.
+func ensurePort443(r *Server, st *State) (bool, error) {
+	if st.Sub.Port == 443 || st.Sub.Port443 {
+		return true, nil
+	}
+	out, err := r.Helper("probe")
+	if err != nil {
+		return false, err
+	}
+	if usedPorts(out)["tcp"][443] || st.APIPort == 443 {
+		return false, nil
+	}
+	for _, e := range st.Entries {
+		if e.Port == 443 && e.Proto() == "tcp" {
+			return false, nil
+		}
+	}
+	st.Sub.Port443 = true
+	if err := saveState(r, st); err != nil {
+		return false, err
+	}
+	return true, restartSub(r, st)
+}
+
+const port443Note = "note: @chthvpnbot can only reach ports 80 and 443, and port 443 is in use on this server,\n" +
+	"so the bot cannot use this link (free port 443, or: xtune sub enable --port 443)"
+
 // EnableSub turns the subscription server on, or moves it to another mode or port. Port 0 picks a
 // free CDN-compatible port. Existing links keep working as long as the mode and port stay the same.
 func EnableSub(r *Server, mode string, port int) (*State, error) {
@@ -72,6 +115,9 @@ func EnableSub(r *Server, mode string, port int) (*State, error) {
 	used := usedPorts(out)["tcp"]
 	if st.Sub.Mode != "" { // our own server holds these
 		delete(used, st.Sub.Port)
+		if st.Sub.Port443 {
+			delete(used, 443)
+		}
 		if st.Sub.Mode == "direct" {
 			delete(used, 80)
 		}
@@ -140,6 +186,9 @@ func restartSub(r *Server, st *State) error {
 		return nil
 	}
 	args := []string{"sub-enable", strconv.Itoa(st.Sub.Port) + "/tcp"}
+	if st.Sub.Port443 && st.Sub.Port != 443 {
+		args = append(args, "443/tcp")
+	}
 	if st.Sub.Mode == "direct" {
 		args = append(args, "80/tcp")
 	}
@@ -190,6 +239,15 @@ func Serve() error {
 		srv.TLSConfig.MinVersion = tls.VersionTLS12
 	}
 	fmt.Printf("subscription server on :%d (%s, %s)\n", st.Sub.Port, st.Sub.Mode, subHost(st))
+	if st.Sub.Port443 && st.Sub.Port != 443 {
+		alt := &http.Server{Addr: ":443", Handler: srv.Handler, TLSConfig: srv.TLSConfig,
+			ReadHeaderTimeout: srv.ReadHeaderTimeout, ReadTimeout: srv.ReadTimeout, WriteTimeout: srv.WriteTimeout,
+			IdleTimeout: srv.IdleTimeout, MaxHeaderBytes: srv.MaxHeaderBytes, ErrorLog: srv.ErrorLog}
+		go func() {
+			err := alt.ListenAndServeTLS("", "")
+			fmt.Fprintln(os.Stderr, "port 443 (links for bots):", err)
+		}()
+	}
 	return srv.ListenAndServeTLS("", "")
 }
 

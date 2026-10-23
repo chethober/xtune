@@ -187,3 +187,38 @@ func TestJoinLimiter(t *testing.T) {
 		t.Error("joins not allowed again after a minute")
 	}
 }
+
+func TestLinksForBotsUsePort443(t *testing.T) {
+	r, fs := deployed(t, NewUser("ann"))
+	st, _ := LoadState(r)
+	st.Entries[0].Port = 8443 // 443 is free
+	st.Domain, st.Sub = "vpn.example.com", SubConfig{Mode: "direct", Port: 2096, Path: "subs"}
+	saveState(r, st)
+	st, err := SetPublic(r, "community", PublicPool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.PublicURL("community"); !strings.HasPrefix(got, "https://vpn.example.com/subs/pub/") {
+		t.Errorf("connect link: %s", got)
+	}
+	if got := st.SubURL(st.Users[0]); !strings.HasPrefix(got, "https://vpn.example.com:2096/subs/") {
+		t.Errorf("users' links moved: %s", got)
+	}
+	if !strings.Contains(strings.Join(fs.calls, "\n"), "sub-enable 2096/tcp 443/tcp 80/tcp") {
+		t.Errorf("443 not opened: %v", fs.calls)
+	}
+	if st, _ = changeManage(r, func(*State, *Manage) error { return nil }); !strings.HasPrefix(st.manageURL(st.Manage.Token), "https://vpn.example.com/subs/adm/") {
+		t.Errorf("management link: %s", st.manageURL(st.Manage.Token))
+	}
+
+	// with 443 taken, links keep the subscription port
+	r2, fs2 := deployed(t, NewUser("ann"))
+	st2, _ := LoadState(r2)
+	st2.Domain, st2.Sub = "vpn.example.com", SubConfig{Mode: "direct", Port: 2096, Path: "subs"}
+	saveState(r2, st2)
+	fs2.used = "USED tcp 0.0.0.0:443"
+	st2, _ = SetPublic(r2, "community", PublicPool{})
+	if got := st2.PublicURL("community"); !strings.Contains(got, ":2096/") || st2.Sub.Port443 {
+		t.Errorf("443 in use, link: %s", got)
+	}
+}

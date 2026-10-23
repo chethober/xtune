@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-10-24
+
+### Fixed
+- @chthvpnbot could not reach connect and management links ("Couldn't reach the xtune connect link"): it runs on
+  tgcloud, whose fetch only allows ports 80 and 443, and the subscription server listens on a port such as 2053 or
+  2096. Now, when port 443 is free, `xtune public add|link|limit|token|pause` and `xtune manage link|token|reseller`
+  make the subscription server also listen on 443 (`sub.port443`), and these links point there, without a port.
+  Users' subscription links keep their port. When 443 is in use, xtune says the bot cannot use the link.
+
 ## [0.7.0] - 2026-10-24
 
 ### Removed
@@ -189,6 +198,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.7.1]: https://github.com/chethober/xtune/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chethober/xtune/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/chethober/xtune/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/chethober/xtune/compare/v0.5.0...v0.5.1

@@ -91,6 +91,9 @@ type SubConfig struct {
 	Port int    `json:"port,omitempty"`
 	Path string `json:"path,omitempty"` // secret path prefix
 	Lang string `json:"lang,omitempty"` // page language: en | fa ("" = from the browser)
+	// Port443: the server also listens on 443, for the connect and management links: bots on
+	// serverless platforms (such as @chthvpnbot on tgcloud) can only reach ports 80 and 443.
+	Port443 bool `json:"port443,omitempty"`
 }
 
 // State is the server's deployment and user database, stored as state.json (root, 0600).

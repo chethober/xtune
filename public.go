@@ -70,11 +70,10 @@ func (p PublicPool) String() string {
 // PublicURL is the pool's connect link, or "" when the subscription server is off.
 func (st *State) PublicURL(name string) string {
 	p := st.Public[name]
-	h := subHost(st)
-	if p == nil || h == "" {
+	if p == nil || st.botBase() == "" {
 		return ""
 	}
-	return "https://" + hostPort(h, st.Sub.Port) + "/" + st.Sub.Path + "/pub/" + p.Token
+	return st.botBase() + "/pub/" + p.Token
 }
 
 // members are the pool's users.
@@ -122,7 +121,15 @@ func SetPublic(r *Server, name string, p PublicPool) (*State, error) {
 		p.Token, p.Created = randHex(16), time.Now().Unix()
 	}
 	st.Public[name] = &p
-	return st, saveState(r, st)
+	if err := saveState(r, st); err != nil {
+		return nil, err
+	}
+	if ok, err := ensurePort443(r, st); err != nil {
+		return nil, err
+	} else if !ok {
+		fmt.Fprintln(os.Stderr, port443Note)
+	}
+	return st, nil
 }
 
 // changePublic loads the state under the server lock and lets fn change the pool.
@@ -139,7 +146,15 @@ func changePublic(r *Server, name string, fn func(st *State, p *PublicPool) erro
 	if err := fn(st, p); err != nil {
 		return nil, err
 	}
-	return st, saveState(r, st)
+	if err := saveState(r, st); err != nil {
+		return nil, err
+	}
+	if ok, err := ensurePort443(r, st); err != nil {
+		return nil, err
+	} else if !ok {
+		fmt.Fprintln(os.Stderr, port443Note)
+	}
+	return st, nil
 }
 
 // RotatePublic gives the pool a new connect link; the old one stops working, members stay.
@@ -543,7 +558,8 @@ func cmdPublic(args []string) error {
 		}
 		return showLink(SetPublic(r, pos[1], p))
 	case "link", "show":
-		return showLink(requireState(r))
+		// a pool made before v0.7.1 gets its link moved to port 443 here
+		return showLink(changePublic(r, pos[1], func(*State, *PublicPool) error { return nil }))
 	case "token", "rotate":
 		return showLink(RotatePublic(r, pos[1]))
 	case "pause", "resume":

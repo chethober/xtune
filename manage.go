@@ -57,11 +57,10 @@ func startServices(r *Server, st *State) error { return restartSub(r, st) }
 
 // manageURL is the link for a token, or "" when the subscription server is off.
 func (st *State) manageURL(token string) string {
-	h := subHost(st)
-	if h == "" || token == "" {
+	if st.botBase() == "" || token == "" {
 		return ""
 	}
-	return "https://" + hostPort(h, st.Sub.Port) + "/" + st.Sub.Path + "/adm/" + token
+	return st.botBase() + "/adm/" + token
 }
 
 // manager is who a management link belongs to: the admin (reseller "") or a reseller.
@@ -442,7 +441,15 @@ func changeManage(r *Server, fn func(st *State, m *Manage) error) (*State, error
 	if err := fn(st, st.Manage); err != nil {
 		return nil, err
 	}
-	return st, saveState(r, st)
+	if err := saveState(r, st); err != nil {
+		return nil, err
+	}
+	if ok, err := ensurePort443(r, st); err != nil {
+		return nil, err
+	} else if !ok {
+		fmt.Fprintln(os.Stderr, port443Note)
+	}
+	return st, nil
 }
 
 // removeLegacyBot stops and removes the Telegram bot of xtune before v0.7.0. Users it added
