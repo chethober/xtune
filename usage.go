@@ -362,6 +362,13 @@ func Enforce(r *Server) error {
 	if err != nil {
 		return err
 	}
+	if removed, err := removeLegacyBot(r, st); err != nil {
+		fmt.Println("removing the old Telegram bot:", err) // retried at the next run
+	} else if removed {
+		if err := saveState(r, st); err != nil {
+			return err
+		}
+	}
 	now := time.Now()
 	prev, sessions, err := collect(r, st, us, now)
 	notifyXray(st, us, err)

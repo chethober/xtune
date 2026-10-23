@@ -78,8 +78,7 @@ type User struct {
 	Reset    string `json:"reset,omitempty"`    // usage starts from zero every period: monthly | weekly
 	ResetAt  int64  `json:"resetAt,omitempty"`  // unix seconds of the next reset
 	Plan     string `json:"plan,omitempty"`     // plan the user was added or renewed with
-	Telegram int64  `json:"telegram,omitempty"` // linked Telegram user ID (bot self-service)
-	Owner    int64  `json:"owner,omitempty"`    // reseller (Telegram user ID) who manages this user
+	Reseller string `json:"reseller,omitempty"` // reseller (management link) who manages this user
 	WGIP     string `json:"wgIp,omitempty"`     // WireGuard tunnel address
 	Pool     string `json:"pool,omitempty"`     // public profile the user is a member of
 
@@ -117,7 +116,8 @@ type State struct {
 	Check       *User                  `json:"check,omitempty"`     // hidden user `xtune check` measures the deployed configs with
 	Warp        *Warp                  `json:"warp,omitempty"`      // Cloudflare WARP outbound for chosen sites
 	Notify      Notify                 `json:"notify,omitzero"`     // admin alerts
-	Bot         Bot                    `json:"bot,omitzero"`        // Telegram bot for managing users
+	LegacyBot   json.RawMessage        `json:"bot,omitempty"`       // the Telegram bot removed in v0.7.0: Enforce removes its unit, then this
+	Manage      *Manage                `json:"manage,omitempty"`    // management links, used by the community VPN bot
 	Plans       map[string]Plan        `json:"plans,omitempty"`     // named sets of limits for adding and renewing users
 	Cloudflare  Cloudflare             `json:"cloudflare,omitzero"` // API token for DNS records and the SSL mode
 	Peers       *PeerHub               `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions

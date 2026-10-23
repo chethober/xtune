@@ -70,15 +70,14 @@ On the server (as root):
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
   xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
   xtune warp      [status | on [--domains D,D] [--all] | off]   chosen sites (default: AI services) via WARP
-  xtune bot       [status | enable [--admins ID,ID] | admins ID,ID | disable]   manage users from Telegram
-  xtune bot       lang en|fa | self-service on|off | backup on [--every H] | backup off
-  xtune bot       resellers [list | add ID [--name N] [--users N] [--quota GB] | del ID]
+  xtune manage    [status | link | token | off]   a link to manage users and plans from @chthvpnbot
+  xtune manage    reseller [list | add|limit NAME [--users N] [--quota GB] | link|token|del NAME]
   xtune peers     [status | enable | remove NAME | disable]   let other servers join this one's subscriptions
   xtune follow    [PEER_URL [--name N] | off]   take users from a primary, add this server's configs to it
   xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
   xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
   xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
-  (internal, run by systemd: xtune enforce, xtune serve, xtune bot run, xtune tunnels run, xtune vpn-auth)
+  (internal, run by systemd: xtune enforce, xtune serve, xtune tunnels run, xtune vpn-auth)
 
 Connection flags (conn):
   --host H --port 22 --user root --key PATH --password-env VAR --profile NAME
@@ -129,6 +128,8 @@ func main() {
 		err = cmdPlans(args)
 	case "public":
 		err = cmdPublic(args)
+	case "manage":
+		err = cmdManage(args)
 	case "cloudflare", "cf":
 		err = cmdCloudflare(args)
 	case "sni":

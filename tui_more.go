@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -265,94 +264,5 @@ func (t *tui) snis() error {
 	}
 	fmt.Println(okStyle.Render("changed"))
 	pause()
-	return nil
-}
-
-// ---------------------------------------------------------------- more bot settings (server)
-
-func (t *tui) botSetting(st *State, choice string) error {
-	b := st.Bot
-	done := func(st *State, err error) error {
-		if err != nil {
-			return err
-		}
-		fmt.Println(okStyle.Render("Telegram bot: " + st.Bot.describe()))
-		pause()
-		return nil
-	}
-	switch choice {
-	case "lang":
-		l := orStr(b.Lang, "en")
-		if err := huh.NewSelect[string]().Title("Bot language").Options(huh.NewOption("English", "en"),
-			huh.NewOption("فارسی (Persian)", "fa")).Value(&l).WithTheme(t.theme).Run(); err != nil {
-			return err
-		}
-		return done(changeBot(t.r, func(b *Bot) error { b.Lang = l; return nil }))
-	case "self":
-		on := b.SelfService
-		if err := huh.NewConfirm().Title("Let users see their own usage in the bot?").
-			Description("They link their Telegram by sending their subscription link, or with an invite link\n" +
-				"from their card (📲). They get warnings before their quota or time runs out.").
-			Affirmative("On").Negative("Off").Value(&on).WithTheme(t.theme).Run(); err != nil {
-			return err
-		}
-		return done(changeBot(t.r, func(b *Bot) error { b.SelfService = on; return nil }))
-	case "backup":
-		hours := strconv.Itoa(max(b.Backup.Hours, 24))
-		pass, again := "", ""
-		desc := "Admins get the backup as a file. You need it to restore: keep it somewhere else."
-		if b.Backup.Passphrase != "" {
-			desc += " Empty keeps the current one."
-		}
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewInput().Title("Every how many hours? (0 = off)").Value(&hours).Validate(func(s string) error {
-				if n, err := strconv.Atoi(strings.TrimSpace(s)); err != nil || n < 0 {
-					return errors.New("a whole number")
-				}
-				return nil
-			}),
-			huh.NewInput().Title("Passphrase").Description(desc).EchoMode(huh.EchoModePassword).Value(&pass),
-			huh.NewInput().Title("Passphrase again").EchoMode(huh.EchoModePassword).Value(&again),
-		)).WithTheme(t.theme).Run(); err != nil {
-			return err
-		}
-		n, _ := strconv.Atoi(strings.TrimSpace(hours))
-		if pass != again {
-			return errors.New("the passphrases differ")
-		}
-		pass = orStr(pass, b.Backup.Passphrase)
-		if n > 0 && len(pass) < 8 {
-			return errors.New("the passphrase needs at least 8 characters")
-		}
-		return done(changeBot(t.r, func(b *Bot) error { b.Backup = BotBackup{Hours: n, Passphrase: pass}; return nil }))
-	case "resellers":
-		for _, res := range b.Resellers {
-			fmt.Println("  " + res.String())
-		}
-		fmt.Println(dimStyle.Render("Resellers use the same bot but only see and manage the users they add."))
-		action := "add"
-		opts := []huh.Option[string]{huh.NewOption("Add or change a reseller", "add")}
-		if len(b.Resellers) > 0 {
-			opts = append(opts, huh.NewOption("Remove a reseller", "del"))
-		}
-		opts = append(opts, huh.NewOption("Back", "back"))
-		if err := huh.NewSelect[string]().Title("Resellers").Options(opts...).Value(&action).WithTheme(t.theme).Run(); err != nil || action == "back" {
-			return err
-		}
-		var id, name, users, quota string
-		fields := []huh.Field{huh.NewInput().Title("Telegram user ID").
-			Description("They can send the bot any message to learn it.").Value(&id)}
-		if action == "add" {
-			fields = append(fields, huh.NewInput().Title("Name (optional)").Value(&name),
-				huh.NewInput().Title("Most users (empty = no limit)").Value(&users),
-				huh.NewInput().Title("Total quota to give out, GB (empty = no limit)").Value(&quota))
-		}
-		if err := huh.NewForm(huh.NewGroup(fields...)).WithTheme(t.theme).Run(); err != nil {
-			return err
-		}
-		q, _ := strconv.ParseFloat(strings.TrimSpace(quota), 64)
-		return cmdResellers(t.r, []string{action, strings.TrimSpace(id)},
-			Reseller{Name: strings.TrimSpace(name), MaxUsers: atoiOr(users, 0), QuotaGB: q})
-	}
 	return nil
 }

@@ -139,7 +139,7 @@ func runServerTUI() {
 				huh.NewOption("Client routing: direct country", "country"),
 				huh.NewOption("WARP: sites that refuse the server's IP", "warp"),
 				huh.NewOption("Alerts: Telegram / webhook", "notify"),
-				huh.NewOption("Telegram bot: manage users from Telegram", "bot"),
+				huh.NewOption("Manage from Telegram: links for @chthvpnbot", "manage"),
 				huh.NewOption("Plans: named limits for adding and renewing", "plans"),
 				huh.NewOption("Several servers under one subscription", "peers"),
 				huh.NewOption("Cloudflare: DNS records and SSL mode", "cloudflare"),
@@ -170,8 +170,8 @@ func runServerTUI() {
 			showErr(t.warp())
 		case "notify":
 			showErr(t.notify())
-		case "bot":
-			showErr(t.bot())
+		case "manage":
+			showErr(t.manage())
 		case "plans":
 			showErr(t.plans())
 		case "peers":

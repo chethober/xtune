@@ -185,9 +185,6 @@ func moveNotes(st *State, oldAddr string, dnsDone bool) []string {
 	default:
 		notes = append(notes, "once DNS points at the new server, users' links work again; send new links to users of configs that changed")
 	}
-	if st.Bot.On() {
-		notes = append(notes, "the Telegram bot now runs on this server: until the old one is removed, both answer it in turn")
-	}
 	if oldAddr != "" {
 		notes = append(notes, "when everyone has moved, remove xtune from the old server: xtune uninstall --host "+oldAddr)
 	}

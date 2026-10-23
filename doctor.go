@@ -99,13 +99,6 @@ func Doctor(r *Server) *doctor {
 			d.fail("the subscription server is %s (see: xtune logs --unit xray-autotune-sub)", orStr(ss.Sub, "not running"))
 		}
 	}
-	if st.Bot.On() {
-		if ss.Bot == "active" {
-			d.ok("Telegram bot is running")
-		} else {
-			d.fail("the Telegram bot is %s (see: xtune logs --unit xray-autotune-bot)", orStr(ss.Bot, "not running"))
-		}
-	}
 	if hasEngine(st.Entries, "tunnel") {
 		if ss.Tunnels == "active" {
 			d.ok("SSH / DNS tunnel server is running")

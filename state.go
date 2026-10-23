@@ -214,7 +214,8 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	if old != nil {
 		st.keepIdentity(old)
 		st.Users, st.APIPort, st.Country, st.Sub = old.Users, old.APIPort, old.Country, old.Sub
-		st.Check, st.Warp, st.Notify, st.Bot = old.Check, old.Warp, old.Notify, old.Bot
+		st.Check, st.Warp, st.Notify, st.LegacyBot = old.Check, old.Warp, old.Notify, old.LegacyBot
+		st.Public, st.Manage = old.Public, old.Manage
 		st.Plans, st.Cloudflare, st.Peers, st.Follow = old.Plans, old.Cloudflare, old.Peers, old.Follow
 	}
 	if err := Apply(r, st); err != nil {
@@ -281,12 +282,12 @@ func validUserName(name string) error {
 
 // Limits are optional per-user limits; nil fields are left unchanged.
 type Limits struct {
-	QuotaGB *float64 // 0 = unlimited
-	Days    *int     // expiry N days from now, 0 = never
-	Devices *int     // 0 = unlimited
-	Reset   *string  // usage reset period: monthly | weekly | "" (never)
-	Plan    *string  // plan name, recorded on the user; withPlan fills the other fields from it
-	Owner   *int64   // reseller who manages the user
+	QuotaGB  *float64 // 0 = unlimited
+	Days     *int     // expiry N days from now, 0 = never
+	Devices  *int     // 0 = unlimited
+	Reset    *string  // usage reset period: monthly | weekly | "" (never)
+	Plan     *string  // plan name, recorded on the user; withPlan fills the other fields from it
+	Reseller *string  // reseller (management link) who manages the user
 }
 
 var resetPeriods = []string{"monthly", "weekly"}
@@ -328,8 +329,8 @@ func (l Limits) apply(u *User) {
 	if l.Plan != nil {
 		u.Plan = *l.Plan
 	}
-	if l.Owner != nil {
-		u.Owner = *l.Owner
+	if l.Reseller != nil {
+		u.Reseller = *l.Reseller
 	}
 }
 

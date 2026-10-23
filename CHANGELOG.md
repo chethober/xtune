@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-24
+
+### Removed
+- **Breaking:** xtune's own Telegram bot (`xtune bot`, the `xray-autotune-bot` unit), with its resellers by Telegram ID,
+  user self-service and scheduled Telegram backups. The first enforce run after updating stops and removes the unit
+  and drops the bot's settings and users' linked Telegram IDs; users added by resellers stay, managed by the admin.
+  `xtune bot` now says where management went. Alerts (`xtune notify`) are unchanged, except that they no longer
+  fall back to the bot.
+
+### Added
+- Management links (`xtune manage link|token|off`): users and plans from [@chthvpnbot](https://t.me/chthvpnbot) through
+  `POST <link>` with `{"op": "status" | "users" | "user" | "add" | "limit" | "renew" | "enable" | "disable" |
+  "resetUsage" | "rotate" | "resetSub" | "delete" | "plans" | "setPlan" | "delPlan", ...}` on the subscription server.
+  Nothing runs on the server for it.
+- Resellers as links (`xtune manage reseller add|limit|link|token|del NAME --users N --quota GB`): a reseller's link
+  sees and changes only the users it added, within a user count and a total quota.
+- The server TUI's *Telegram bot* screen is now *Manage from Telegram*.
+
+### Fixed
+- Re-tuning and deploying kept the users and settings but dropped the public profiles (`xtune public`).
+
 ## [0.6.0] - 2026-10-24
 
 ### Added
@@ -168,6 +189,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.7.0]: https://github.com/chethober/xtune/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/chethober/xtune/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/chethober/xtune/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/chethober/xtune/compare/v0.4.0...v0.5.0

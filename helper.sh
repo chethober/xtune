@@ -197,7 +197,6 @@ status)
   if [ -f $D/state.json ]; then echo "STATE yes"; else echo "STATE no"; fi
   echo "SUB $(systemctl is-active xray-autotune-sub 2>/dev/null || true)"
   echo "TIMER $(systemctl is-active xray-autotune-enforce.timer 2>/dev/null || true)"
-  echo "BOT $(systemctl is-active xray-autotune-bot 2>/dev/null || true)"
   echo "TUNNELS $(systemctl is-active xray-autotune-tunnels 2>/dev/null || true)"
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then echo "FW ufw"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then echo "FW firewalld"
@@ -234,8 +233,8 @@ install)
   $X version | sed -n 1p ;;
 xtune-link)
   chmod 755 $XT; link; install_timer
-  # a new xtune binary: the subscription server and the bot run it too
-  systemctl try-restart xray-autotune-sub xray-autotune-bot >/dev/null 2>&1 || true
+  # a new xtune binary: the subscription server runs it too
+  systemctl try-restart xray-autotune-sub >/dev/null 2>&1 || true
   $XT version ;;
 xtune-install)
   # the release build of xtune for this server, checksum-verified
@@ -439,28 +438,8 @@ sub-disable)
   systemctl disable --now xray-autotune-sub >/dev/null 2>&1 || true
   rm -f $U/xray-autotune-sub.service; systemctl daemon-reload
   fw_close $D/fw.sub; echo disabled ;;
-bot-enable)
-  # the Telegram bot; it long-polls Telegram, so it needs no open port. It runs as root: user changes
-  # can restart Xray through this script.
-  cat > $U/xray-autotune-bot.service <<EOF
-[Unit]
-Description=xtune Telegram bot
-After=network-online.target
-Wants=network-online.target
-[Service]
-ExecStart=$XT bot run
-Restart=always
-RestartSec=10
-PrivateTmp=yes
-ProtectHome=yes
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable xray-autotune-bot >/dev/null 2>&1
-  systemctl restart xray-autotune-bot
-  sleep 1; systemctl is-active xray-autotune-bot ;;
-bot-disable)
+bot-remove)
+  # the Telegram bot of xtune before v0.7.0; management moved to the community VPN bot
   systemctl disable --now xray-autotune-bot >/dev/null 2>&1 || true
   rm -f $U/xray-autotune-bot.service; systemctl daemon-reload; echo disabled ;;
 cleanup)
@@ -476,5 +455,5 @@ uninstall)
   fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; vpn_net_down
   unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|bot-enable|bot-disable|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
 esac
