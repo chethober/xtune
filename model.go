@@ -39,6 +39,7 @@ type Entry struct {
 	Hop      string `json:"hop,omitempty"`      // hysteria2: UDP port range forwarded to Port, for port hopping ("20000-20999")
 	MTU      int    `json:"mtu,omitempty"`      // wireguard: tunnel MTU
 	Resolver string `json:"resolver,omitempty"` // dnstt: the resolver clients send queries through
+	Subnet   string `json:"subnet,omitempty"`   // amneziawg: the clients' address range
 }
 
 // Knobs are the client settings tuning picked for the entry.
@@ -48,7 +49,7 @@ func (e Entry) Knobs() Knobs {
 
 func (e Entry) Proto() string {
 	switch e.Kind {
-	case "hysteria2", "wireguard", "dnstt", "openvpn-udp", "ikev2":
+	case "hysteria2", "wireguard", "amneziawg", "dnstt", "openvpn-udp", "ikev2":
 		return "udp"
 	}
 	return "tcp"
@@ -58,7 +59,14 @@ func (e Entry) VlessEnc() bool { return strings.HasPrefix(e.Kind, "vlessenc") }
 
 // CDN entries are reached through the CDN domain: TLS ends at the CDN, which forwards to the origin.
 func (e Entry) CDN() bool { return strings.HasPrefix(e.Kind, "cdn") }
+
+// Worker entries are reached through a Cloudflare Worker (SNI is its hostname), which relays
+// VLESS over WebSocket to a plain TCP inbound here (see worker.go).
+func (e Entry) Worker() bool { return e.Kind == "worker-ws" }
 func (e Entry) Net() string {
+	if e.Worker() {
+		return "ws"
+	}
 	if i := strings.Index(e.Kind, "-"); i > 0 && e.Xray() && (e.Reality() || e.VlessEnc() || e.CDN()) {
 		return e.Kind[i+1:]
 	}
@@ -126,6 +134,8 @@ type State struct {
 	Peers       *PeerHub               `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions
 	Follow      *Follow                `json:"follow,omitempty"`    // follower: the users come from a primary
 	Public      map[string]*PublicPool `json:"public,omitempty"`    // public profiles: pools of users shared through a bot
+	AWG         *AWGParams             `json:"awg,omitempty"`       // AmneziaWG key and obfuscation settings
+	Worker      *Worker                `json:"worker,omitempty"`    // Cloudflare Worker relaying the worker-ws entries
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`
@@ -234,10 +244,21 @@ func (st *State) makeCert() error {
 func (st *State) Addr() string { return orStr(st.Domain, st.Host) }
 
 func (st *State) addrFor(e Entry) string {
-	if e.CDN() {
+	switch {
+	case e.CDN():
 		return st.CDNDomain
+	case e.Worker():
+		return e.SNI
 	}
 	return st.Addr()
+}
+
+// clientPort is the port clients dial: a Worker answers on 443 whatever port it relays to.
+func (e Entry) clientPort() int {
+	if e.Worker() {
+		return 443
+	}
+	return e.Port
 }
 
 func hostPort(host string, port int) string {
@@ -299,12 +320,16 @@ func (st *State) inbound(e Entry, users []User) J {
 		cl = append(cl, c)
 	}
 	dec := "none"
-	if e.VlessEnc() {
+	if e.VlessEnc() || e.Worker() {
 		dec = st.VencDec
 	}
 	ib["protocol"] = "vless"
 	ib["settings"] = J{"clients": cl, "decryption": dec}
 	ss := J{"network": e.Net(), "security": "none"}
+	if e.Worker() { // the Worker ends the WebSocket and opens a TCP connection with the client's address first
+		ss["network"] = "tcp"
+		ss["sockopt"] = J{"acceptProxyProtocol": true}
+	}
 	if e.Reality() {
 		ss["security"] = "reality"
 		ss["realitySettings"] = J{"target": e.SNI + ":443", "serverNames": []string{e.SNI},
@@ -382,7 +407,7 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 		return st.wgOutbound(e, u, k, tag)
 	}
 	enc, flow := "none", ""
-	if e.VlessEnc() {
+	if e.VlessEnc() || e.Worker() {
 		enc = st.VencEnc
 	}
 	if e.Kind == "reality-tcp" {
@@ -397,6 +422,11 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	if e.CDN() {
 		ss["security"] = "tls"
 		ss["tlsSettings"] = J{"serverName": st.CDNDomain, "fingerprint": orStr(k.FP, "chrome"), "alpn": []string{"h2", "http/1.1"}}
+	}
+	if e.Worker() { // WebSocket needs HTTP/1.1
+		ss["security"] = "tls"
+		ss["tlsSettings"] = J{"serverName": e.SNI, "fingerprint": orStr(k.FP, "chrome"), "alpn": []string{"http/1.1"}}
+		ss["wsSettings"] = J{"path": workerPath(e), "host": e.SNI}
 	}
 	switch e.Net() {
 	case "xhttp":
@@ -413,7 +443,7 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	if k.Frag != "" && k.Frag != "none" {
 		ss["sockopt"] = J{"dialerProxy": k.Frag}
 	}
-	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.addrFor(e), "port": e.Port,
+	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.addrFor(e), "port": e.clientPort(),
 		"users": []J{{"id": u.UUID, "encryption": enc, "flow": flow}}}}}, "streamSettings": ss}
 }
 
@@ -491,7 +521,7 @@ func (st *State) FailoverConfig(u User) J {
 
 func (st *State) Link(e Entry, u User, k Knobs) string {
 	name := url.PathEscape(u.Name + "-" + e.ID)
-	hostPort := hostPort(st.addrFor(e), e.Port)
+	hostPort := hostPort(st.addrFor(e), e.clientPort())
 	switch e.Kind {
 	case "hysteria2":
 		hop := ""
@@ -512,7 +542,7 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 		return ""
 	}
 	q := url.Values{"type": {e.Net()}, "encryption": {"none"}, "security": {"none"}}
-	if e.VlessEnc() {
+	if e.VlessEnc() || e.Worker() {
 		q.Set("encryption", st.VencEnc)
 	}
 	if e.Reality() {
@@ -529,6 +559,14 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 		q.Set("host", st.CDNDomain)
 		q.Set("fp", orStr(k.FP, "chrome"))
 		q.Set("alpn", "h2,http/1.1")
+	}
+	if e.Worker() {
+		q.Set("security", "tls")
+		q.Set("sni", e.SNI)
+		q.Set("host", e.SNI)
+		q.Set("fp", orStr(k.FP, "chrome"))
+		q.Set("alpn", "http/1.1")
+		q.Set("path", workerPath(e))
 	}
 	if e.Kind == "reality-tcp" {
 		q.Set("flow", "xtls-rprx-vision")

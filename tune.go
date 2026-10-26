@@ -48,14 +48,19 @@ type TuneOpts struct {
 	Domain, CDNDomain             string   // optional direct and CDN-proxied domains
 	KeepTest                      bool     // leave the server test instance running (it expires by itself)
 	Network                       string   // name of the network measured from, for the history
-	Protocols                     []string // opt-in protocol families: ssh, dnstt, openvpn, ikev2
+	Protocols                     []string // opt-in protocol families: ssh, dnstt, awg, worker, openvpn, ikev2
 	DNSDomain                     string   // zone delegated to the server, for the DNS tunnel
 	Resolvers                     []string // DNS tunnel resolvers to try first ("udp:IP:53", "doh:URL", "dot:HOST:853")
+	Cloudflare                    string   // API token ("" = the deployment's): DNS records for new domains, the Worker relay
+	Zone                          string   // Cloudflare zone: domains not given get random names in it
 	Log                           func(string)
+
+	deployed *State  // the server's deployment, if any
+	worker   *Worker // the Worker the test entries go through
 }
 
 // optionalProtocols can be added to the test matrix with --protocols.
-var optionalProtocols = []string{"ssh", "dnstt", "openvpn", "ikev2"}
+var optionalProtocols = []string{"ssh", "dnstt", "awg", "worker", "openvpn", "ikev2"}
 
 // parseProtocols checks a --protocols list; "all" means every optional protocol.
 func parseProtocols(list string) ([]string, error) {
@@ -173,6 +178,7 @@ type PlanOpts struct {
 	Protocols []string // opt-in families, see optionalProtocols
 	DNS       bool     // a DNS tunnel domain is set
 	IKEBusy   bool     // UDP 500 is taken by something other than xtune's IKEv2
+	Worker    bool     // a Cloudflare token is set, for the Worker relay
 }
 
 func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
@@ -259,6 +265,14 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 	}
 	E = append(E, Entry{ID: "wg", Kind: "wireguard", Port: port("udp", false)},
 		Entry{ID: "wg-std", Kind: "wireguard", Port: port("udp", true)})
+	if want("awg") {
+		E = append(E, Entry{ID: "awg", Kind: "amneziawg", Port: port("udp", false), Subnet: awgSubnet(0, true)},
+			Entry{ID: "awg-std", Kind: "amneziawg", Port: port("udp", true), Subnet: awgSubnet(1, true)})
+	}
+	if want("worker") && o.Worker { // workers.dev, and a hostname on the user's zone when there is one
+		E = append(E, Entry{ID: "worker", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)},
+			Entry{ID: "worker-dom", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)})
+	}
 	if want("ssh") {
 		E = append(E, Entry{ID: "ssh", Kind: "ssh", Port: port("tcp", true)},
 			Entry{ID: "ssh-hiport", Kind: "ssh", Port: port("tcp", false)},
@@ -364,6 +378,13 @@ func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Varia
 			}
 		case e.Kind == "wireguard": // a smaller MTU gets past paths that drop large UDP packets
 			ks = []Knobs{{Frag: "none", MTU: 1420}, {Frag: "none", MTU: 1280}}
+		case e.Kind == "amneziawg":
+			ks = awgVariants()
+		case e.Kind == "worker-ws": // fragmenting the ClientHello hides workers.dev from SNI filters
+			for _, g := range fragNames {
+				ks = append(ks, Knobs{FP: "chrome", Frag: g})
+			}
+			ks = append(ks, Knobs{FP: "firefox", Frag: "none"})
 		case e.Kind == "ssh" || e.Kind == "ssh-tls": // plain, or opening with a WebSocket upgrade request
 			ks = []Knobs{{Frag: "none"}, {Frag: "none", Mode: "ws"}}
 		case e.Kind == "cdn-ssh":
@@ -425,6 +446,7 @@ type harness struct {
 	cmd     *exec.Cmd
 	logFile *os.File
 	once    sync.Once
+	closers []func() // in-process tunnels (AmneziaWG)
 }
 
 func freePorts(n int) ([]int, error) {
@@ -447,25 +469,36 @@ func freePorts(n int) ([]int, error) {
 }
 
 // startHarness gets every variant ready to measure: Xray variants through one local Xray, SSH and
-// DNS tunnels through xtune's own client, VPNs as handshake probes. On a test instance (testPeers),
-// WireGuard variants connect as the test peers wgTestPeers adds.
+// DNS tunnels through xtune's own client, AmneziaWG in-process, VPNs as handshake probes. On a test
+// instance (testPeers), WireGuard and AmneziaWG variants connect as the test peers the server has
+// for them (wgTestPeers, awgTestPeers).
 func startHarness(bin string, st *State, u User, all []*Variant, dir string, testPeers bool) (*harness, error) {
 	var vs []*Variant
+	h := &harness{}
 	for _, v := range all {
 		switch e := v.Entry; {
 		case e.HandshakeOnly():
 			v.handshake = func(ctx context.Context) (time.Duration, error) { return st.vpnHandshake(ctx, e) }
 		case e.SSH():
 			v.dial = st.tunnelDial(e, u, v.K)
+		case e.Kind == "amneziawg":
+			au := u
+			if testPeers {
+				au = awgVariantUser(u, v.K)
+			}
+			d := st.awgDial(e, au, v.K)
+			v.dial = d.DialContext
+			h.closers = append(h.closers, d.Close)
 		default:
 			vs = append(vs, v)
 		}
 	}
 	if len(vs) == 0 {
-		return &harness{}, nil
+		return h, nil
 	}
 	ports, err := freePorts(len(vs))
 	if err != nil {
+		h.stop()
 		return nil, err
 	}
 	cfg := J{"log": J{"loglevel": "error"}, "inbounds": []J{}, "outbounds": fragOutbounds(), "routing": J{"rules": []J{}}}
@@ -483,22 +516,26 @@ func startHarness(bin string, st *State, u User, all []*Variant, dir string, tes
 	}
 	path := filepath.Join(dir, "harness.json")
 	if err := writeJSON(path, cfg); err != nil {
+		h.stop()
 		return nil, err
 	}
 	if out, err := exec.Command(bin, "run", "-test", "-c", path).CombinedOutput(); err != nil {
+		h.stop()
 		return nil, fmt.Errorf("local xray rejected the test config: %v\n%s", err, tail(string(out), 1500))
 	}
 	lf, err := os.Create(filepath.Join(dir, "xray.log"))
 	if err != nil {
+		h.stop()
 		return nil, err
 	}
 	cmd := exec.Command(bin, "run", "-c", path)
 	cmd.Stdout, cmd.Stderr = lf, lf
 	if err := cmd.Start(); err != nil {
 		lf.Close()
+		h.stop()
 		return nil, err
 	}
-	h := &harness{cmd: cmd, logFile: lf}
+	h.cmd, h.logFile = cmd, lf
 	last := vs[len(vs)-1].port
 	for i := 0; i < 50; i++ {
 		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", last), 300*time.Millisecond); err == nil {
@@ -513,6 +550,9 @@ func startHarness(bin string, st *State, u User, all []*Variant, dir string, tes
 
 func (h *harness) stop() {
 	h.once.Do(func() {
+		for _, c := range h.closers {
+			c()
+		}
 		if h.cmd == nil {
 			return
 		}
@@ -901,6 +941,12 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
 		return nil, err
 	}
+	o.deployed, _ = LoadState(r)
+	made, err := o.tuneCloudflare(r.Conn.Host)
+	if err != nil {
+		return nil, err
+	}
+	waitResolve(made, 90*time.Second, o.Log)
 	if err := checkDomains(r.Conn.Host, o.Domain, o.CDNDomain, o.Log); err != nil {
 		return nil, err
 	}
@@ -918,7 +964,10 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 		o.Protocols = append(o.Protocols, "dnstt")
 	}
 	plan := PlanOpts{CDN: o.CDNDomain != "", Protocols: o.Protocols, DNS: o.DNSDomain != "",
-		IKEBusy: usedPorts(probeOut)["udp"][500] && !strings.Contains(probeOut, "IKE ours")}
+		IKEBusy: usedPorts(probeOut)["udp"][500] && !strings.Contains(probeOut, "IKE ours"), Worker: o.Cloudflare != ""}
+	if slices.Contains(o.Protocols, "worker") && o.Cloudflare == "" {
+		o.Log("[!] the Worker relay needs a Cloudflare token (XTUNE_CLOUDFLARE_TOKEN, or xtune cloudflare token on the server); skipping it")
+	}
 	if slices.Contains(o.Protocols, "dnstt") && o.DNSDomain == "" {
 		o.Log("[!] the DNS tunnel needs --dns-domain (a zone delegated to this server with an NS record); skipping it")
 	}
@@ -950,6 +999,13 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	if entries, err = o.prepareExtras(r, entries); err != nil {
 		return nil, err
 	}
+	if o.worker != nil && !o.KeepTest { // the test routes go; a deploy then points the Worker at its own
+		defer func() {
+			if err := cfWorkerUpload(o.Cloudflare, o.worker, orMap(o.deployedRoutes())); err != nil {
+				o.Log("[!] restoring the Cloudflare Worker's routes: " + err.Error())
+			}
+		}()
+	}
 	o.Log("[*] REALITY targets (fastest TLS1.3+h2 from the server): " + strings.Join(snis, ", "))
 	st, err := NewState(r.Conn.Host, o.XrayBin)
 	if err != nil {
@@ -957,6 +1013,12 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	}
 	entries = supported(o.XrayBin, st, entries, o.Log)
 	st.Domain, st.CDNDomain, st.DNSDomain = o.Domain, o.CDNDomain, o.DNSDomain
+	st.Cloudflare.Token = o.Cloudflare
+	if o.worker != nil {
+		w := *o.worker
+		w.Routes = o.deployedRoutes() // what the Worker has once the test is over
+		st.Worker = &w
+	}
 	if hasEngine(entries, "openvpn") || hasEngine(entries, "ikev2") {
 		if err := st.ensureVPNCert(); err != nil {
 			return nil, err
@@ -983,6 +1045,13 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 		tc, _ := json.MarshalIndent(st.TunnelConf(entries, []User{tuneUser}, ""), "", " ")
 		files[testDir+"/tunnels.json"] = string(tc)
 		extras = append(extras, "tunnels")
+	}
+	if hasEngine(entries, "awg") { // its clients' range is NATed for the test only (tnet:)
+		ac, _ := json.MarshalIndent(st.AWGConf(entries, awgTestPeers(tuneUser), ""), "", " ")
+		files[testDir+"/awg.json"] = string(ac)
+		for _, x := range awgSpecs(entries) {
+			extras = append(extras, strings.Replace(x, "net:", "tnet:", 1))
+		}
 	}
 	for p, c := range st.vpnFiles(entries, []User{tuneUser}, testDir+"/vpn") {
 		files[p] = c
@@ -1037,15 +1106,17 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 }
 
 // prepareExtras gets the server ready for the opt-in protocols: xtune itself runs the SSH and DNS
-// tunnels, and OpenVPN and strongSwan come from the distribution. Protocols the server cannot run
-// are dropped with a warning; the rest of the tune goes on.
+// tunnels and AmneziaWG, OpenVPN and strongSwan come from the distribution, and the Worker relay
+// is created or updated on Cloudflare. Protocols the server cannot run are dropped with a warning;
+// the rest of the tune goes on.
 func (o *TuneOpts) prepareExtras(r *Server, entries []Entry) ([]Entry, error) {
-	if hasEngine(entries, "tunnel") {
+	if hasEngine(entries, "tunnel") || hasEngine(entries, "awg") {
 		if err := EnsureServerXtune(r, o.Log); err != nil {
-			o.Log("[!] the SSH and DNS tunnels need xtune on the server, which failed: " + err.Error() + "; skipping them")
-			entries = filterEntries(entries, func(e Entry) bool { return !e.SSH() })
+			o.Log("[!] the SSH and DNS tunnels and AmneziaWG need xtune on the server, which failed: " + err.Error() + "; skipping them")
+			entries = filterEntries(entries, func(e Entry) bool { return !e.SSH() && e.Engine() != "awg" })
 		}
 	}
+	entries = o.prepareWorker(r.Conn.Host, entries)
 	if hasEngine(entries, "openvpn") || hasEngine(entries, "ikev2") {
 		o.Log("[*] installing OpenVPN and strongSwan on the server if needed")
 		if out, err := r.Helper("vpn-install"); err != nil || !strings.HasSuffix(out, "ok") {
@@ -1071,6 +1142,8 @@ func dropFailedExtras(entries []Entry, out string, log func(string)) []Entry {
 		switch e.Engine() {
 		case "tunnel":
 			return !failed["tunnels"]
+		case "awg":
+			return !failed["awg"]
 		case "openvpn":
 			return !failed["openvpn:"+e.ID]
 		case "ikev2":

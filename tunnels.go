@@ -649,7 +649,7 @@ func localResolvers() []string {
 
 // ---------------------------------------------------------------- accounting (enforce job)
 
-// collectExtra adds the SSH tunnels' and VPNs' traffic since the last run to the users and to
+// collectExtra adds the SSH tunnels', AmneziaWG's and VPNs' traffic since the last run to the users and to
 // byTag, and returns the client IPs online on them and the VPN sessions. Their counters only
 // grow while a server or session lives, so the last values seen are kept in us.Extra.
 func collectExtra(r *Server, st *State, us *Usage, now time.Time, byTag map[string]int64) (map[string][]string, []vpnSession) {
@@ -672,14 +672,17 @@ func collectExtra(r *Server, st *State, us *Usage, now time.Time, byTag map[stri
 			byTag[entry] += d[0] + d[1]
 		}
 	}
-	if hasEngine(st.Entries, "tunnel") {
+	for _, src := range []struct{ engine, file, key string }{{"tunnel", tunnelStatsFile, "tun/"}, {"awg", awgStatsFile, "awg/"}} {
+		if !hasEngine(st.Entries, src.engine) {
+			continue
+		}
 		var ts tunnelStats
-		if out, err := r.Root("cat " + tunnelStatsFile + " 2>/dev/null || true"); err == nil && json.Unmarshal([]byte(out), &ts) == nil {
+		if out, err := r.Root("cat " + src.file + " 2>/dev/null || true"); err == nil && json.Unmarshal([]byte(out), &ts) == nil {
 			for name, c := range ts.Users {
-				add("tun/"+ts.Boot+"/u/"+name, name, "", c[0], c[1])
+				add(src.key+ts.Boot+"/u/"+name, name, "", c[0], c[1])
 			}
 			for id, n := range ts.Entries {
-				add("tun/"+ts.Boot+"/e/"+id, "", id, n, 0)
+				add(src.key+ts.Boot+"/e/"+id, "", id, n, 0)
 			}
 			if now.Unix()-ts.Written < 60 { // a stopped server's list is stale
 				for name, ips := range ts.Online {

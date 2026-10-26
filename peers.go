@@ -63,10 +63,16 @@ type peerReply struct {
 
 // public is what clients need to connect to this deployment, and nothing secret.
 func (st *State) public() *State {
-	return &State{Host: st.Host, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
+	p := &State{Host: st.Host, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
 		ShortID: st.ShortID, VencEnc: st.VencEnc, SSKey: st.SSKey, CertSNI: st.CertSNI, CertHash: st.CertHash,
 		WGPub: st.WGPub, SSHHostPub: st.SSHHostPub, DNSTTPub: st.DNSTTPub, DNSDomain: st.DNSDomain,
 		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries}
+	if st.AWG != nil {
+		awg := *st.AWG
+		awg.Priv = ""
+		p.AWG = &awg
+	}
+	return p
 }
 
 // servers are this deployment and, on a primary, the followers that reported recently, with

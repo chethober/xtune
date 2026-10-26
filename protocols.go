@@ -23,6 +23,9 @@ import (
 // Besides Xray's protocols, xtune serves:
 //
 //   - wireguard: Xray's WireGuard inbound, tuned and accounted like every other Xray config.
+//   - amneziawg: WireGuard with a disguised handshake, served by xtune itself (awg.go).
+//   - worker-ws: VLESS over WebSocket through a Cloudflare Worker, relayed to a plain TCP
+//     inbound of Xray's (worker.go). It needs a Cloudflare API token.
 //   - ssh, ssh-tls, cdn-ssh: an SSH server inside xtune (`xtune tunnels`) that only forwards
 //     TCP, for apps such as HTTP Injector, NetMod and NapsternetV. ssh-tls wraps it in TLS
 //     ("SSH-SSL"); cdn-ssh is the same TLS port reached through the CDN domain with a WebSocket
@@ -36,13 +39,14 @@ import (
 
 // kindInfo describes each kind: what serves it and how it is measured.
 var kindInfo = map[string]struct {
-	Engine    string // xray | tunnel | openvpn | ikev2
+	Engine    string // xray | tunnel | awg | openvpn | ikev2
 	Handshake bool   // tuning can only measure the handshake
 }{
 	"reality-tcp": {Engine: "xray"}, "reality-xhttp": {Engine: "xray"}, "reality-grpc": {Engine: "xray"},
 	"vlessenc-tcp": {Engine: "xray"}, "vlessenc-xhttp": {Engine: "xray"}, "cdn-xhttp": {Engine: "xray"},
-	"hysteria2": {Engine: "xray"}, "ss2022": {Engine: "xray"}, "wireguard": {Engine: "xray"},
-	"ssh": {Engine: "tunnel"}, "ssh-tls": {Engine: "tunnel"}, "cdn-ssh": {Engine: "tunnel"}, "dnstt": {Engine: "tunnel"},
+	"hysteria2": {Engine: "xray"}, "ss2022": {Engine: "xray"}, "wireguard": {Engine: "xray"}, "worker-ws": {Engine: "xray"},
+	"amneziawg": {Engine: "awg"},
+	"ssh":       {Engine: "tunnel"}, "ssh-tls": {Engine: "tunnel"}, "cdn-ssh": {Engine: "tunnel"}, "dnstt": {Engine: "tunnel"},
 	"openvpn-udp": {Engine: "openvpn", Handshake: true}, "openvpn-tcp": {Engine: "openvpn", Handshake: true},
 	"ikev2": {Engine: "ikev2", Handshake: true},
 }
@@ -123,6 +127,14 @@ func (st *State) ensureKeys() (bool, error) {
 		st.DNSTTPub = hex.EncodeToString(noise.PubkeyFromPrivkey(priv))
 		added = true
 	}
+	if st.AWG == nil {
+		p, err := newAWGParams()
+		if err != nil {
+			return false, err
+		}
+		st.AWG = p
+		added = true
+	}
 	return added, nil // the VPN CA comes with the first VPN entry (ensureVPNCert)
 }
 
@@ -139,6 +151,9 @@ func (st *State) keepIdentity(old *State) {
 	}
 	if old.DNSTTKey != "" {
 		st.DNSTTKey, st.DNSTTPub = old.DNSTTKey, old.DNSTTPub
+	}
+	if old.AWG != nil {
+		st.AWG = old.AWG
 	}
 	if old.VPNCA != "" {
 		st.VPNCA, st.VPNCAKey, st.VPNCert, st.VPNKey, st.VPNName = old.VPNCA, old.VPNCAKey, old.VPNCert, old.VPNKey, old.VPNName
@@ -354,6 +369,10 @@ func (e Entry) family() string {
 		return "openvpn"
 	case "ikev2":
 		return "ikev2"
+	case "amneziawg":
+		return "awg"
+	case "worker-ws":
+		return "worker"
 	}
 	return ""
 }

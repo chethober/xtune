@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-26
+
+### Added
+- AmneziaWG (`--protocols awg`): WireGuard with a disguised handshake, served by xtune itself (`xtune awg run`, the
+  `xray-autotune-awg` unit, amneziawg-go on a TUN interface with NAT) on a standard and a high UDP port. Tuning
+  measures it end to end through an in-process client on a userspace network stack, no root needed: MTU 1420 and
+  1280, heavier junk packets, and an I1 packet shaped like a QUIC Initial. Users get `.conf` profiles for the
+  AmneziaVPN and AmneziaWG apps; traffic, quotas, online devices and disabling count as for the other configs.
+- Cloudflare Worker relay (`--protocols worker`): VLESS with VLESS Encryption over WebSocket to a Worker xtune
+  creates on `workers.dev` (and on a random hostname of your zone), which relays it to a plain TCP inbound with a
+  PROXY protocol line carrying the client's address. Deploys, migrates and restores re-point it;
+  `xtune cloudflare worker status|sync|off` manages it, and `doctor` checks its routes.
+- Cloudflare when tuning: the token comes from `XTUNE_CLOUDFLARE_TOKEN` (or the server's) and is kept on deploy; new
+  domains get their DNS records and the CDN zone the SSL/TLS mode Full; `--zone` names the domains you leave out.
+  The TUI's tune form asks for the zone and token.
+- Public profiles list AmneziaWG and the Worker relay ("CF Worker") among their protocols, so @chthvpnbot shows
+  members how to set them up.
+
+### Fixed
+- Deploying dropped the tuned WireGuard MTU and the DNS tunnel's resolver: deployed entries always had the defaults.
+- Connect and management links from @chthvpnbot failed whenever a change needed an Xray restart (adding or
+  enabling users with WireGuard deployed): since 0.7.0 these run in the subscription server, whose unit made /etc
+  read-only, so rewriting xtune's units failed. The unit no longer does, and installing this xtune fixes existing
+  units. Installing a release build of xtune on the server now also restarts the subscription server.
+
 ## [0.7.1] - 2026-10-24
 
 ### Fixed
@@ -198,6 +223,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.8.0]: https://github.com/chethober/xtune/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chethober/xtune/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chethober/xtune/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/chethober/xtune/compare/v0.5.1...v0.6.0

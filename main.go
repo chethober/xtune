@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +31,10 @@ On your computer (client):
   xtune tune      [conn] [tune flags]      find the configs that get through from this network, deploy them
                   --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
                   --network NAME           name of this network (ISP), for the history and merged deploys
-                  --protocols LIST         also test ssh, dnstt, openvpn, ikev2 (vpn = both VPNs, all = every one)
+                  --protocols LIST         also test ssh, dnstt, awg (AmneziaWG), worker (Cloudflare Worker relay),
+                                           openvpn, ikev2 (vpn = both VPNs, all = every one)
+                  --zone Z                 a Cloudflare zone: domains not given get random names in it, with
+                                           their DNS records (token: XTUNE_CLOUDFLARE_TOKEN, or the server's)
                   --dns-domain Z           zone delegated to the server (NS record): the DNS tunnel
                   --resolvers LIST         DNS tunnel: also try these (udp:IP:53, doh:URL, dot:HOST:853)
                   --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
@@ -75,9 +79,10 @@ On the server (as root):
   xtune peers     [status | enable | remove NAME | disable]   let other servers join this one's subscriptions
   xtune follow    [PEER_URL [--name N] | off]   take users from a primary, add this server's configs to it
   xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
+  xtune cloudflare worker [status | sync | off]   the Worker relay's routes; off deletes it and its configs
   xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
   xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
-  (internal, run by systemd: xtune enforce, xtune serve, xtune tunnels run, xtune vpn-auth)
+  (internal, run by systemd: xtune enforce, xtune serve, xtune tunnels run, xtune awg run, xtune vpn-auth)
 
 Connection flags (conn):
   --host H --port 22 --user root --key PATH --password-env VAR --profile NAME
@@ -161,6 +166,8 @@ func main() {
 		err = Serve()
 	case "tunnels":
 		err = cmdTunnels(args)
+	case "awg":
+		err = cmdAWG(args)
 	case "vpn-auth":
 		err = cmdVPNAuth(args)
 	case "vpn-mgmt":
@@ -347,7 +354,8 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Network, "network", "", "name of this network (ISP), for the history and merged deploys")
 	fs.StringVar(&o.DNSDomain, "dns-domain", "", "zone delegated to the server with an NS record: adds a DNS tunnel (default: the deployed one)")
 	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers, e.g. udp:10.0.0.1:53,doh:https://dns.example/dns-query")
-	protocols := fs.String("protocols", "", "also test: ssh, dnstt, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
+	protocols := fs.String("protocols", "", "also test: ssh, dnstt, awg, worker, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
+	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
@@ -370,6 +378,12 @@ func cmdTune(args []string) error {
 	defer r.Close()
 	old, _ := LoadState(r)
 	o.inherit(old, flagsSet(fs))
+	o.Cloudflare = os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
+	if o.Cloudflare == "" && (old == nil || old.Cloudflare.Token == "") && (o.Zone != "" || slices.Contains(o.Protocols, "worker")) {
+		if o.Cloudflare, err = cliPrompt(cfTokenPrompt, true); err != nil {
+			return err
+		}
+	}
 	o.XrayBin, err = EnsureLocalXray(*c.xray, r, func(s string) { fmt.Println(s) })
 	if err != nil {
 		return err

@@ -490,6 +490,8 @@ func (st *State) profiles(e Entry, u User) []Profile {
 	switch e.Kind {
 	case "wireguard":
 		return []Profile{{Name: "WireGuard app (" + e.ID + ")", File: base + ".conf", Type: "text/plain", Body: st.WGConf(e, u)}}
+	case "amneziawg":
+		return []Profile{{Name: "AmneziaWG / AmneziaVPN app (" + e.ID + ")", File: base + ".conf", Type: "text/plain", Body: st.AWGConfFile(e, u)}}
 	case "openvpn-udp", "openvpn-tcp":
 		return []Profile{{Name: "OpenVPN (" + e.ID + ")", File: base + ".ovpn", Type: "application/x-openvpn-profile", Body: st.OVPNProfile(e, u)}}
 	case "ikev2":

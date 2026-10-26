@@ -11,13 +11,16 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
 
 // With a Cloudflare API token, xtune keeps the domains' DNS records pointed at the server itself
-// (after a migrate, or when the domains change) and can read and fix the SSL/TLS mode the CDN
-// entry needs. The token needs Zone:Read, DNS:Edit and Zone Settings:Edit on the zones.
+// (after a migrate, or when the domains change), makes the records of new domains when tuning,
+// can read and fix the SSL/TLS mode the CDN entry needs, and runs the Worker relay (worker.go).
+// The token needs Zone:Read, DNS:Edit and Zone Settings:Edit on the zones, and for the Worker
+// Account: Workers Scripts:Edit.
 
 type Cloudflare struct {
 	Token string `json:"token,omitempty"`
@@ -32,11 +35,16 @@ func cfCall(token, method, path string, body, out any) error {
 		b, _ := json.Marshal(body)
 		rd = bytes.NewReader(b)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	return cfDo(token, method, path, "application/json", rd, out)
+}
+
+// cfDo sends a request with a body of any type (the Worker upload is multipart).
+func cfDo(token, method, path, contentType string, rd io.Reader, out any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, method, cloudflareAPI+path, rd)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -336,11 +344,14 @@ func cmdCloudflare(args []string) error {
 			}
 			fmt.Printf("  SSL/TLS mode of %s: %s (the CDN entry needs full)\n", st.CDNDomain, mode)
 		}
+		if w := st.Worker; w != nil {
+			fmt.Printf("  Worker %s: %s %s, %d routes\n", w.Name, w.Host, w.Domain, len(w.Routes))
+		}
 		return nil
 	case "token":
 		tok := os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
 		if tok == "" {
-			if tok, err = cliPrompt("Cloudflare API token (Zone:Read, DNS:Edit, Zone Settings:Edit)", true); err != nil {
+			if tok, err = cliPrompt(cfTokenPrompt, true); err != nil {
 				return err
 			}
 		}
@@ -358,6 +369,8 @@ func cmdCloudflare(args []string) error {
 			}
 		}
 		return CloudflarePoint(st, ip, log)
+	case "worker":
+		return cfWorkerCmd(r, st, pos[1:])
 	case "ssl":
 		if st.CDNDomain == "" {
 			return errors.New("no CDN domain set")
@@ -370,6 +383,56 @@ func cmdCloudflare(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown cloudflare action %q", action)
+}
+
+const cfTokenPrompt = "Cloudflare API token (Zone:Read, DNS:Edit, Zone Settings:Edit; Account: Workers Scripts:Edit for the Worker relay)"
+
+// cfWorkerCmd is `xtune cloudflare worker [status | sync | off]`.
+func cfWorkerCmd(r *Server, st *State, args []string) error {
+	action := "status"
+	if len(args) > 0 {
+		action = args[0]
+	}
+	w := st.Worker
+	if w == nil {
+		fmt.Println("No Cloudflare Worker: tune with --protocols worker to make one")
+		return nil
+	}
+	switch action {
+	case "status":
+		fmt.Printf("Worker %s (account %s)\n  %s\n", w.Name, w.Account, w.Host)
+		if w.Domain != "" {
+			fmt.Println("  " + w.Domain)
+		}
+		for p, o := range w.Routes {
+			fmt.Printf("  %s -> %s\n", p, o)
+		}
+		return nil
+	case "sync": // upload it again, routes and script, even when nothing seems to have changed
+		defer r.lock()()
+		w.Routes = nil
+		if err := syncWorker(st); err != nil {
+			return err
+		}
+		fmt.Printf("Worker %s: %d routes\n", w.Name, len(w.Routes))
+		return saveState(r, st)
+	case "off": // the Worker configs go with it, so subscriptions stop offering them
+		defer r.lock()()
+		rest := filterEntries(st.Entries, func(e Entry) bool { return !e.Worker() })
+		if len(rest) == 0 {
+			return errors.New("the Worker configs are the only ones deployed: tune and deploy others first")
+		}
+		if err := cfWorkerDelete(st.Cloudflare.Token, w); err != nil {
+			return err
+		}
+		st.Worker = nil
+		if len(rest) == len(st.Entries) {
+			return saveState(r, st)
+		}
+		st.Entries = rest
+		return Apply(r, st)
+	}
+	return fmt.Errorf("unknown worker action %q (status, sync, off)", action)
 }
 
 // pointAfterMove updates the DNS records, from the new server, after a migrate. It reports
@@ -392,4 +455,94 @@ func pointAfterMove(r *Server, st *State, log func(string)) bool {
 		log("[+] DNS " + l)
 	}
 	return true
+}
+
+// tuneCloudflare gets the domains ready before a tune, when there is a Cloudflare token (the
+// option's, or else the deployment's). With a zone, the domains not given get random names in
+// it. Domains the deployment does not have yet get their DNS records, and a new CDN domain's zone
+// the SSL/TLS mode Full. It returns the names it pointed, which may take a moment to resolve.
+func (o *TuneOpts) tuneCloudflare(host string) ([]string, error) {
+	dep := o.deployed
+	if dep == nil {
+		dep = &State{}
+	}
+	if o.Cloudflare == "" {
+		o.Cloudflare = dep.Cloudflare.Token
+	}
+	if o.Cloudflare == "" {
+		if o.Zone != "" {
+			return nil, errors.New("--zone needs a Cloudflare token: set XTUNE_CLOUDFLARE_TOKEN, or run xtune cloudflare token on the server")
+		}
+		return nil, nil
+	}
+	if o.Cloudflare != dep.Cloudflare.Token {
+		if err := cfVerify(o.Cloudflare); err != nil {
+			return nil, err
+		}
+	}
+	if o.Zone != "" {
+		o.Domain = orStr(o.Domain, randLabel()+"."+o.Zone)
+		o.CDNDomain = orStr(o.CDNDomain, randLabel()+"."+o.Zone)
+		if slices.Contains(o.Protocols, "dnstt") {
+			o.DNSDomain = orStr(o.DNSDomain, randLabel()+"."+o.Zone)
+		}
+	}
+	if o.Domain == dep.Domain && o.CDNDomain == dep.CDNDomain && o.DNSDomain == dep.DNSDomain {
+		return nil, nil
+	}
+	ip, err := serverIP(host)
+	if err != nil {
+		return nil, err
+	}
+	var made []string
+	logged := func(msg string, err error) error {
+		if err == nil {
+			o.Log("[+] Cloudflare DNS: " + msg)
+		}
+		return err
+	}
+	if o.Domain != "" && o.Domain != dep.Domain {
+		if err := logged(cfPoint(o.Cloudflare, o.Domain, ip, false)); err != nil {
+			return nil, err
+		}
+		made = append(made, o.Domain)
+	}
+	if o.CDNDomain != "" && o.CDNDomain != dep.CDNDomain {
+		if err := logged(cfPoint(o.Cloudflare, o.CDNDomain, ip, true)); err != nil {
+			return nil, err
+		}
+		mode, err := cfSSL(o.Cloudflare, o.CDNDomain, true)
+		if err != nil {
+			return nil, err
+		}
+		o.Log("[+] Cloudflare: SSL/TLS mode of " + o.CDNDomain + "'s zone is " + mode)
+		made = append(made, o.CDNDomain)
+	}
+	if o.DNSDomain != "" && o.DNSDomain != dep.DNSDomain {
+		ns := nsHost(o.DNSDomain)
+		if err := logged(cfPoint(o.Cloudflare, ns, ip, false)); err != nil {
+			return nil, err
+		}
+		if err := logged(cfNS(o.Cloudflare, o.DNSDomain, ns)); err != nil {
+			return nil, err
+		}
+	}
+	return made, nil
+}
+
+// waitResolve waits, up to max, until every name resolves from here: records just made take a
+// few seconds to appear.
+func waitResolve(names []string, max time.Duration, log func(string)) {
+	deadline := time.Now().Add(max)
+	for _, n := range names {
+		for {
+			if _, err := net.LookupHost(n); err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}
+	if len(names) > 0 {
+		log("[*] " + strings.Join(names, ", ") + " resolve from here")
+	}
 }

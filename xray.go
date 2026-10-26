@@ -46,6 +46,7 @@ type ServerStatus struct {
 	Xtune, XtuneSHA  string // server copy of xtune ("none" when missing)
 	Sub, Timer, Bot  string // subscription server, enforce timer and Telegram bot (systemctl is-active)
 	Tunnels          string // SSH and DNS tunnel server
+	AWG              string // AmneziaWG server
 	FW               string // active host firewall: ufw | firewalld | none
 }
 
@@ -75,6 +76,8 @@ func (r *Server) Status() (ServerStatus, error) {
 			s.Bot = v
 		case "TUNNELS":
 			s.Tunnels = v
+		case "AWG":
+			s.AWG = v
 		case "FW":
 			s.FW = v
 		}

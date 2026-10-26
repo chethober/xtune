@@ -67,6 +67,12 @@ func writeConfig(r *Server, st *State, active []User) error {
 			return err
 		}
 	}
+	if hasEngine(st.Entries, "awg") {
+		ac, _ := json.MarshalIndent(st.AWGConf(st.Entries, active, awgStatsFile), "", " ")
+		if err := r.Upload(remoteDir+"/awg.json", ac, "600"); err != nil {
+			return err
+		}
+	}
 	if !hasEngine(st.Entries, "openvpn") && !hasEngine(st.Entries, "ikev2") {
 		return nil
 	}
@@ -84,12 +90,16 @@ func writeConfig(r *Server, st *State, active []User) error {
 
 const tunnelStatsFile = remoteDir + "/tunnels-stats.json"
 
-// Apply saves everything and restarts the service; used when entries or ports change.
+// Apply saves everything and restarts the service; used when entries or ports change. The
+// Cloudflare Worker, if any, is pointed at the deployed worker-ws inbounds first.
 func Apply(r *Server, st *State) error {
 	if st.APIPort == 0 {
 		st.APIPort = pickAPIPort(st)
 	}
 	if _, err := st.ensureKeys(); err != nil {
+		return err
+	}
+	if err := syncWorker(st); err != nil {
 		return err
 	}
 	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") {
@@ -172,6 +182,7 @@ func restart(r *Server, st *State) error {
 			return fmt.Errorf("installing OpenVPN/strongSwan: %v %s", err, tail(out, 200))
 		}
 	}
+	specs = append(specs, awgSpecs(st.Entries)...)
 	if hasEngine(st.Entries, "tunnel") {
 		specs = append([]string{"tunnels"}, specs...)
 	}
@@ -204,9 +215,10 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	st.Entries = nil
 	for _, v := range chosen {
 		e := v.Entry
-		e.FP, e.Mode, e.Frag, e.Split = v.K.FP, v.K.Mode, v.K.Frag, v.K.Split
+		e.FP, e.Mode, e.Frag, e.Split, e.MTU, e.Resolver = v.K.FP, v.K.Mode, v.K.Frag, v.K.Split, v.K.MTU, v.K.Resolver
 		st.Entries = append(st.Entries, e)
 	}
+	renumberAWG(st.Entries) // off the test instance's ranges
 	old, err := LoadState(r)
 	if err != nil {
 		return nil, err
@@ -216,7 +228,13 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 		st.Users, st.APIPort, st.Country, st.Sub = old.Users, old.APIPort, old.Country, old.Sub
 		st.Check, st.Warp, st.Notify, st.LegacyBot = old.Check, old.Warp, old.Notify, old.LegacyBot
 		st.Public, st.Manage = old.Public, old.Manage
-		st.Plans, st.Cloudflare, st.Peers, st.Follow = old.Plans, old.Cloudflare, old.Peers, old.Follow
+		st.Plans, st.Peers, st.Follow = old.Plans, old.Peers, old.Follow
+		if st.Cloudflare.Token == "" { // a token given for this tune replaces the deployment's
+			st.Cloudflare = old.Cloudflare
+		}
+		if st.Worker == nil {
+			st.Worker = old.Worker
+		}
 	}
 	if err := Apply(r, st); err != nil {
 		return st, err

@@ -418,17 +418,27 @@ func (t *tui) tune() error {
 			Options(
 				huh.NewOption("SSH tunnel (HTTP Injector, NetMod, NapsternetV; also over TLS and the CDN)", "ssh"),
 				huh.NewOption("DNS tunnel (dnstt / SlowDNS; slow, for when only DNS gets through)", "dnstt"),
+				huh.NewOption("AmneziaWG (WireGuard with a disguised handshake; AmneziaVPN / AmneziaWG apps)", "awg"),
+				huh.NewOption("Cloudflare Worker relay (VLESS over workers.dev; needs a Cloudflare token)", "worker"),
 				huh.NewOption("OpenVPN (UDP and TCP; handshake checked only)", "openvpn"),
 				huh.NewOption("IKEv2 (built into phones and Windows; handshake checked only)", "ikev2"),
 			).Value(&o.Protocols),
 		huh.NewInput().Title("DNS tunnel zone (for the DNS tunnel)").
 			Description("A subdomain delegated to the server: t.example.com NS ns-t.example.com,\n"+
 				"and ns-t.example.com A <server IP>. xtune adds both with a Cloudflare token.").Value(&o.DNSDomain),
+	), huh.NewGroup(
+		huh.NewInput().Title("Cloudflare zone (optional)").
+			Description("With a Cloudflare token, domains left empty get random names in this zone\n"+
+				"(example.com), and new domains get their DNS records made.").Value(&o.Zone),
+		huh.NewInput().Title("Cloudflare API token").EchoMode(huh.EchoModePassword).
+			Description("Empty: the server's (xtune cloudflare token). Zone:Read, DNS:Edit, Zone Settings:Edit,\n"+
+				"and Account: Workers Scripts:Edit for the Worker relay.").Value(&o.Cloudflare),
 	)).WithTheme(t.theme).Run()
 	if err != nil {
 		return err
 	}
 	o.Domain, o.CDNDomain, o.DNSDomain = strings.TrimSpace(o.Domain), strings.TrimSpace(o.CDNDomain), strings.TrimSpace(o.DNSDomain)
+	o.Zone, o.Cloudflare = strings.TrimSpace(o.Zone), strings.TrimSpace(o.Cloudflare)
 	o.Rounds = atoiOr(rounds, 2)
 	fmt.Println(dimStyle.Render("Ctrl+C stops the test and cleans up the server."))
 	var res *TuneResult

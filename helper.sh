@@ -119,10 +119,10 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 }
-# extras_stop stops the deployed tunnel and VPN services, except those named
+# extras_stop stops the deployed tunnel, AmneziaWG and VPN services, except those named
 extras_stop() {
   local keep=" $* " u
-  for u in $(systemctl list-unit-files --no-legend 'xray-autotune-tunnels.service' 'xray-autotune-ovpn-*.service' 2>/dev/null | awk '{print $1}'); do
+  for u in $(systemctl list-unit-files --no-legend 'xray-autotune-tunnels.service' 'xray-autotune-awg.service' 'xray-autotune-ovpn-*.service' 2>/dev/null | awk '{print $1}'); do
     case $keep in *" ${u%.service} "*) continue ;; esac
     systemctl disable --now "$u" >/dev/null 2>&1 || true
     rm -f "$U/$u"
@@ -144,6 +144,15 @@ test_stop_extras() {
     systemctl stop "$u" 2>/dev/null || true
     systemctl reset-failed "$u" 2>/dev/null || true
   done
+  # the test's AmneziaWG ranges, and IP forwarding back off if the test turned it on
+  if [ -f $D/test/nets ]; then
+    while read -r net; do while vpn_rules -D "$net"; do :; done; done < $D/test/nets
+    rm -f $D/test/nets
+  fi
+  if [ -f $D/test/fwd-was ]; then
+    if [ "$(cat $D/test/fwd-was)" = 0 ] && [ ! -f $D/vpn.nets ]; then sysctl -qw net.ipv4.ip_forward=0 || true; fi
+    rm -f $D/test/fwd-was
+  fi
   if [ -f $D/test/ikev2-temp ]; then
     swan_remove
     swan_load 2>/dev/null || true
@@ -153,6 +162,14 @@ test_stop_extras() {
 # link puts the server copy of xtune on PATH, unless another xtune install is already there
 link() {
   if [ -L $LINK ] || [ ! -e $LINK ]; then ln -sfn $XT $LINK; else echo "note: $LINK is not xtune's link; left as is" >&2; fi
+}
+# a new xtune binary: the subscription server runs it too. Units from 0.7.x ran it with a read-only
+# /etc and /usr, so connect and management links that needed an Xray restart failed; drop that.
+sub_refresh() {
+  [ -f $U/xray-autotune-sub.service ] || return 0
+  sed -i '/^ProtectSystem=/d;/^ReadWritePaths=/d' $U/xray-autotune-sub.service
+  systemctl daemon-reload
+  systemctl try-restart xray-autotune-sub >/dev/null 2>&1 || true
 }
 unlink_xt() {
   if [ -L $LINK ] && [ "$(readlink $LINK)" = $XT ]; then rm -f $LINK; fi
@@ -198,6 +215,7 @@ status)
   echo "SUB $(systemctl is-active xray-autotune-sub 2>/dev/null || true)"
   echo "TIMER $(systemctl is-active xray-autotune-enforce.timer 2>/dev/null || true)"
   echo "TUNNELS $(systemctl is-active xray-autotune-tunnels 2>/dev/null || true)"
+  echo "AWG $(systemctl is-active xray-autotune-awg 2>/dev/null || true)"
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then echo "FW ufw"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then echo "FW firewalld"
   else echo "FW none"; fi
@@ -232,9 +250,7 @@ install)
   if systemctl is-active xray-autotune >/dev/null 2>&1; then systemctl restart xray-autotune; fi
   $X version | sed -n 1p ;;
 xtune-link)
-  chmod 755 $XT; link; install_timer
-  # a new xtune binary: the subscription server runs it too
-  systemctl try-restart xray-autotune-sub >/dev/null 2>&1 || true
+  chmod 755 $XT; link; install_timer; sub_refresh
   $XT version ;;
 xtune-install)
   # the release build of xtune for this server, checksum-verified
@@ -248,7 +264,7 @@ xtune-install)
   tar -xzf "$t/$f" -C "$t" xtune
   mkdir -p $D && chmod 700 $D
   install -m 755 "$t/xtune" $XT.new && mv -f $XT.new $XT
-  link; install_timer
+  link; install_timer; sub_refresh
   $XT version ;;
 probe)
   for h in "$@"; do
@@ -293,6 +309,15 @@ test-extras)
     case $spec in
       tunnels)
         systemd-run --quiet --unit=xray-autotune-test-tunnels --property=RuntimeMaxSec=7200 $XT tunnels run $D/test/tunnels.json ;;
+      awg)
+        systemd-run --quiet --unit=xray-autotune-test-awg --property=RuntimeMaxSec=7200 $XT awg run $D/test/awg.json ;;
+      tnet:*)
+        # NAT for a test range, recorded so stop-test removes it
+        net=${spec#tnet:}
+        [ -f $D/test/fwd-was ] || sysctl -n net.ipv4.ip_forward > $D/test/fwd-was
+        sysctl -qw net.ipv4.ip_forward=1
+        vpn_rules -C "$net" || vpn_rules -A "$net" || echo "iptables failed for $net" >&2
+        echo "$net" >> $D/test/nets ;;
       openvpn:*)
         id=${spec#openvpn:}
         systemd-run --quiet --unit="xray-autotune-test-ovpn-$id" --property=RuntimeMaxSec=7200 \
@@ -310,6 +335,7 @@ test-extras)
   for spec in "$@"; do
     case $spec in
       tunnels) echo "tunnels $(systemctl is-active xray-autotune-test-tunnels 2>/dev/null || true)" ;;
+      awg) echo "awg $(systemctl is-active xray-autotune-test-awg 2>/dev/null || true)" ;;
       openvpn:*) echo "$spec $(systemctl is-active "xray-autotune-test-ovpn-${spec#openvpn:}" 2>/dev/null || true)" ;;
       ikev2) echo "ikev2 $(systemctl is-active "$(swan_unit)" 2>/dev/null || true)" ;;
     esac
@@ -322,6 +348,9 @@ extras)
       tunnels)
         unit_file xray-autotune-tunnels "xtune SSH and DNS tunnels" "$XT tunnels run $D/tunnels.json"
         keep="$keep xray-autotune-tunnels" ;;
+      awg)
+        unit_file xray-autotune-awg "xtune AmneziaWG" "$XT awg run $D/awg.json"
+        keep="$keep xray-autotune-awg" ;;
       openvpn:*)
         id=${spec#openvpn:}
         unit_file "xray-autotune-ovpn-$id" "OpenVPN $id (managed by xtune)" "$(command -v openvpn) --cd $D/vpn --config $D/vpn/$id.conf"
@@ -421,11 +450,11 @@ Wants=network-online.target
 ExecStart=$XT serve
 Restart=always
 RestartSec=5
+# it runs as root and keeps /etc writable: connect and management links add users, which can
+# rewrite and restart xtune's units
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
-ProtectSystem=strict
-ReadWritePaths=$D
 [Install]
 WantedBy=multi-user.target
 EOF

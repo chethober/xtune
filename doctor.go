@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"slices"
@@ -106,6 +107,24 @@ func Doctor(r *Server) *doctor {
 			d.fail("the SSH / DNS tunnel server is %s (see: xtune logs --unit xray-autotune-tunnels)", orStr(ss.Tunnels, "not running"))
 		}
 	}
+	if hasEngine(st.Entries, "awg") {
+		if ss.AWG == "active" {
+			d.ok("AmneziaWG server is running")
+		} else {
+			d.fail("the AmneziaWG server is %s (see: xtune logs --unit xray-autotune-awg)", orStr(ss.AWG, "not running"))
+		}
+	}
+	if slices.ContainsFunc(st.Entries, Entry.Worker) && st.Worker != nil {
+		ip, err := serverIP(st.Host)
+		switch {
+		case err != nil:
+			d.fail("Cloudflare Worker: %v", err)
+		case !maps.Equal(workerRoutes(st.Entries, ip), st.Worker.Routes):
+			d.fail("the Cloudflare Worker does not point at the deployed Worker configs: redeploy, or xtune cloudflare worker sync")
+		default:
+			d.ok("Cloudflare Worker %s relays to the deployed Worker configs", orStr(st.Worker.Domain, st.Worker.Host))
+		}
+	}
 	info, err := r.Helper("doctor")
 	if err != nil {
 		d.fail("server checks: %v", err)
@@ -131,7 +150,7 @@ func Doctor(r *Server) *doctor {
 	if n, _ := strconv.Atoi(fields["HOPRULES"]); hops > 0 && n == 0 {
 		d.fail("port hopping is deployed but its forwarding rules are missing: restart Xray to restore them (sudo systemctl restart xray-autotune)")
 	}
-	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") {
+	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") || hasEngine(st.Entries, "awg") {
 		if n, _ := strconv.Atoi(fields["VPNRULES"]); n == 0 || fields["FORWARD"] != "1" {
 			d.fail("VPN clients connect but cannot reach the internet: IP forwarding or the NAT rules are missing (redeploy, or restart xray-autotune)")
 		} else {
