@@ -351,7 +351,7 @@ func cmdCloudflare(args []string) error {
 	case "token":
 		tok := os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
 		if tok == "" {
-			if tok, err = cliPrompt(cfTokenPrompt, true); err != nil {
+			if tok, err = cfTokenAsk(); err != nil {
 				return err
 			}
 		}
@@ -386,6 +386,17 @@ func cmdCloudflare(args []string) error {
 }
 
 const cfTokenPrompt = "Cloudflare API token (Zone:Read, DNS:Edit, Zone Settings:Edit; Account: Workers Scripts:Edit for the Worker relay)"
+
+// cfTokenURL opens Cloudflare's token form with xtune's permissions filled in: the ones above,
+// plus Workers Routes:Edit for the Worker's hostname in the zone and Account Settings:Read to list
+// the accounts.
+const cfTokenURL = "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22zone_settings%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_routes%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&name=xtune&accountId=%2A&zoneId=all"
+
+// cfTokenAsk prompts for a token, after printing the link that makes one.
+func cfTokenAsk() (string, error) {
+	fmt.Fprintln(os.Stderr, "Create a Cloudflare token with xtune's permissions:\n  "+cfTokenURL)
+	return cliPrompt(cfTokenPrompt, true)
+}
 
 // cfWorkerCmd is `xtune cloudflare worker [status | sync | off]`.
 func cfWorkerCmd(r *Server, st *State, args []string) error {

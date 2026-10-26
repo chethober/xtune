@@ -380,7 +380,7 @@ func cmdTune(args []string) error {
 	o.inherit(old, flagsSet(fs))
 	o.Cloudflare = os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
 	if o.Cloudflare == "" && (old == nil || old.Cloudflare.Token == "") && (o.Zone != "" || slices.Contains(o.Protocols, "worker")) {
-		if o.Cloudflare, err = cliPrompt(cfTokenPrompt, true); err != nil {
+		if o.Cloudflare, err = cfTokenAsk(); err != nil {
 			return err
 		}
 	}

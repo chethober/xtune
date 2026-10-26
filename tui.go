@@ -432,7 +432,7 @@ func (t *tui) tune() error {
 				"(example.com), and new domains get their DNS records made.").Value(&o.Zone),
 		huh.NewInput().Title("Cloudflare API token").EchoMode(huh.EchoModePassword).
 			Description("Empty: the server's (xtune cloudflare token). Zone:Read, DNS:Edit, Zone Settings:Edit,\n"+
-				"and Account: Workers Scripts:Edit for the Worker relay.").Value(&o.Cloudflare),
+				"and Account: Workers Scripts:Edit for the Worker relay. Make one: xtune cloudflare token").Value(&o.Cloudflare),
 	)).WithTheme(t.theme).Run()
 	if err != nil {
 		return err
