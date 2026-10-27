@@ -40,6 +40,8 @@ All notable changes to this project are documented here. The format follows
 - `xtune doctor` reports failed scheduled backups, Workers near their daily limit, and an IP that looks blocked; the
   management link's `status` (@chthvpnbot) carries the same for the admin (`ipBlocked`, `backup`, `workers`).
 - Recording a network's ranking first updates an older xtune on the server, which would drop the rankings.
+- `xtune cloudflare token`, and `tune` when it asks for a token, print a link to Cloudflare's token form with
+  xtune's permissions filled in (Account Analytics:Read included, for the Worker usage alerts).
 
 ### Fixed
 - An expired user's subscription page showed its status as "expired %s".
