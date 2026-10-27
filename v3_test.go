@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -740,5 +741,35 @@ func TestSelfUpdateArchive(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "new" {
 		t.Error("binary not replaced")
+	}
+}
+
+// --host of a saved server takes its user and port; flags still win.
+func TestHostUsesSavedProfile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := saveProfile(Conn{Host: "203.0.113.5", User: "chth", Port: 2222}); err != nil {
+		t.Fatal(err)
+	}
+	conn := func(args ...string) Conn {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		c := addConnFlags(fs)
+		if err := fs.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		cn, err := c.conn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cn
+	}
+	if cn := conn("--host", "203.0.113.5"); cn.User != "chth" || cn.Port != 2222 {
+		t.Errorf("saved profile not used: %+v", cn)
+	}
+	if cn := conn("--host", "203.0.113.5", "--user", "root"); cn.User != "root" || cn.Port != 2222 {
+		t.Errorf("--user should win: %+v", cn)
+	}
+	if cn := conn("--host", "198.51.100.1"); cn.User != "" {
+		t.Errorf("an unknown host got a profile's user: %+v", cn)
 	}
 }

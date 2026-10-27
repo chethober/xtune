@@ -233,6 +233,8 @@ func (c connFlags) conn() (Conn, error) {
 			return cn, fmt.Errorf("no profile %q", *c.profile)
 		}
 		cn = p
+	} else if p, ok := findProfile(*c.host); ok && *c.host != "" {
+		cn = p // --host of a saved server: its user, port and key unless given
 	}
 	if *c.host != "" {
 		cn.Host = *c.host

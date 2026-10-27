@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- `--host` of a saved server ignored its profile and logged in as root: it now takes the profile's user, port and
+  key, unless `--user`, `--port` or `--key` say otherwise.
+
 ## [0.9.1] - 2026-10-27
 
 ### Fixed
