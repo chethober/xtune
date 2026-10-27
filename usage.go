@@ -303,7 +303,7 @@ func reconcile(r *Server, st *State, active []User) error {
 		var res struct {
 			Users []struct {
 				Email   string `json:"email"`
-				Account struct{ ID, Auth, Key string }
+				Account struct{ ID, Auth, Key, Password string }
 			} `json:"users"`
 		}
 		if err := json.Unmarshal([]byte(out), &res); err != nil {
@@ -311,7 +311,7 @@ func reconcile(r *Server, st *State, active []User) error {
 		}
 		live := map[string]string{}
 		for _, u := range res.Users {
-			live[u.Email] = u.Account.ID + u.Account.Auth + u.Account.Key
+			live[u.Email] = u.Account.ID + u.Account.Auth + u.Account.Key + u.Account.Password
 		}
 		want := map[string]string{}
 		var missing []User
@@ -401,6 +401,7 @@ func Enforce(r *Server) error {
 	}
 	notifyUsers(st, us, now)
 	notifyEntries(st, us, now)
+	runAutopilot(r, st, us, now)
 	if err := applyDeviceLimits(r, st, us, prev, now); err != nil {
 		return err
 	}
@@ -424,6 +425,11 @@ func Enforce(r *Server) error {
 	if backupDue(st, us, now) {
 		if err := runScheduledBackup(st, us, now); err != nil {
 			fmt.Println("scheduled backup:", err) // retried in an hour
+		}
+	}
+	if workerUsageDue(st, us, now) {
+		if err := checkWorkerUsage(st, us, now); err != nil {
+			fmt.Println("Worker requests:", err) // tried again in an hour
 		}
 	}
 	alert(st, us, "backup-failed", st.Backups != nil && us.BackupAt > us.LastBackup && us.BackupErr != "",

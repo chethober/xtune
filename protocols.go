@@ -23,6 +23,8 @@ import (
 // Besides Xray's protocols, xtune serves:
 //
 //   - wireguard: Xray's WireGuard inbound, tuned and accounted like every other Xray config.
+//   - trojan-reality: Trojan over REALITY (opt-in), for apps and networks that do better with
+//     Trojan than VLESS; it shares the REALITY keys and targets.
 //   - amneziawg: WireGuard with a disguised handshake, served by xtune itself (awg.go).
 //   - worker-ws: VLESS over WebSocket through a Cloudflare Worker, relayed to a plain TCP
 //     inbound of Xray's (worker.go). It needs a Cloudflare API token.
@@ -45,8 +47,9 @@ var kindInfo = map[string]struct {
 	"reality-tcp": {Engine: "xray"}, "reality-xhttp": {Engine: "xray"}, "reality-grpc": {Engine: "xray"},
 	"vlessenc-tcp": {Engine: "xray"}, "vlessenc-xhttp": {Engine: "xray"}, "cdn-xhttp": {Engine: "xray"},
 	"hysteria2": {Engine: "xray"}, "ss2022": {Engine: "xray"}, "wireguard": {Engine: "xray"}, "worker-ws": {Engine: "xray"},
-	"amneziawg": {Engine: "awg"},
-	"ssh":       {Engine: "tunnel"}, "ssh-tls": {Engine: "tunnel"}, "cdn-ssh": {Engine: "tunnel"}, "dnstt": {Engine: "tunnel"},
+	"trojan-reality": {Engine: "xray"},
+	"amneziawg":      {Engine: "awg"},
+	"ssh":            {Engine: "tunnel"}, "ssh-tls": {Engine: "tunnel"}, "cdn-ssh": {Engine: "tunnel"}, "dnstt": {Engine: "tunnel"},
 	"openvpn-udp": {Engine: "openvpn", Handshake: true}, "openvpn-tcp": {Engine: "openvpn", Handshake: true},
 	"ikev2": {Engine: "ikev2", Handshake: true},
 }
@@ -373,6 +376,8 @@ func (e Entry) family() string {
 		return "awg"
 	case "worker-ws":
 		return "worker"
+	case "trojan-reality":
+		return "trojan"
 	}
 	return ""
 }

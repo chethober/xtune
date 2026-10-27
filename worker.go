@@ -31,6 +31,8 @@ type Worker struct {
 	Host    string            `json:"host"`             // NAME.SUBDOMAIN.workers.dev
 	Domain  string            `json:"domain,omitempty"` // a hostname on one of the user's zones
 	Routes  map[string]string `json:"routes,omitempty"` // path -> origin IP:port, as last uploaded
+	Extra   []*WorkerExtra    `json:"extra,omitempty"`  // more Workers, in other accounts, on the same routes
+	Limit   int64             `json:"limit,omitempty"`  // requests a day for the usage alerts: 0 = the free plan's, -1 = no alerts
 }
 
 // workerPath is the WebSocket path clients use: the entry's path, with Xray early data (the
@@ -202,6 +204,11 @@ func syncWorker(st *State) error {
 	}
 	if err := cfWorkerUpload(st.Cloudflare.Token, st.Worker, routes); err != nil {
 		return fmt.Errorf("updating the Cloudflare Worker: %w", err)
+	}
+	for _, x := range st.Worker.Extra {
+		if err := cfWorkerUpload(x.Token, &Worker{Account: x.Account, Name: x.Name}, routes); err != nil {
+			return fmt.Errorf("updating the Cloudflare Worker %s: %w", x.Host, err)
+		}
 	}
 	return nil
 }

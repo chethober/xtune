@@ -420,6 +420,7 @@ func (t *tui) tune() error {
 				huh.NewOption("DNS tunnel (dnstt / SlowDNS; slow, for when only DNS gets through)", "dnstt"),
 				huh.NewOption("AmneziaWG (WireGuard with a disguised handshake; AmneziaVPN / AmneziaWG apps)", "awg"),
 				huh.NewOption("Cloudflare Worker relay (VLESS over workers.dev; needs a Cloudflare token)", "worker"),
+				huh.NewOption("Trojan over REALITY (for apps and networks that do better with Trojan)", "trojan"),
 				huh.NewOption("OpenVPN (UDP and TCP; handshake checked only)", "openvpn"),
 				huh.NewOption("IKEv2 (built into phones and Windows; handshake checked only)", "ikev2"),
 			).Value(&o.Protocols),

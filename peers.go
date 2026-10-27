@@ -69,7 +69,7 @@ type peerReply struct {
 
 // public is what clients need to connect to this deployment, and nothing secret.
 func (st *State) public() *State {
-	p := &State{Host: st.Host, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
+	p := &State{Host: st.Host, ClientIP: st.ClientIP, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
 		ShortID: st.ShortID, VencEnc: st.VencEnc, SSKey: st.SSKey, CertSNI: st.CertSNI, CertHash: st.CertHash,
 		WGPub: st.WGPub, SSHHostPub: st.SSHHostPub, DNSTTPub: st.DNSTTPub, DNSDomain: st.DNSDomain,
 		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries}
@@ -113,7 +113,7 @@ func (st *State) servers() []*State {
 func (st *State) NamedLinks(u User) []pageLink {
 	var out []pageLink
 	for _, s := range st.servers() {
-		for _, e := range s.Entries {
+		for _, e := range s.linkEntries() {
 			if l := s.Link(e, u, e.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
 				out = append(out, pageLink{Name: e.ID, URL: l})
 			}

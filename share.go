@@ -109,7 +109,7 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 	}
 	netw := detectNetwork(&o.Network, o.Log)
 	entries := supported(o.XrayBin, b.State, b.Entries, o.Log)
-	vs := ExpandVariants(entries, b.Depth, o.Resolvers...)
+	vs := supportedKnobs(o.XrayBin, b.State, ExpandVariants(entries, b.Depth, o.Resolvers...), o.Log)
 	vs = addCleanIPVariants(b.State, entries, vs, o.CleanIPs, o.Log) // this network's own clean IPs
 	err := RunTests(o, b.State, b.User, vs)
 	if err != nil && !strings.Contains(err.Error(), "nothing connected") {

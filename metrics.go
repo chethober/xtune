@@ -121,6 +121,11 @@ func writeMetrics(w io.Writer, st *State, us *Usage, now time.Time) {
 		up = 0
 	}
 	p.metric("xtune_xray_up", "gauge", "1 when the deployed Xray answered the last enforce runs.", up)
+	blocked := 0.0
+	if b, _ := ipBlocked(st, us, now); b {
+		blocked = 1
+	}
+	p.metric("xtune_ip_blocked", "gauge", "1 when the server's IP looks blocked on the users' networks.", blocked)
 	p.metric("xtune_device_blocks", "gauge", "Client IPs blocked for being over a device limit.", float64(len(us.Blocks)))
 	if st.Peers != nil {
 		names := make([]string, 0, len(st.Peers.Servers))

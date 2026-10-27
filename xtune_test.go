@@ -274,6 +274,7 @@ type fakeServer struct {
 	stats    string                       // statsquery output
 	online   string                       // statsonlineiplist output
 	sib      []string                     // last sib arguments
+	rmus     int                          // rmu calls
 	helper   map[string]string            // canned output of other helper commands
 	calls    []string                     // helper commands run, with their arguments
 	restarts int
@@ -306,11 +307,16 @@ func (f *fakeServer) api(args []string) (string, error) {
 				us = append(us, J{"email": email, "account": J{"publicKey": c}})
 				continue
 			}
+			if strings.HasPrefix(tag, "trojan") { // Trojan accounts have a password
+				us = append(us, J{"email": email, "account": J{"password": c}})
+				continue
+			}
 			us = append(us, J{"email": email, "account": J{"id": c}})
 		}
 		b, _ := json.Marshal(J{"users": us})
 		return string(b), nil
 	case "rmu":
+		f.rmus++
 		n := 0
 		for _, e := range rest {
 			if _, ok := f.live[tag][e]; ok {
