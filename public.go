@@ -231,7 +231,7 @@ func (st *State) protocolNames() []string {
 	labels := []struct{ prefix, name string }{
 		{"reality", "VLESS REALITY"}, {"vlessenc", "VLESS Encryption"}, {"cdn", "CDN"}, {"hysteria2", "Hysteria2"},
 		{"ss2022", "Shadowsocks"}, {"wireguard", "WireGuard"}, {"ssh", "SSH"}, {"dnstt", "DNS tunnel"},
-		{"openvpn", "OpenVPN"}, {"ikev2", "IKEv2"}, {"amneziawg", "AmneziaWG"}, {"worker", "CF Worker"},
+		{"openvpn", "OpenVPN"}, {"ikev2", "IKEv2"}, {"amneziawg", "AmneziaWG"}, {"worker", "CF Worker"}, {"trojan", "Trojan"},
 	}
 	var out []string
 	for _, s := range st.servers() {

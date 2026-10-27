@@ -447,8 +447,8 @@ func runXray(t *testing.T, bin, path string, cfg J) {
 // The bot shows members the guides for the protocols a pool lists.
 func TestProtocolNamesNewKinds(t *testing.T) {
 	st := keyedState(t)
-	st.Entries = []Entry{{ID: "r", Kind: "reality-tcp"}, {ID: "awg", Kind: "amneziawg"}, {ID: "worker", Kind: "worker-ws"}}
-	if got := strings.Join(st.protocolNames(), ","); got != "VLESS REALITY,AmneziaWG,CF Worker" {
+	st.Entries = []Entry{{ID: "r", Kind: "reality-tcp"}, {ID: "awg", Kind: "amneziawg"}, {ID: "worker", Kind: "worker-ws"}, {ID: "t", Kind: "trojan-reality"}}
+	if got := strings.Join(st.protocolNames(), ","); got != "VLESS REALITY,AmneziaWG,CF Worker,Trojan" {
 		t.Errorf("protocol names %s", got)
 	}
 }
