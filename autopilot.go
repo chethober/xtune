@@ -18,7 +18,8 @@ import (
 // server's address goes quiet while the relayed ones (CDN, Worker, DNS tunnel) still carry
 // traffic, or a recent check from some network (xtune check --every) found every direct config
 // blocked while a relayed one worked. It then alerts with the command that moves the server. With
-// a DigitalOcean token it moves the server itself: a new reserved IP is assigned to the droplet,
+// a DigitalOcean token, and when a check confirms it (traffic alone can mislead), it moves the
+// server itself: a new reserved IP is assigned to the droplet,
 // the direct domain's DNS record follows (with a Cloudflare token), and subscriptions hand users
 // configs with the new address. At most once a day.
 
@@ -38,9 +39,16 @@ const (
 // relayed entries are not reached at the server's address, so they keep working when it is blocked.
 func (e Entry) relayed() bool { return e.CDN() || e.Worker() || e.Kind == "dnstt" }
 
-// ipBlocked reports whether the server's IP looks blocked, and why.
+// ipBlocked reports whether the server's IP looks blocked, by either signal, and why.
 func ipBlocked(st *State, us *Usage, now time.Time) (bool, string) {
-	var direct, relayed []Entry
+	if b, why := blockConfirmed(st, us, now); b {
+		return b, why
+	}
+	return blockedByTraffic(st, us, now)
+}
+
+// splitRelayed sorts the entries into those reached at the server's address and the relayed ones.
+func splitRelayed(st *State) (direct, relayed []Entry) {
 	for _, e := range st.Entries {
 		if e.relayed() {
 			relayed = append(relayed, e)
@@ -48,6 +56,14 @@ func ipBlocked(st *State, us *Usage, now time.Time) (bool, string) {
 			direct = append(direct, e)
 		}
 	}
+	return direct, relayed
+}
+
+// blockedByTraffic is the traffic signal: every direct config quiet for 2 hours while a relayed
+// one is in use. It is a hint, not proof (a few users whose apps prefer the CDN config look the
+// same), so it only alerts.
+func blockedByTraffic(st *State, us *Usage, now time.Time) (bool, string) {
+	direct, relayed := splitRelayed(st)
 	if len(direct) == 0 || len(relayed) == 0 {
 		return false, "" // nothing to tell a blocked IP from an idle server
 	}
@@ -59,6 +75,16 @@ func ipBlocked(st *State, us *Usage, now time.Time) (bool, string) {
 	})
 	if allQuiet && relayBusy {
 		return true, "every config at the server's address carried nothing for 2 hours while the CDN or Worker configs were in use"
+	}
+	return false, ""
+}
+
+// blockConfirmed is the check signal: a recent check from some network (since the last move)
+// found every direct config blocked while a relayed one worked. Only this one moves the server.
+func blockConfirmed(st *State, us *Usage, now time.Time) (bool, string) {
+	direct, relayed := splitRelayed(st)
+	if len(direct) == 0 || len(relayed) == 0 {
+		return false, ""
 	}
 	for asn, nr := range st.Networks {
 		if now.Sub(time.Unix(nr.Updated, 0)) > checkSignalIn || nr.Updated <= us.RotatedAt {
@@ -83,9 +109,14 @@ func ipBlocked(st *State, us *Usage, now time.Time) (bool, string) {
 // IP (the enforce job runs it every minute, under the server lock).
 func runAutopilot(r *Server, st *State, us *Usage, now time.Time) {
 	blocked, why := ipBlocked(st, us, now)
+	confirmed, _ := blockConfirmed(st, us, now)
 	ap := st.Autopilot
 	canMove := ap != nil && ap.Provider != "" && now.Sub(time.Unix(us.RotatedAt, 0)) >= rotateEvery
-	if blocked && canMove {
+	if blocked && canMove && !confirmed {
+		why += fmt.Sprintf(". The autopilot moves the server only when a check from your users' network confirms it: "+
+			"xtune check --host %s (or keep one running there: --every 6h)", st.Host)
+	}
+	if confirmed && canMove {
 		old := st.Addr()
 		ip, err := rotateIP(r, st, us, now)
 		if err == nil {

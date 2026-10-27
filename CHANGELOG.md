@@ -8,9 +8,9 @@ All notable changes to this project are documented here. The format follows
 ### Added
 - Clean IPs: with a CDN domain or the Worker relay, tuning scans a sample of Cloudflare's edge ranges from your
   machine (TLS for the domain, then `/cdn-cgi/trace`) and also measures the CDN and Worker configs through the best
-  few (`tune`, `measure` and `migrate --clean-ips N`, default 3, 0 = off). A clean IP is a client knob like the
-  others: links dial it with the domain kept as SNI and Host, and the honest ranking keeps the plain domain unless
-  the IP measurably wins. `xtune cfscan` lists the edge IPs that answer best from here.
+  few (`tune`, `measure` and `migrate --clean-ips N`, default 3, 0 = off). Deployed configs keep the domain; a
+  clean IP that measurably beat it goes into that network's ranking, so only users on that network get links that
+  dial it (with the domain kept as SNI and Host). `xtune cfscan` lists the edge IPs that answer best from here.
 - Per-network rankings: tunes, checks and measured reports look up their network's ASN and store, on the server, how
   each deployed config did from there (with the best clean IP there). The subscription server looks up each
   requester's ASN (Team Cymru's DNS service; through the CDN, `CF-Connecting-IP`) and lists that network's best
@@ -24,7 +24,7 @@ All notable changes to this project are documented here. The format follows
 - Autopilot: when every config at the server's address goes quiet while the CDN or Worker configs carry traffic, or a
   recent check from some network finds them all blocked while a relayed one works, an alert says the IP looks blocked
   and gives the `xtune migrate` command. `xtune autopilot digitalocean` moves a DigitalOcean droplet to a new reserved
-  IP instead (at most once a day), points the direct domain at it with a Cloudflare token, and subscriptions hand out
+  IP instead (at most once a day, and only when a check confirms the block: quiet traffic alone only alerts), points the direct domain at it with a Cloudflare token, and subscriptions hand out
   the new address (`State.clientIp`). `xtune autopilot status | rotate | off | reset`.
 - Worker relay limits: hourly, each Worker's requests today are read from Cloudflare's analytics (the token needs
   Account Analytics:Read), with alerts at 80% and 100% of the free plan's 100,000 (`xtune cloudflare worker limit N |
@@ -37,7 +37,9 @@ All notable changes to this project are documented here. The format follows
 - `xtune sub metrics [on | token | off]`: Prometheus metrics on the subscription server at `/PATH/metrics`, with a
   token of their own (bearer header, or in the URL).
 - Russian and Chinese (Simplified) subscription pages (`xtune sub lang ru|zh`).
-- `xtune doctor` reports failed scheduled backups, Workers near their daily limit, and an IP that looks blocked.
+- `xtune doctor` reports failed scheduled backups, Workers near their daily limit, and an IP that looks blocked; the
+  management link's `status` (@chthvpnbot) carries the same for the admin (`ipBlocked`, `backup`, `workers`).
+- Recording a network's ranking first updates an older xtune on the server, which would drop the rankings.
 
 ### Fixed
 - An expired user's subscription page showed its status as "expired %s".
