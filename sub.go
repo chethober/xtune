@@ -289,6 +289,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
 	isPeer := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "peer"
 	isAdm := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "adm"
+	isMetrics := req.Method == http.MethodGet && (len(parts) == 2 || len(parts) == 3) && parts[1] == "metrics"
 	isPub := len(parts) >= 3 && parts[1] == "pub" &&
 		(len(parts) == 3 && req.Method == http.MethodGet || len(parts) == 4 && req.Method == http.MethodPost)
 	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm {
@@ -314,6 +315,14 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		h.serveManage(w, req, st, parts[2])
+		return
+	}
+	if isMetrics {
+		if st.Sub.Mode == "" || parts[0] != st.Sub.Path {
+			http.NotFound(w, req)
+			return
+		}
+		serveMetrics(w, req, st, us, parts)
 		return
 	}
 	if isPub {
@@ -348,6 +357,11 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte("xtune - "+u.Name)))
 	hd.Set("Profile-Update-Interval", "6")
 	hd.Set("Profile-Web-Page-Url", st.SubURL(*u))
+	now := time.Now()
+	view, netName := st, ""
+	if len(st.Networks) > 0 { // the requester's network's best configs first
+		view, netName = st.forNetwork(asnOf(requesterIP(req, st), now), now)
+	}
 	switch {
 	case len(parts) == 4: // a profile file
 		for _, p := range st.Profiles(*u) {
@@ -361,16 +375,20 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 	case len(parts) == 3:
 		hd.Set("Content-Type", "application/json")
-		b, _ := json.MarshalIndent(st.FailoverConfig(*u), "", "  ")
+		b, _ := json.MarshalIndent(view.FailoverConfig(*u), "", "  ")
 		w.Write(b)
 	case strings.Contains(req.Header.Get("Accept"), "text/html"):
 		hd.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "+
 			"img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		hd.Set("Content-Type", "text/html; charset=utf-8")
-		subPage.Execute(w, pageData(st, *u, uu, time.Now(), pageLang(req, st.Sub.Lang)))
+		p := pageData(view, *u, uu, now, pageLang(req, st.Sub.Lang))
+		if netName != "" {
+			p.Network = fmt.Sprintf(p.T["sorted"], netName)
+		}
+		subPage.Execute(w, p)
 	default:
 		hd.Set("Content-Type", "text/plain; charset=utf-8")
-		io.WriteString(w, st.Subscription(*u))
+		io.WriteString(w, view.Subscription(*u))
 	}
 }
 
@@ -391,6 +409,7 @@ type page struct {
 	Files                         []pageLink // profile files, for apps without share links
 	Login                         string     // "name / password" for the SSH and VPN apps
 	History                       []histBar  // daily traffic, oldest first; empty without any
+	Network                       string     // "sorted for your network: NAME", when ranked for it
 }
 
 type histBar struct {
@@ -407,7 +426,11 @@ func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page
 		return s
 	}
 	status := userStatus(u, uu, now)
-	p := page{Lang: lang, Dir: "ltr", T: T, Name: u.Name, Status: T[status], Used: num(fmtBytes(uu.Up + uu.Down)),
+	label := T[status]
+	if status == "expired" { // T["expired"] is the dated form, "expired %s"
+		label = T["expiredState"]
+	}
+	p := page{Lang: lang, Dir: "ltr", T: T, Name: u.Name, Status: label, Used: num(fmtBytes(uu.Up + uu.Down)),
 		Quota: T["unlimited"], Expires: T["never"], Devices: num(fmt.Sprintf(T["online"], len(uu.Online))),
 		SubURL: st.SubURL(u), LastSeen: T["never"]}
 	if lang == "fa" {
@@ -533,7 +556,7 @@ button,.btn{flex:none;text-decoration:none;font:inherit;font-size:13px;font-weig
 <div class="card"><h2>{{.T.failover}}</h2>
 <div class="row"><code>{{.JSONURL}}</code><button data-copy="{{.JSONURL}}">{{.T.copy}}</button></div>
 <p class="dim">{{.T.failHelp}}</p></div>
-<div class="card"><h2>{{.T.single}}</h2>
+<div class="card"><h2>{{.T.single}}</h2>{{if .Network}}<p class="dim">{{.Network}}</p>{{end}}
 {{range .Links}}<div class="row"><code title="{{.Name}}">{{.URL}}</code><button data-copy="{{.URL}}">{{$.T.copy}}</button></div>{{end}}</div>
 {{if or .Files .Login}}<div class="card"><h2>{{.T.files}}</h2>
 {{range .Files}}<div class="row"><code>{{.Name}}</code><a class="btn" href="{{.URL}}" download>{{$.T.download}}</a></div>{{end}}

@@ -278,3 +278,9 @@ func (o *TuneOpts) prepareWorker(host string, entries []Entry) []Entry {
 	o.worker = w
 	return keep
 }
+
+// WorkerUse is one Worker's request count today, as Cloudflare's analytics report it.
+type WorkerUse struct {
+	Host     string `json:"host"`
+	Requests int64  `json:"requests"`
+}

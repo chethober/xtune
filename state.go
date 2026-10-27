@@ -203,7 +203,15 @@ func restart(r *Server, st *State) error {
 // already has a deployment, the server keys, certificate and users are kept: only ports, SNIs and
 // client settings change, so subscriptions keep working.
 func Deploy(r *Server, res *TuneResult, n int) (*State, error) {
-	return DeployVariants(r, res.State, deployChoice(res.Best, n))
+	st, err := DeployVariants(r, res.State, deployChoice(res.Best, n))
+	if err != nil {
+		return st, err
+	}
+	scores, addrs := variantRank(st.Entries, res.All)
+	if err := RecordNetwork(r, res.Network, scores, addrs); err != nil {
+		fmt.Println("[!] ranking the configs for this network:", err) // subscriptions just stay unranked for it
+	}
+	return st, nil
 }
 
 // DeployVariants deploys the chosen variants with their tuned client settings, keeping an
@@ -216,6 +224,7 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	for _, v := range chosen {
 		e := v.Entry
 		e.FP, e.Mode, e.Frag, e.Split, e.MTU, e.Resolver = v.K.FP, v.K.Mode, v.K.Frag, v.K.Split, v.K.MTU, v.K.Resolver
+		e.Addr = v.K.Addr
 		st.Entries = append(st.Entries, e)
 	}
 	renumberAWG(st.Entries) // off the test instance's ranges
@@ -229,6 +238,8 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 		st.Check, st.Warp, st.Notify, st.LegacyBot = old.Check, old.Warp, old.Notify, old.LegacyBot
 		st.Public, st.Manage = old.Public, old.Manage
 		st.Plans, st.Peers, st.Follow = old.Plans, old.Peers, old.Follow
+		st.Backups, st.Networks = old.Backups, old.Networks
+		st.forgetStaleRanks()          // configs that moved are measured anew
 		if st.Cloudflare.Token == "" { // a token given for this tune replaces the deployment's
 			st.Cloudflare = old.Cloudflare
 		}

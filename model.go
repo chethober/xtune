@@ -40,11 +40,12 @@ type Entry struct {
 	MTU      int    `json:"mtu,omitempty"`      // wireguard: tunnel MTU
 	Resolver string `json:"resolver,omitempty"` // dnstt: the resolver clients send queries through
 	Subnet   string `json:"subnet,omitempty"`   // amneziawg: the clients' address range
+	Addr     string `json:"addr,omitempty"`     // CDN and Worker entries: a Cloudflare edge IP to dial (a clean IP)
 }
 
 // Knobs are the client settings tuning picked for the entry.
 func (e Entry) Knobs() Knobs {
-	return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split, MTU: e.MTU, Resolver: e.Resolver}
+	return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split, MTU: e.MTU, Resolver: e.Resolver, Addr: e.Addr}
 }
 
 func (e Entry) Proto() string {
@@ -101,7 +102,8 @@ type SubConfig struct {
 	Lang string `json:"lang,omitempty"` // page language: en | fa ("" = from the browser)
 	// Port443: the server also listens on 443, for the connect and management links: bots on
 	// serverless platforms (such as @chthvpnbot on tgcloud) can only reach ports 80 and 443.
-	Port443 bool `json:"port443,omitempty"`
+	Port443 bool   `json:"port443,omitempty"`
+	Metrics string `json:"metrics,omitempty"` // token for /PATH/metrics (Prometheus), "" = off
 }
 
 // State is the server's deployment and user database, stored as state.json (root, 0600).
@@ -136,6 +138,8 @@ type State struct {
 	Public      map[string]*PublicPool `json:"public,omitempty"`    // public profiles: pools of users shared through a bot
 	AWG         *AWGParams             `json:"awg,omitempty"`       // AmneziaWG key and obfuscation settings
 	Worker      *Worker                `json:"worker,omitempty"`    // Cloudflare Worker relaying the worker-ws entries
+	Backups     *BackupPlan            `json:"backups,omitempty"`   // scheduled backups sent off the server
+	Networks    map[string]*NetRank    `json:"networks,omitempty"`  // configs ranked per network (ASN), for subscriptions
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`
@@ -153,11 +157,13 @@ type State struct {
 
 // Knobs are client-side settings. Split applies to cdn-xhttp only, MTU to wireguard, Resolver to
 // dnstt; Mode is the XHTTP mode, or for SSH entries "ws" when the client opens with a WebSocket
-// upgrade request.
+// upgrade request. Addr is the Cloudflare edge IP CDN and Worker entries dial instead of
+// resolving their domain.
 type Knobs struct {
 	FP, Frag, Mode, Split string
 	MTU                   int
 	Resolver              string
+	Addr                  string
 }
 
 var fragNames = []string{"none", "frag-mild", "frag-aggr"}
@@ -251,6 +257,15 @@ func (st *State) addrFor(e Entry) string {
 		return e.SNI
 	}
 	return st.Addr()
+}
+
+// dialAddr is the address the client connects to: a clean IP for CDN and Worker entries when
+// tuning chose one, the entry's usual address otherwise.
+func (st *State) dialAddr(e Entry, k Knobs) string {
+	if k.Addr != "" && (e.CDN() || e.Worker()) {
+		return k.Addr
+	}
+	return st.addrFor(e)
 }
 
 // clientPort is the port clients dial: a Worker answers on 443 whatever port it relays to.
@@ -443,7 +458,7 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	if k.Frag != "" && k.Frag != "none" {
 		ss["sockopt"] = J{"dialerProxy": k.Frag}
 	}
-	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.addrFor(e), "port": e.clientPort(),
+	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.dialAddr(e, k), "port": e.clientPort(),
 		"users": []J{{"id": u.UUID, "encryption": enc, "flow": flow}}}}}, "streamSettings": ss}
 }
 
@@ -521,7 +536,7 @@ func (st *State) FailoverConfig(u User) J {
 
 func (st *State) Link(e Entry, u User, k Knobs) string {
 	name := url.PathEscape(u.Name + "-" + e.ID)
-	hostPort := hostPort(st.addrFor(e), e.clientPort())
+	hostPort := hostPort(st.dialAddr(e, k), e.clientPort())
 	switch e.Kind {
 	case "hysteria2":
 		hop := ""
