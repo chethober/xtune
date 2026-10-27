@@ -32,7 +32,7 @@ On your computer (client):
                   --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
                   --network NAME           name of this network (ISP), for the history and merged deploys
                   --protocols LIST         also test ssh, dnstt, awg (AmneziaWG), worker (Cloudflare Worker relay),
-                                           openvpn, ikev2 (vpn = both VPNs, all = every one)
+                                           trojan (Trojan over REALITY), openvpn, ikev2 (vpn = both VPNs, all = every one)
                   --zone Z                 a Cloudflare zone: domains not given get random names in it, with
                                            their DNS records (token: XTUNE_CLOUDFLARE_TOKEN, or the server's)
                   --dns-domain Z           zone delegated to the server (NS record): the DNS tunnel
@@ -87,7 +87,11 @@ On the server (as root):
   xtune follow    [PEER_URL [--name N] | off]   take users from a primary, add this server's configs to it
   xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
   xtune cloudflare worker [status | sync | off]   the Worker relay's routes; off deletes it and its configs
+  xtune cloudflare worker add | remove HOST | limit N|none   more Workers in other accounts (each has its own
+                                           100,000 requests a day); usage alerts at 80% and 100% of the limit
   xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
+  xtune autopilot [status | digitalocean | rotate | off | reset]   alerts when the server's IP looks blocked;
+                                           on DigitalOcean, moves it to a new reserved IP (at most once a day)
   xtune backup    schedule [--every 24h] [--telegram] [--s3 https://ENDPOINT/BUCKET[/PREFIX]] | status | now | off
                                            sealed backups sent off the server (the alert chat, an S3/R2 bucket)
   xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
@@ -138,6 +142,8 @@ func main() {
 		err = cmdPeers(args)
 	case "networks":
 		err = cmdNetworks(args)
+	case "autopilot":
+		err = cmdAutopilot(args)
 	case "follow":
 		err = cmdFollow(args)
 	case "plans":
@@ -367,7 +373,7 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Network, "network", "", "name of this network (ISP), for the history and merged deploys")
 	fs.StringVar(&o.DNSDomain, "dns-domain", "", "zone delegated to the server with an NS record: adds a DNS tunnel (default: the deployed one)")
 	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers, e.g. udp:10.0.0.1:53,doh:https://dns.example/dns-query")
-	protocols := fs.String("protocols", "", "also test: ssh, dnstt, awg, worker, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
+	protocols := fs.String("protocols", "", "also test: ssh, dnstt, awg, worker, trojan, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
 	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
 	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")

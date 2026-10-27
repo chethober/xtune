@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-10-27
+
+### Added
+- Clean IPs: with a CDN domain or the Worker relay, tuning scans a sample of Cloudflare's edge ranges from your
+  machine (TLS for the domain, then `/cdn-cgi/trace`) and also measures the CDN and Worker configs through the best
+  few (`tune`, `measure` and `migrate --clean-ips N`, default 3, 0 = off). A clean IP is a client knob like the
+  others: links dial it with the domain kept as SNI and Host, and the honest ranking keeps the plain domain unless
+  the IP measurably wins. `xtune cfscan` lists the edge IPs that answer best from here.
+- Per-network rankings: tunes, checks and measured reports look up their network's ASN and store, on the server, how
+  each deployed config did from there (with the best clean IP there). The subscription server looks up each
+  requester's ASN (Team Cymru's DNS service; through the CDN, `CF-Connecting-IP`) and lists that network's best
+  configs first in the links, the page and the failover config. `xtune networks [list | del ASN | clear]`.
+- `xtune check --every 6h`: repeated checks from a phone or computer on your users' network, each reported to the
+  server for the rankings and the autopilot.
+- Scheduled backups (`xtune backup schedule [--every 24h] [--telegram] [--s3 https://ENDPOINT/BUCKET[/PREFIX]]`,
+  `status`, `now`, `off`): the enforce job sends a sealed backup to the alert Telegram chat and/or an S3-compatible
+  bucket (Cloudflare R2, AWS S3, MinIO; SigV4), retries failures hourly and alerts once. Replaces the scheduled
+  Telegram backups removed with the bot in 0.7.0.
+- Autopilot: when every config at the server's address goes quiet while the CDN or Worker configs carry traffic, or a
+  recent check from some network finds them all blocked while a relayed one works, an alert says the IP looks blocked
+  and gives the `xtune migrate` command. `xtune autopilot digitalocean` moves a DigitalOcean droplet to a new reserved
+  IP instead (at most once a day), points the direct domain at it with a Cloudflare token, and subscriptions hand out
+  the new address (`State.clientIp`). `xtune autopilot status | rotate | off | reset`.
+- Worker relay limits: hourly, each Worker's requests today are read from Cloudflare's analytics (the token needs
+  Account Analytics:Read), with alerts at 80% and 100% of the free plan's 100,000 (`xtune cloudflare worker limit N |
+  none`). `xtune cloudflare worker add` creates a Worker in another account on the same configs; subscriptions and
+  failover configs list a config for each, `worker remove HOST` deletes one.
+- Device limits across servers: followers report who is online, the primary counts each user's devices on every
+  server (one IP on two servers is one device), keeps established devices and has followers block newcomers.
+- Trojan over REALITY (`--protocols trojan`, `trojan://` links), and the CDN config over HTTP/3 (QUIC to Cloudflare)
+  as a client knob. Both are skipped when the local Xray rejects them. (TUIC and ShadowTLS are not in Xray.)
+- `xtune sub metrics [on | token | off]`: Prometheus metrics on the subscription server at `/PATH/metrics`, with a
+  token of their own (bearer header, or in the URL).
+- Russian and Chinese (Simplified) subscription pages (`xtune sub lang ru|zh`).
+- `xtune doctor` reports failed scheduled backups, Workers near their daily limit, and an IP that looks blocked.
+
+### Fixed
+- An expired user's subscription page showed its status as "expired %s".
+
 ## [0.8.0] - 2026-10-26
 
 ### Added
@@ -223,6 +262,7 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[0.9.0]: https://github.com/chethober/xtune/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/chethober/xtune/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chethober/xtune/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chethober/xtune/compare/v0.6.0...v0.7.0

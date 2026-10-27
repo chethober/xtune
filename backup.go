@@ -97,7 +97,12 @@ func seed(r *Server, b *Backup, probeOut string, log func(string)) (*State, erro
 		return nil, fmt.Errorf("%s already has a deployment; run `xtune uninstall` there first if it should be replaced", r.Name())
 	}
 	st := *b.State
-	st.Host = r.Conn.Host
+	st.Host, st.ClientIP = r.Conn.Host, "" // a reserved IP stays with the old server
+	if st.Autopilot != nil {
+		ap := *st.Autopilot
+		ap.Droplet, ap.Owned = 0, "" // found again on the new server
+		st.Autopilot = &ap
+	}
 	if usedPorts(probeOut)["tcp"][st.APIPort] {
 		st.APIPort = 0 // Apply picks another
 	}

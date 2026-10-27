@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -407,7 +408,51 @@ func cfWorkerCmd(r *Server, st *State, args []string) error {
 		for p, o := range w.Routes {
 			fmt.Printf("  %s -> %s\n", p, o)
 		}
+		for _, x := range w.Extra {
+			fmt.Printf("  also Worker %s (account %s)\n", x.Host, x.Account)
+		}
+		if l := w.dailyLimit(); l > 0 {
+			fmt.Printf("usage alerts at 80%% and 100%% of %s requests a day (xtune cloudflare worker limit N | none)\n", fmtCount(l))
+		} else {
+			fmt.Println("usage alerts: off")
+		}
+		if us, err := LoadUsage(r); err == nil && us.WorkerAt > 0 {
+			for _, u := range us.WorkerUse {
+				fmt.Printf("  %s: %s requests today (UTC), as of %s\n", u.Host, fmtCount(u.Requests), time.Unix(us.WorkerAt, 0).Format("15:04"))
+			}
+		}
 		return nil
+	case "add": // another account's Worker on the same routes: another 100,000 requests a day
+		tok := os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
+		if tok == "" || tok == st.Cloudflare.Token {
+			var err error
+			if tok, err = cliPrompt("API token of ANOTHER Cloudflare account (Account: Workers Scripts:Edit, Account Analytics:Read)", true); err != nil {
+				return err
+			}
+		}
+		_, x, err := addExtraWorker(r, strings.TrimSpace(tok), func(s string) { fmt.Println(s) })
+		if err != nil {
+			return err
+		}
+		fmt.Printf("users' subscriptions now offer %s too (they get it on their next update)\n", x.Host)
+		return nil
+	case "remove", "rm":
+		if len(args) < 2 {
+			return errors.New("worker remove HOST")
+		}
+		return removeExtraWorker(r, args[1])
+	case "limit":
+		if len(args) < 2 {
+			return errors.New("worker limit N (requests a day; 0 = the free plan's 100,000) or none")
+		}
+		n := int64(-1)
+		if args[1] != "none" && args[1] != "off" {
+			var err error
+			if n, err = strconv.ParseInt(args[1], 10, 64); err != nil || n < 0 {
+				return fmt.Errorf("worker limit: %q is not a number", args[1])
+			}
+		}
+		return setWorkerLimit(r, n)
 	case "sync": // upload it again, routes and script, even when nothing seems to have changed
 		defer r.lock()()
 		w.Routes = nil
@@ -422,6 +467,11 @@ func cfWorkerCmd(r *Server, st *State, args []string) error {
 		if len(rest) == 0 {
 			return errors.New("the Worker configs are the only ones deployed: tune and deploy others first")
 		}
+		for _, x := range w.Extra {
+			if err := cfWorkerDelete(x.Token, &Worker{Account: x.Account, Name: x.Name}); err != nil {
+				return err
+			}
+		}
 		if err := cfWorkerDelete(st.Cloudflare.Token, w); err != nil {
 			return err
 		}
@@ -432,7 +482,7 @@ func cfWorkerCmd(r *Server, st *State, args []string) error {
 		st.Entries = rest
 		return Apply(r, st)
 	}
-	return fmt.Errorf("unknown worker action %q (status, sync, off)", action)
+	return fmt.Errorf("unknown worker action %q (status, sync, add, remove HOST, limit N|none, off)", action)
 }
 
 // pointAfterMove updates the DNS records, from the new server, after a migrate. It reports

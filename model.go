@@ -41,11 +41,12 @@ type Entry struct {
 	Resolver string `json:"resolver,omitempty"` // dnstt: the resolver clients send queries through
 	Subnet   string `json:"subnet,omitempty"`   // amneziawg: the clients' address range
 	Addr     string `json:"addr,omitempty"`     // CDN and Worker entries: a Cloudflare edge IP to dial (a clean IP)
+	ALPN     string `json:"alpn,omitempty"`     // cdn-xhttp: "h3" reaches the CDN over HTTP/3 (QUIC)
 }
 
 // Knobs are the client settings tuning picked for the entry.
 func (e Entry) Knobs() Knobs {
-	return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split, MTU: e.MTU, Resolver: e.Resolver, Addr: e.Addr}
+	return Knobs{FP: e.FP, Frag: e.Frag, Mode: e.Mode, Split: e.Split, MTU: e.MTU, Resolver: e.Resolver, Addr: e.Addr, ALPN: e.ALPN}
 }
 
 func (e Entry) Proto() string {
@@ -55,7 +56,8 @@ func (e Entry) Proto() string {
 	}
 	return "tcp"
 }
-func (e Entry) Reality() bool  { return strings.HasPrefix(e.Kind, "reality") }
+func (e Entry) Reality() bool  { return strings.HasPrefix(e.Kind, "reality") || e.Trojan() }
+func (e Entry) Trojan() bool   { return e.Kind == "trojan-reality" }
 func (e Entry) VlessEnc() bool { return strings.HasPrefix(e.Kind, "vlessenc") }
 
 // CDN entries are reached through the CDN domain: TLS ends at the CDN, which forwards to the origin.
@@ -67,6 +69,9 @@ func (e Entry) Worker() bool { return e.Kind == "worker-ws" }
 func (e Entry) Net() string {
 	if e.Worker() {
 		return "ws"
+	}
+	if e.Trojan() {
+		return "tcp"
 	}
 	if i := strings.Index(e.Kind, "-"); i > 0 && e.Xray() && (e.Reality() || e.VlessEnc() || e.CDN()) {
 		return e.Kind[i+1:]
@@ -140,6 +145,8 @@ type State struct {
 	Worker      *Worker                `json:"worker,omitempty"`    // Cloudflare Worker relaying the worker-ws entries
 	Backups     *BackupPlan            `json:"backups,omitempty"`   // scheduled backups sent off the server
 	Networks    map[string]*NetRank    `json:"networks,omitempty"`  // configs ranked per network (ASN), for subscriptions
+	Autopilot   *Autopilot             `json:"autopilot,omitempty"` // where to get a new IP when this one is blocked
+	ClientIP    string                 `json:"clientIp,omitempty"`  // the address clients use instead of Host (a reserved IP)
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`
@@ -158,12 +165,13 @@ type State struct {
 // Knobs are client-side settings. Split applies to cdn-xhttp only, MTU to wireguard, Resolver to
 // dnstt; Mode is the XHTTP mode, or for SSH entries "ws" when the client opens with a WebSocket
 // upgrade request. Addr is the Cloudflare edge IP CDN and Worker entries dial instead of
-// resolving their domain.
+// resolving their domain; ALPN "h3" has the CDN entry reach the CDN over HTTP/3.
 type Knobs struct {
 	FP, Frag, Mode, Split string
 	MTU                   int
 	Resolver              string
 	Addr                  string
+	ALPN                  string
 }
 
 var fragNames = []string{"none", "frag-mild", "frag-aggr"}
@@ -247,7 +255,7 @@ func (st *State) makeCert() error {
 }
 
 // Addr is the address clients dial for direct (non-CDN) entries.
-func (st *State) Addr() string { return orStr(st.Domain, st.Host) }
+func (st *State) Addr() string { return orStr(st.Domain, orStr(st.ClientIP, st.Host)) }
 
 func (st *State) addrFor(e Entry) string {
 	switch {
@@ -340,6 +348,13 @@ func (st *State) inbound(e Entry, users []User) J {
 	}
 	ib["protocol"] = "vless"
 	ib["settings"] = J{"clients": cl, "decryption": dec}
+	if e.Trojan() {
+		var tc []J
+		for _, u := range users {
+			tc = append(tc, J{"password": u.UUID, "email": u.Name})
+		}
+		ib["protocol"], ib["settings"] = "trojan", J{"clients": tc}
+	}
 	ss := J{"network": e.Net(), "security": "none"}
 	if e.Worker() { // the Worker ends the WebSocket and opens a TCP connection with the client's address first
 		ss["network"] = "tcp"
@@ -437,6 +452,9 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	if e.CDN() {
 		ss["security"] = "tls"
 		ss["tlsSettings"] = J{"serverName": st.CDNDomain, "fingerprint": orStr(k.FP, "chrome"), "alpn": []string{"h2", "http/1.1"}}
+		if k.ALPN == "h3" { // QUIC to the CDN; uTLS fingerprints are for TCP
+			ss["tlsSettings"] = J{"serverName": st.CDNDomain, "alpn": []string{"h3"}}
+		}
 	}
 	if e.Worker() { // WebSocket needs HTTP/1.1
 		ss["security"] = "tls"
@@ -457,6 +475,10 @@ func (st *State) Outbound(e Entry, u User, k Knobs, tag string) J {
 	}
 	if k.Frag != "" && k.Frag != "none" {
 		ss["sockopt"] = J{"dialerProxy": k.Frag}
+	}
+	if e.Trojan() {
+		return J{"tag": tag, "protocol": "trojan", "settings": J{"servers": []J{{"address": st.Addr(), "port": e.Port,
+			"password": u.UUID}}}, "streamSettings": ss}
 	}
 	return J{"tag": tag, "protocol": "vless", "settings": J{"vnext": []J{{"address": st.dialAddr(e, k), "port": e.clientPort(),
 		"users": []J{{"id": u.UUID, "encryption": enc, "flow": flow}}}}}, "streamSettings": ss}
@@ -511,7 +533,7 @@ func (st *State) FailoverConfig(u User) J {
 	var obs []J
 	first := ""
 	for _, s := range st.servers() {
-		for _, e := range filterEntries(s.Entries, Entry.Xray) {
+		for _, e := range filterEntries(s.linkEntries(), Entry.Xray) {
 			obs = append(obs, s.Outbound(e, u, e.Knobs(), "proxy-"+e.ID))
 			first = orStr(first, "proxy-"+e.ID)
 		}
@@ -574,6 +596,10 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 		q.Set("host", st.CDNDomain)
 		q.Set("fp", orStr(k.FP, "chrome"))
 		q.Set("alpn", "h2,http/1.1")
+		if k.ALPN == "h3" {
+			q.Set("alpn", "h3")
+			q.Del("fp")
+		}
 	}
 	if e.Worker() {
 		q.Set("security", "tls")
@@ -597,6 +623,10 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 	case "grpc":
 		q.Set("serviceName", e.Svc)
 		q.Set("mode", "gun")
+	}
+	if e.Trojan() {
+		q.Del("encryption")
+		return fmt.Sprintf("trojan://%s@%s?%s#%s", url.PathEscape(u.UUID), hostPort, q.Encode(), name)
 	}
 	return fmt.Sprintf("vless://%s@%s?%s#%s", u.UUID, hostPort, q.Encode(), name)
 }

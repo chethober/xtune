@@ -61,7 +61,7 @@ type TuneOpts struct {
 }
 
 // optionalProtocols can be added to the test matrix with --protocols.
-var optionalProtocols = []string{"ssh", "dnstt", "awg", "worker", "openvpn", "ikev2"}
+var optionalProtocols = []string{"ssh", "dnstt", "awg", "worker", "trojan", "openvpn", "ikev2"}
 
 // parseProtocols checks a --protocols list; "all" means every optional protocol.
 func parseProtocols(list string) ([]string, error) {
@@ -274,6 +274,9 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 		E = append(E, Entry{ID: "worker", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)},
 			Entry{ID: "worker-dom", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)})
 	}
+	if want("trojan") {
+		E = append(E, Entry{ID: "trojan", Kind: "trojan-reality", Port: port("tcp", true), SNI: hosts[0]})
+	}
 	if want("ssh") {
 		E = append(E, Entry{ID: "ssh", Kind: "ssh", Port: port("tcp", true)},
 			Entry{ID: "ssh-hiport", Kind: "ssh", Port: port("tcp", false)},
@@ -368,7 +371,13 @@ func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Varia
 				for _, m := range []string{"packet-up", "stream-up"} {
 					ks = append(ks, Knobs{FP: "chrome", Frag: "none", Mode: m, Split: "cdn-up"})
 				}
+				// HTTP/3 (QUIC) to the CDN: another protocol for DPI to tell apart
+				for _, m := range []string{"auto", "packet-up"} {
+					ks = append(ks, Knobs{Frag: "none", Mode: m, ALPN: "h3"})
+				}
 			}
+		case e.Kind == "trojan-reality":
+			ks = []Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
 		case e.Kind == "reality-grpc":
 			for _, g := range fragNames {
 				ks = append(ks, Knobs{FP: "chrome", Frag: g})
@@ -434,6 +443,9 @@ func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Varia
 			}
 			if k.Resolver != "" {
 				v.Label += " via=" + k.Resolver
+			}
+			if k.ALPN != "" {
+				v.Label += " " + k.ALPN
 			}
 			out = append(out, v)
 		}
@@ -749,6 +761,9 @@ func simplicity(v *Variant) int {
 	}
 	if v.K.Addr != "" { // a pinned edge IP can be blocked later; the domain follows Cloudflare
 		s += 4
+	}
+	if v.K.ALPN != "" {
+		s += 2
 	}
 	return s
 }
@@ -1099,7 +1114,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	o.Log("[*] test inbounds: " + strings.Join(ids, ", "))
 	time.Sleep(time.Second)
 
-	vs := ExpandVariants(entries, o.Depth, o.Resolvers...)
+	vs := supportedKnobs(o.XrayBin, st, ExpandVariants(entries, o.Depth, o.Resolvers...), o.Log)
 	vs = addCleanIPVariants(st, entries, vs, o.CleanIPs, o.Log)
 	if err := RunTests(o, st, tuneUser, vs); err != nil {
 		return nil, err
@@ -1173,9 +1188,32 @@ func supported(bin string, st *State, entries []Entry, log func(string)) []Entry
 				continue
 			}
 		}
+		if e.Trojan() { // the server side too: the test instance would not start with an inbound Xray rejects
+			u := NewUser("t")
+			cfg := ClientConfig(st.Outbound(e, u, Knobs{FP: "chrome"}, "proxy"))
+			cfg["inbounds"] = append(cfg["inbounds"].([]J), st.inbound(e, []User{u}))
+			if err := xrayAccepts(bin, cfg); err != nil {
+				log("[!] the local Xray cannot do Trojan over REALITY (update it with `xtune xray update`); skipping " + e.ID)
+				continue
+			}
+		}
 		keep = append(keep, e)
 	}
 	return keep
+}
+
+// supportedKnobs drops variants whose client settings the local Xray rejects (HTTP/3 to the CDN
+// needs a recent Xray), checking one variant of each such setting.
+func supportedKnobs(bin string, st *State, vs []*Variant, log func(string)) []*Variant {
+	i := slices.IndexFunc(vs, func(v *Variant) bool { return v.K.ALPN == "h3" })
+	if i < 0 {
+		return vs
+	}
+	if err := xrayAccepts(bin, ClientConfig(st.Outbound(vs[i].Entry, NewUser("t"), vs[i].K, "proxy"))); err == nil {
+		return vs
+	}
+	log("[!] the local Xray cannot do XHTTP over HTTP/3 (update it with `xtune xray update`); skipping those variants")
+	return slices.DeleteFunc(vs, func(v *Variant) bool { return v.K.ALPN == "h3" })
 }
 
 // xrayAccepts checks a config with `xray run -test`.

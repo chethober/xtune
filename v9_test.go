@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	mrand "math/rand/v2"
 	"mime"
@@ -14,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -427,13 +429,18 @@ func TestSubServesRankedConfigs(t *testing.T) {
 }
 
 func TestCymruQuery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the custom resolver needs Go's own DNS client")
+	}
 	// a resolver that answers like origin.asn.cymru.com
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Skip(err)
 	}
 	defer pc.Close()
+	var mu sync.Mutex
 	var qname string
+	asked := func() string { mu.Lock(); defer mu.Unlock(); return qname }
 	go func() {
 		buf := make([]byte, 1500)
 		for {
@@ -446,7 +453,9 @@ func TestCymruQuery(t *testing.T) {
 				continue
 			}
 			q := m.Questions[0]
+			mu.Lock()
 			qname = q.Name.String()
+			mu.Unlock()
 			m.Header.Response, m.Header.Authoritative = true, true
 			if q.Type == dnsmessage.TypeTXT {
 				m.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: q.Name, Type: q.Type, Class: q.Class, TTL: 60},
@@ -461,12 +470,12 @@ func TestCymruQuery(t *testing.T) {
 		return d.DialContext(ctx, "udp", pc.LocalAddr().String())
 	}}
 	asn, err := cymruASN(res, net.ParseIP("5.200.1.2"))
-	if err != nil || asn != "AS12880" || qname != "2.1.200.5.origin.asn.cymru.com." {
-		t.Errorf("%q %v (asked %s)", asn, err, qname)
+	if err != nil || asn != "AS12880" || asked() != "2.1.200.5.origin.asn.cymru.com." {
+		t.Errorf("%q %v (asked %s)", asn, err, asked())
 	}
 	cymruASN(res, net.ParseIP("2001:db8::1"))
-	if !strings.HasSuffix(qname, ".8.b.d.0.1.0.0.2.origin6.asn.cymru.com.") {
-		t.Errorf("IPv6 query %s", qname)
+	if !strings.HasSuffix(asked(), ".8.b.d.0.1.0.0.2.origin6.asn.cymru.com.") {
+		t.Errorf("IPv6 query %s", asked())
 	}
 }
 
@@ -598,5 +607,428 @@ func TestFollowerTakesLimitsAndBlocks(t *testing.T) {
 	}
 	if changed, _ := syncPrimary(st, us); changed || len(us.Blocks) != 1 {
 		t.Errorf("same reply again: changed=%v blocks=%v", changed, us.Blocks)
+	}
+}
+
+// ---------------------------------------------------------------- Worker limits and extra Workers
+
+// multiAccountCF is the part of the Cloudflare API that extra Workers use, with an account per token.
+type multiAccountCF struct {
+	mu       sync.Mutex
+	accounts map[string]string            // token -> account
+	scripts  map[string]map[string]string // account/name -> routes
+	deleted  []string
+}
+
+func (f *multiAccountCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	acc := f.accounts[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	if acc == "" {
+		json.NewEncoder(w).Encode(J{"success": false, "errors": []J{{"message": "bad token"}}})
+		return
+	}
+	p := r.URL.Path
+	var result any = J{}
+	parts := strings.Split(p, "/")
+	switch {
+	case p == "/user/tokens/verify":
+		result = J{"status": "active"}
+	case p == "/accounts":
+		result = []J{{"id": acc}}
+	case strings.HasSuffix(p, "/workers/subdomain"):
+		result = J{"subdomain": "sub-" + acc}
+	case len(parts) > 5 && parts[2] != acc:
+		json.NewEncoder(w).Encode(J{"success": false, "errors": []J{{"message": "not your account"}}})
+		return
+	case strings.HasSuffix(p, "/subdomain"):
+	case r.Method == "DELETE":
+		f.deleted = append(f.deleted, acc+"/"+parts[5])
+	case r.Method == "PUT":
+		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			if part.FormName() == "metadata" {
+				var meta struct{ Bindings []struct{ Text string } }
+				json.NewDecoder(part).Decode(&meta)
+				var routes map[string]string
+				json.Unmarshal([]byte(meta.Bindings[0].Text), &routes)
+				f.scripts[acc+"/"+parts[5]] = routes
+			}
+		}
+	}
+	json.NewEncoder(w).Encode(J{"success": true, "result": result})
+}
+
+func TestExtraWorkers(t *testing.T) {
+	cf := &multiAccountCF{accounts: map[string]string{"tokA": "acc1", "tokB": "acc2"}, scripts: map[string]map[string]string{}}
+	srv := httptest.NewServer(cf)
+	defer srv.Close()
+	old := cloudflareAPI
+	cloudflareAPI = srv.URL
+	defer func() { cloudflareAPI = old }()
+
+	fs := newFake()
+	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	st := testState()
+	st.Cloudflare.Token = "tokA"
+	st.Entries = []Entry{{ID: "worker", Kind: "worker-ws", Port: 30000, Path: "/w", SNI: "main.sub-acc1.workers.dev"},
+		{ID: "worker-dom", Kind: "worker-ws", Port: 30001, Path: "/d", SNI: "x.example.com"}}
+	st.Worker = &Worker{Account: "acc1", Name: "main", Host: "main.sub-acc1.workers.dev", Domain: "x.example.com",
+		Routes: map[string]string{"/w": "203.0.113.7:30000", "/d": "203.0.113.7:30001"}}
+	saveState(r, st)
+	if _, _, err := addExtraWorker(r, "tokA", func(string) {}); err == nil {
+		t.Error("a second Worker in the same account adds no requests")
+	}
+	st, x, err := addExtraWorker(r, "tokB", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if x.Account != "acc2" || !strings.HasSuffix(x.Host, ".sub-acc2.workers.dev") || cf.scripts["acc2/"+x.Name]["/w"] != "203.0.113.7:30000" {
+		t.Fatalf("extra Worker %+v, scripts %v", x, cf.scripts)
+	}
+	// clients get a copy of the workers.dev config through it, not of the custom-domain one
+	u := NewUser("bob")
+	links := st.NamedLinks(u)
+	var names []string
+	for _, l := range links {
+		names = append(names, l.Name)
+	}
+	if strings.Join(names, ",") != "worker,worker-2,worker-dom" || !strings.Contains(links[1].URL, "sni="+x.Host) {
+		t.Errorf("links %v", names)
+	}
+	if obs := st.FailoverConfig(u)["outbounds"].([]J); obs[1]["tag"] != "proxy-worker-2" {
+		t.Errorf("failover outbounds: %v", obs[1]["tag"])
+	}
+	// moving the inbound moves both Workers
+	st.Entries[0].Port = 30500
+	if err := syncWorker(st); err != nil {
+		t.Fatal(err)
+	}
+	if cf.scripts["acc2/"+x.Name]["/w"] != "203.0.113.7:30500" || cf.scripts["acc1/main"]["/w"] != "203.0.113.7:30500" {
+		t.Errorf("routes after a move: %v", cf.scripts)
+	}
+	saveState(r, st)
+	if err := removeExtraWorker(r, x.Host); err != nil || !slices.Contains(cf.deleted, "acc2/"+x.Name) {
+		t.Errorf("remove: %v %v", err, cf.deleted)
+	}
+	if got, _ := LoadState(r); len(got.Worker.Extra) != 0 {
+		t.Error("the extra Worker is still listed")
+	}
+}
+
+func TestWorkerUsageAlerts(t *testing.T) {
+	counts := map[string]int64{"main": 85000, "spare": 1000}
+	var since string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var q struct {
+			Variables map[string]string `json:"variables"`
+		}
+		json.NewDecoder(r.Body).Decode(&q)
+		since = q.Variables["since"]
+		if r.Header.Get("Authorization") == "Bearer noanalytics" {
+			w.Write([]byte(`{"data":null,"errors":[{"message":"not authorized"}]}`))
+			return
+		}
+		fmt.Fprintf(w, `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[{"sum":{"requests":%d}}]}]}},"errors":null}`, counts[q.Variables["s"]])
+	}))
+	defer srv.Close()
+	old := cfGraphQLAPI
+	cfGraphQLAPI = srv.URL
+	defer func() { cfGraphQLAPI = old }()
+	var sent []string
+	oldSend := sendAlert
+	sendAlert = func(n Notify, server, event, text string) error { sent = append(sent, event); return nil }
+	defer func() { sendAlert = oldSend }()
+
+	st := testState()
+	st.Notify = Notify{Webhook: "https://hook"}
+	st.Cloudflare.Token = "tok"
+	st.Worker = &Worker{Account: "a", Name: "main", Host: "main.workers.dev",
+		Extra: []*WorkerExtra{{Token: "tok2", Account: "b", Name: "spare", Host: "spare.workers.dev"}}}
+	us := &Usage{}
+	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
+	if !workerUsageDue(st, us, now) {
+		t.Fatal("the first count is due at once")
+	}
+	if err := checkWorkerUsage(st, us, now); err != nil {
+		t.Fatal(err)
+	}
+	if since != "2026-10-27T00:00:00Z" {
+		t.Errorf("counted since %s, not UTC midnight", since)
+	}
+	if len(sent) != 1 || !strings.Contains(sent[0], "main.workers.dev") || !strings.HasSuffix(sent[0], "/80") {
+		t.Errorf("alerts %v", sent)
+	}
+	if len(us.WorkerUse) != 2 || us.WorkerUse[0].Requests != 85000 {
+		t.Errorf("use %+v", us.WorkerUse)
+	}
+	if workerUsageDue(st, us, now.Add(30*time.Minute)) || !workerUsageDue(st, us, now.Add(time.Hour)) {
+		t.Error("counted hourly")
+	}
+	counts["main"] = 100000
+	checkWorkerUsage(st, us, now.Add(time.Hour))
+	if len(sent) != 2 || !strings.HasSuffix(sent[1], "/100") {
+		t.Errorf("alerts at the limit %v", sent)
+	}
+	checkWorkerUsage(st, us, now.Add(2*time.Hour))
+	if len(sent) != 2 {
+		t.Errorf("an alert repeated: %v", sent)
+	}
+	st.Worker.Limit = -1
+	if workerUsageDue(st, us, now.Add(5*time.Hour)) {
+		t.Error("limit none turns the count off")
+	}
+	st.Worker.Limit = 0
+	st.Worker.Extra[0].Token = "noanalytics"
+	if err := checkWorkerUsage(st, us, now.Add(6*time.Hour)); err == nil || !strings.Contains(err.Error(), "Analytics") {
+		t.Errorf("a token without analytics should say so: %v", err)
+	}
+	if fmtCount(1234567) != "1,234,567" || fmtCount(12) != "12" {
+		t.Error("fmtCount")
+	}
+}
+
+// ---------------------------------------------------------------- autopilot
+
+func blockedSetup(now time.Time) (*State, *Usage) {
+	st := testState()
+	st.CDNDomain = "cdn.example.com"
+	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "hy2", Kind: "hysteria2", Port: 8443},
+		{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053}}
+	old := now.Add(-5 * time.Hour).Unix()
+	us := &Usage{Users: map[string]*UserUsage{}, Entries: map[string]*EntryUsage{
+		"r-tcp/443": {First: old, Active: now.Add(-3 * time.Hour).Unix()}, "hy2/8443": {First: old},
+		"cdn-xhttp/2053": {First: old, Active: now.Add(-time.Minute).Unix()}}}
+	return st, us
+}
+
+func TestIPBlocked(t *testing.T) {
+	now := time.Now()
+	st, us := blockedSetup(now)
+	if b, why := ipBlocked(st, us, now); !b || !strings.Contains(why, "2 hours") {
+		t.Errorf("direct configs quiet while the CDN works: %v %q", b, why)
+	}
+	us.Entries["hy2/8443"].Active = now.Unix()
+	if b, _ := ipBlocked(st, us, now); b {
+		t.Error("a direct config still in use: not blocked")
+	}
+	us.Entries["hy2/8443"].Active = 0
+	us.Entries["cdn-xhttp/2053"].Active = now.Add(-time.Hour).Unix()
+	if b, _ := ipBlocked(st, us, now); b {
+		t.Error("nothing in use at all is an idle server, not a blocked one")
+	}
+	// a recent check from some network
+	st.Networks = map[string]*NetRank{"AS1": {Name: "TCI", Updated: now.Add(-time.Hour).Unix(),
+		Scores: map[string]float64{"r-tcp/443": 0, "hy2/8443": 0, "cdn-xhttp/2053": 12}}}
+	if b, why := ipBlocked(st, us, now); !b || !strings.Contains(why, "TCI") {
+		t.Errorf("check signal: %v %q", b, why)
+	}
+	st.Networks["AS1"].Scores["hy2/8443"] = 3
+	if b, _ := ipBlocked(st, us, now); b {
+		t.Error("one direct config works from there: not blocked")
+	}
+	st.Networks["AS1"].Scores["hy2/8443"] = 0
+	us.RotatedAt = now.Unix()
+	if b, _ := ipBlocked(st, us, now); b {
+		t.Error("a check from before the last move says nothing about the new IP")
+	}
+	st.Entries = st.Entries[:2]
+	if b, _ := ipBlocked(st, &Usage{}, now); b {
+		t.Error("without a relayed config there is nothing to compare with")
+	}
+}
+
+func TestAutopilotRotates(t *testing.T) {
+	var calls []string
+	assigned := map[string]int64{"198.51.100.50": 77}
+	next := "198.51.100.60"
+	do := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer dotok" {
+			w.WriteHeader(401)
+			return
+		}
+		p := strings.TrimPrefix(r.URL.Path, "/reserved_ips")
+		switch {
+		case r.Method == "POST" && p == "":
+			assigned[next] = 77
+			json.NewEncoder(w).Encode(J{"reserved_ip": J{"ip": next}})
+		case r.Method == "POST" && strings.HasSuffix(p, "/actions"):
+			delete(assigned, strings.Split(p, "/")[1])
+		case r.Method == "GET":
+			ip := strings.TrimPrefix(p, "/")
+			var d any
+			if id, ok := assigned[ip]; ok {
+				d = J{"id": id}
+			}
+			json.NewEncoder(w).Encode(J{"reserved_ip": J{"ip": ip, "droplet": d}})
+		case r.Method == "DELETE":
+		}
+	}))
+	defer do.Close()
+	oldAPI, oldWait := doAPI, doWait
+	doAPI, doWait = do.URL, time.Millisecond
+	defer func() { doAPI, doWait = oldAPI, oldWait }()
+	var sent []string
+	oldSend := sendAlert
+	sendAlert = func(n Notify, server, event, text string) error { sent = append(sent, event+": "+text); return nil }
+	defer func() { sendAlert = oldSend }()
+
+	fs := newFake()
+	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	now := time.Now()
+	st, us := blockedSetup(now)
+	st.Notify = Notify{Webhook: "https://hook"}
+	st.Sub = SubConfig{Mode: "cdn", Port: 2096, Path: "p"}
+	st.Autopilot = &Autopilot{Provider: "digitalocean", Token: "dotok", Droplet: 77, Owned: "198.51.100.50"}
+	runAutopilot(r, st, us, now)
+	if st.ClientIP != next || st.Addr() != next || st.Autopilot.Owned != next || us.RotatedAt != now.Unix() {
+		t.Fatalf("not moved: %+v %+v", st.Autopilot, st.ClientIP)
+	}
+	want := []string{"POST /reserved_ips/198.51.100.50/actions", "POST /reserved_ips", "DELETE /reserved_ips/198.51.100.50"}
+	for _, w := range want {
+		if !slices.Contains(calls, w) {
+			t.Errorf("no %s in %v", w, calls)
+		}
+	}
+	if len(sent) != 1 || !strings.Contains(sent[0], "moved to "+next) {
+		t.Errorf("alerts %v", sent)
+	}
+	if b, _ := ipBlocked(st, us, now.Add(time.Minute)); b {
+		t.Error("right after a move the configs start over")
+	}
+	if got, _ := LoadState(r); got == nil || got.ClientIP != next {
+		t.Error("the new address was not saved")
+	}
+	link := st.Link(st.Entries[0], NewUser("bob"), Knobs{})
+	if !strings.Contains(link, "@"+next+":443") {
+		t.Errorf("links should use the new address: %s", link)
+	}
+	// blocked again the same day: alerts, does not move
+	st2, us2 := blockedSetup(now)
+	st2.Notify, st2.Autopilot = st.Notify, st.Autopilot
+	us2.RotatedAt = now.Add(-time.Hour).Unix()
+	sent = nil
+	runAutopilot(r, st2, us2, now)
+	if st2.ClientIP != "" || len(sent) != 1 || !strings.Contains(sent[0], "xtune migrate --host 203.0.113.7") {
+		t.Errorf("within a day of a move: %q %v", st2.ClientIP, sent)
+	}
+	// a migrated backup does not take the reserved IP along
+	b := &Backup{State: st, Usage: &Usage{}}
+	nfs := newFake()
+	nfs.helper = map[string]string{"status": "ARCH x86_64\nXRAY v26.10.10\nXTUNE dev"}
+	nr := &Server{sh: nfs, Conn: Conn{Host: "192.0.2.10"}}
+	seeded, err := seed(nr, b, "", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded.ClientIP != "" || seeded.Autopilot.Droplet != 0 || seeded.Autopilot.Owned != "" || seeded.Addr() != "192.0.2.10" {
+		t.Errorf("seeded %+v %+v", seeded.ClientIP, seeded.Autopilot)
+	}
+}
+
+// ---------------------------------------------------------------- new transports
+
+func TestTrojanReality(t *testing.T) {
+	st := testState()
+	u := User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555"}
+	e := Entry{ID: "trojan", Kind: "trojan-reality", Port: 8443, SNI: "www.a.com"}
+	if !e.Reality() || e.Net() != "tcp" || !e.Xray() || e.family() != "trojan" {
+		t.Errorf("kind: reality=%v net=%q", e.Reality(), e.Net())
+	}
+	ib := st.inbound(e, []User{u})
+	ss := ib["streamSettings"].(J)
+	if ib["protocol"] != "trojan" || ss["network"] != "tcp" || ss["security"] != "reality" ||
+		ib["settings"].(J)["clients"].([]J)[0]["password"] != u.UUID {
+		t.Errorf("inbound %v", ib)
+	}
+	ob := st.Outbound(e, u, Knobs{FP: "firefox", Frag: "frag-mild"}, "p")
+	srv := ob["settings"].(J)["servers"].([]J)[0]
+	oss := ob["streamSettings"].(J)
+	if ob["protocol"] != "trojan" || srv["password"] != u.UUID || srv["port"] != 8443 ||
+		oss["realitySettings"].(J)["fingerprint"] != "firefox" || oss["sockopt"].(J)["dialerProxy"] != "frag-mild" {
+		t.Errorf("outbound %v", ob)
+	}
+	l := st.Link(e, u, Knobs{FP: "chrome"})
+	pu, _ := url.Parse(l)
+	q := pu.Query()
+	if pu.Scheme != "trojan" || pu.User.Username() != u.UUID || q.Get("security") != "reality" || q.Get("pbk") != "pub" ||
+		q.Get("sni") != "www.a.com" || q.Get("type") != "tcp" || q.Has("encryption") || q.Has("flow") {
+		t.Errorf("link %s", l)
+	}
+	es, _ := planEntries("SNI www.a.com 2 0.20", PlanOpts{Protocols: []string{"trojan"}})
+	if !slices.ContainsFunc(es, Entry.Trojan) {
+		t.Error("--protocols trojan adds no Trojan entry")
+	}
+	if es, _ := planEntries("SNI www.a.com 2 0.20", PlanOpts{}); slices.ContainsFunc(es, Entry.Trojan) {
+		t.Error("Trojan is opt-in")
+	}
+}
+
+func TestTrojanUsersStayLive(t *testing.T) {
+	r, fs := deployed(t, NewUser("ann"))
+	st, _ := LoadState(r)
+	st.Entries = append(st.Entries, Entry{ID: "trojan", Kind: "trojan-reality", Port: 8443, SNI: "a.com"})
+	if err := Apply(r, st); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := AddUser(r, "bob", Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = LoadState(r)
+	_, bob := st.User("bob")
+	if fs.live["trojan"]["bob"] != bob.UUID {
+		t.Fatalf("bob not on the Trojan inbound: %v", fs.live["trojan"])
+	}
+	before := fs.rmus
+	if err := reconcile(r, st, st.activeUsers(&Usage{}, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if fs.rmus != before {
+		t.Error("Trojan users were removed and re-added although nothing changed")
+	}
+}
+
+func TestCDNOverHTTP3(t *testing.T) {
+	st := testState()
+	st.CDNDomain = "cdn.example.com"
+	e := Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
+	var h3 []*Variant
+	for _, v := range ExpandVariants([]Entry{e}, "smart") {
+		if v.K.ALPN == "h3" {
+			h3 = append(h3, v)
+		}
+	}
+	if len(h3) != 2 || !strings.HasSuffix(h3[0].Label, " h3") || h3[0].K.Frag != "none" {
+		t.Fatalf("h3 variants %+v", h3)
+	}
+	u := NewUser("bob")
+	tls := st.Outbound(e, u, h3[0].K, "p")["streamSettings"].(J)["tlsSettings"].(J)
+	if a := tls["alpn"].([]string); len(a) != 1 || a[0] != "h3" || tls["fingerprint"] != nil || tls["serverName"] != "cdn.example.com" {
+		t.Errorf("h3 tls %v", tls)
+	}
+	q := mustQuery(t, st.Link(e, u, h3[0].K))
+	if q.Get("alpn") != "h3" || q.Has("fp") || q.Get("sni") != "cdn.example.com" {
+		t.Errorf("h3 link %v", q)
+	}
+	if q := mustQuery(t, st.Link(e, u, Knobs{FP: "chrome"})); q.Get("alpn") != "h2,http/1.1" {
+		t.Errorf("TCP link lost its ALPN: %v", q)
+	}
+	// the server side does not change: the CDN reaches the origin over TCP
+	ib := st.inbound(e, []User{u})
+	if a := ib["streamSettings"].(J)["tlsSettings"].(J)["alpn"].([]string); a[0] != "h2" {
+		t.Errorf("origin ALPN %v", a)
+	}
+	v := &Variant{Entry: e, K: h3[0].K}
+	if simplicity(v) <= simplicity(&Variant{Entry: e, K: Knobs{FP: "chrome", Frag: "none", Mode: "auto"}}) {
+		t.Error("HTTP/3 should win only when it measurably helps")
+	}
+	if (Entry{ALPN: "h3"}).Knobs().ALPN != "h3" {
+		t.Error("Entry.Knobs drops ALPN")
 	}
 }

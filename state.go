@@ -224,7 +224,7 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	for _, v := range chosen {
 		e := v.Entry
 		e.FP, e.Mode, e.Frag, e.Split, e.MTU, e.Resolver = v.K.FP, v.K.Mode, v.K.Frag, v.K.Split, v.K.MTU, v.K.Resolver
-		e.Addr = v.K.Addr
+		e.Addr, e.ALPN = v.K.Addr, v.K.ALPN
 		st.Entries = append(st.Entries, e)
 	}
 	renumberAWG(st.Entries) // off the test instance's ranges
@@ -239,6 +239,7 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 		st.Public, st.Manage = old.Public, old.Manage
 		st.Plans, st.Peers, st.Follow = old.Plans, old.Peers, old.Follow
 		st.Backups, st.Networks = old.Backups, old.Networks
+		st.Autopilot, st.ClientIP = old.Autopilot, old.ClientIP
 		st.forgetStaleRanks()          // configs that moved are measured anew
 		if st.Cloudflare.Token == "" { // a token given for this tune replaces the deployment's
 			st.Cloudflare = old.Cloudflare

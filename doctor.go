@@ -125,6 +125,9 @@ func Doctor(r *Server) *doctor {
 			d.ok("Cloudflare Worker %s relays to the deployed Worker configs", orStr(st.Worker.Domain, st.Worker.Host))
 		}
 	}
+	if us, err := LoadUsage(r); err == nil {
+		doctorJobs(d, st, us, time.Now())
+	}
 	info, err := r.Helper("doctor")
 	if err != nil {
 		d.fail("server checks: %v", err)
@@ -224,7 +227,7 @@ func doctorClock(d *doctor, r *Server, f map[string]string) {
 var lookup = net.LookupHost
 
 func doctorDNS(d *doctor, st *State) {
-	server := map[string]bool{st.Host: true}
+	server := map[string]bool{st.Host: true, st.ClientIP: st.ClientIP != ""}
 	if ips, err := lookup(st.Host); err == nil {
 		for _, ip := range ips {
 			server[ip] = true
@@ -332,5 +335,32 @@ func doctorCerts(d *doctor, st *State) {
 		d.warn("the subscription server's Let's Encrypt certificate expires %s and was not renewed yet", c.NotAfter.Format("2006-01-02"))
 	default:
 		d.ok("subscription server certificate valid until %s", c.NotAfter.Format("2006-01-02"))
+	}
+}
+
+// doctorJobs reports on the enforce job's background work: scheduled backups, the Workers'
+// request counts and whether the IP looks blocked.
+func doctorJobs(d *doctor, st *State, us *Usage, now time.Time) {
+	if st.Backups != nil {
+		switch {
+		case us.BackupErr != "" && us.BackupAt > us.LastBackup:
+			d.fail("the last scheduled backup failed (retried every hour): %s", us.BackupErr)
+		case us.LastBackup > 0:
+			d.ok("scheduled backups: the last was sent %s ago", fmtSince(now.Sub(time.Unix(us.LastBackup, 0))))
+		default:
+			d.warn("scheduled backups are on, but none was sent yet")
+		}
+	}
+	if st.Worker != nil {
+		if l := st.Worker.dailyLimit(); l > 0 {
+			for _, u := range us.WorkerUse {
+				if u.Requests*100/l >= 80 {
+					d.warn("the Cloudflare Worker %s used %s of its %s requests today", u.Host, fmtCount(u.Requests), fmtCount(l))
+				}
+			}
+		}
+	}
+	if blocked, why := ipBlocked(st, us, now); blocked {
+		d.fail("the server's IP looks blocked: %s (xtune migrate, or xtune autopilot)", why)
 	}
 }
