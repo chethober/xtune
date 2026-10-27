@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -21,8 +22,9 @@ import (
 // enforce job reports the traffic they carried and their public settings to the primary's
 // subscription server, and gets the primary's active users back. The primary's subscriptions then
 // list every server's configs, and the failover config balances across all of them, so users keep
-// working when one server's IP is blocked. Quotas count traffic on every server; device limits
-// are per server.
+// working when one server's IP is blocked. Quotas count traffic on every server, and so do device
+// limits: followers report who is online, the primary counts each user's devices on all servers
+// and tells followers which IPs to block.
 
 // PeerHub is the primary's side: the secret followers use, and what they last reported.
 type PeerHub struct {
@@ -31,8 +33,9 @@ type PeerHub struct {
 }
 
 type PeerServer struct {
-	State *State `json:"state"` // public settings only: addresses, public keys, entries
-	Seen  int64  `json:"seen"`
+	State  *State              `json:"state"` // public settings only: addresses, public keys, entries
+	Seen   int64               `json:"seen"`
+	Online map[string][]string `json:"online,omitempty"` // client IPs per user at its last report
 }
 
 // Follow is a follower's side: the primary's peer URL and the name it is listed under.
@@ -45,16 +48,19 @@ type Follow struct {
 const peerStale = 24 * time.Hour
 
 type peerReport struct {
-	Name  string              `json:"name"`
-	State *State              `json:"state"`
-	Usage map[string][2]int64 `json:"usage,omitempty"` // up, down since the last report
+	Name   string              `json:"name"`
+	State  *State              `json:"state"`
+	Usage  map[string][2]int64 `json:"usage,omitempty"`  // up, down since the last report
+	Online map[string][]string `json:"online,omitempty"` // client IPs per user, for device limits across servers
 }
 
 type peerUser struct {
-	Name  string `json:"name"`
-	UUID  string `json:"uuid"`
-	SSKey string `json:"ssKey"`
-	WGIP  string `json:"wgIp,omitempty"` // the follower's WireGuard peers must use the primary's addresses
+	Name    string   `json:"name"`
+	UUID    string   `json:"uuid"`
+	SSKey   string   `json:"ssKey"`
+	WGIP    string   `json:"wgIp,omitempty"`    // the follower's WireGuard peers must use the primary's addresses
+	Devices int      `json:"devices,omitempty"` // the user's device limit, counted across all servers
+	Block   []string `json:"block,omitempty"`   // IPs over that limit: the follower blocks them too
 }
 
 type peerReply struct {
@@ -213,7 +219,7 @@ func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
 	if st.Peers.Servers == nil {
 		st.Peers.Servers = map[string]*PeerServer{}
 	}
-	st.Peers.Servers[in.Name] = &PeerServer{State: in.State.public(), Seen: now.Unix()}
+	st.Peers.Servers[in.Name] = &PeerServer{State: in.State.public(), Seen: now.Unix(), Online: in.Online}
 	if err := saveState(r, st); err != nil {
 		return nil, err
 	}
@@ -223,7 +229,8 @@ func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
 	rep := &peerReply{Users: []peerUser{}}
 	for _, u := range st.activeUsers(us, now) {
 		if st.Check == nil || u.Name != st.Check.Name {
-			rep.Users = append(rep.Users, peerUser{u.Name, u.UUID, u.SSKey, u.WGIP})
+			rep.Users = append(rep.Users, peerUser{Name: u.Name, UUID: u.UUID, SSKey: u.SSKey, WGIP: u.WGIP,
+				Devices: u.Devices, Block: us.blocksFor(u.Name, now)})
 		}
 	}
 	return rep, nil
@@ -272,7 +279,13 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 			deltas[name] = d
 		}
 	}
-	b, _ := json.Marshal(peerReport{Name: st.Follow.Name, State: st.public(), Usage: deltas})
+	online := map[string][]string{}
+	for name, uu := range us.Users {
+		if name != checkUserName && len(uu.Online) > 0 {
+			online[name] = uu.Online
+		}
+	}
+	b, _ := json.Marshal(peerReport{Name: st.Follow.Name, State: st.public(), Usage: deltas, Online: online})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", st.Follow.URL, bytes.NewReader(b))
@@ -298,20 +311,32 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 		us.Synced[name] = [2]int64{uu.Up, uu.Down}
 	}
 	var users []User
+	now := time.Now()
+	blocked := map[string]bool{}
+	for _, b := range us.Blocks {
+		blocked[b.IP] = true
+	}
 	for _, p := range rep.Users {
 		if validUserName(p.Name) != nil || p.UUID == "" {
 			continue
 		}
-		u := User{Name: p.Name, UUID: p.UUID, SSKey: p.SSKey, WGIP: p.WGIP, Enabled: true, Created: time.Now().Unix()}
+		u := User{Name: p.Name, UUID: p.UUID, SSKey: p.SSKey, WGIP: p.WGIP, Devices: max(p.Devices, 0), Enabled: true, Created: now.Unix()}
 		if _, old := st.User(p.Name); old != nil {
 			u.Created, u.SubToken = old.Created, old.SubToken
 		}
 		users = append(users, u)
+		for _, ip := range p.Block { // over the user's limit across all servers
+			if net.ParseIP(ip) != nil && !blocked[ip] {
+				blocked[ip] = true
+				us.Blocks = append(us.Blocks, IPBlock{IP: ip, User: p.Name, Until: now.Add(deviceBlock).Unix()})
+			}
+		}
 	}
 	same := len(users) == len(st.Users)
 	for i := 0; same && i < len(users); i++ {
 		a, b := users[i], st.Users[i]
-		same = a.Name == b.Name && a.UUID == b.UUID && a.SSKey == b.SSKey && a.WGIP == b.WGIP && b.Enabled && b.Quota == 0 && b.Expires == 0 && b.Devices == 0
+		same = a.Name == b.Name && a.UUID == b.UUID && a.SSKey == b.SSKey && a.WGIP == b.WGIP && b.Enabled && b.Quota == 0 &&
+			b.Expires == 0 && b.Devices == a.Devices
 	}
 	st.Users = users
 	return !same, nil
@@ -483,4 +508,77 @@ func cmdFollow(args []string) error {
 	fmt.Printf("following as %q: %d users. The primary's subscriptions now include this server's configs.\n",
 		st.Follow.Name, len(st.Users))
 	return nil
+}
+
+// ---------------------------------------------------------------- device limits across servers
+
+// peerOnlineFresh is how recent a follower's report must be for its online IPs to count.
+const peerOnlineFresh = 5 * time.Minute
+
+// remoteOnline are the IPs each user has online on the followers that reported recently.
+func (st *State) remoteOnline(now time.Time) map[string][]string {
+	out := map[string][]string{}
+	if st.Peers == nil {
+		return out
+	}
+	for _, p := range st.Peers.Servers {
+		if now.Sub(time.Unix(p.Seen, 0)) > peerOnlineFresh {
+			continue
+		}
+		for name, ips := range p.Online {
+			for _, ip := range ips {
+				if !slices.Contains(out[name], ip) {
+					out[name] = append(out[name], ip)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// trackFirstSeen records when each user's IP was first online on any server (on a primary with
+// followers): the device limit keeps established devices and blocks newcomers.
+func trackFirstSeen(st *State, us *Usage, remote map[string][]string, now time.Time) {
+	if len(remote) == 0 && len(us.Online) == 0 {
+		return
+	}
+	if us.Online == nil {
+		us.Online = map[string]int64{}
+	}
+	keep := map[string]bool{}
+	for _, u := range st.Users {
+		if u.Devices <= 0 {
+			continue
+		}
+		ips := slices.Clone(remote[u.Name])
+		if uu := us.Users[u.Name]; uu != nil {
+			ips = append(ips, uu.Online...)
+		}
+		for _, ip := range ips {
+			k := u.Name + "|" + ip
+			keep[k] = true
+			if us.Online[k] == 0 {
+				us.Online[k] = now.Unix()
+			}
+		}
+	}
+	for k := range us.Online {
+		if !keep[k] {
+			delete(us.Online, k)
+		}
+	}
+	if len(us.Online) == 0 {
+		us.Online = nil
+	}
+}
+
+// blocksFor are the IPs blocked for a user over their device limit, for a follower to block too.
+func (us *Usage) blocksFor(name string, now time.Time) []string {
+	var out []string
+	for _, b := range us.Blocks {
+		if b.User == name && b.Until > now.Unix() {
+			out = append(out, b.IP)
+		}
+	}
+	return out
 }

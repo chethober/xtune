@@ -37,11 +37,15 @@ On your computer (client):
                                            their DNS records (token: XTUNE_CLOUDFLARE_TOKEN, or the server's)
                   --dns-domain Z           zone delegated to the server (NS record): the DNS tunnel
                   --resolvers LIST         DNS tunnel: also try these (udp:IP:53, doh:URL, dot:HOST:853)
+                  --clean-ips N            measure the CDN and Worker configs through the N best Cloudflare edge
+                                           IPs from here too (default 3, 0 = off)
                   --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
   xtune measure   FILE [--network NAME] [--report OUT]   measure a shared test from this network (no SSH)
   xtune deploy    [conn] [-n N] [REPORT ...]   deploy the shared test, so every network gets a config that works
-  xtune check     [conn] [--network NAME]  quick check of the deployed configs from this network
+  xtune check     [conn] [--network NAME] [--every 6h]   quick check of the deployed configs from this network;
+                                           --every keeps checking and reporting to the server (rankings, autopilot)
   xtune history   [--host H] [-n N]        past tunes and checks
+  xtune cfscan    [conn] [--sni D] [-n N]  find the Cloudflare edge IPs that get through from this network
   xtune doctor    [conn]                   diagnose services, ports, DNS, the CDN, clocks and certificates
   xtune backup    [conn] [-o FILE] [--encrypt]   save the deployment (keys, users, usage) to a local file
   xtune restore   [conn] FILE              rebuild a backup on a new server, configs as they were
@@ -69,9 +73,12 @@ On the server (as root):
   xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
   xtune public    [list | add NAME [--quota GB] [--days N] [--devices N] [--plan P] [--members N]]
   xtune public    limit|link|token|pause|resume|del NAME   pools of users shared through the community VPN bot
-  xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable | lang en|fa|auto]
+  xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable | lang en|fa|ru|zh|auto]
+  xtune sub       metrics [status | on | token | off]   Prometheus metrics on the subscription server
   xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
+  xtune networks  [list | del ASN | clear] configs ranked per network (ASN): subscriptions list each
+                                           network's best configs first (from tunes, checks and reports)
   xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
   xtune warp      [status | on [--domains D,D] [--all] | off]   chosen sites (default: AI services) via WARP
   xtune manage    [status | link | token | off]   a link to manage users and plans from @chthvpnbot
@@ -81,6 +88,8 @@ On the server (as root):
   xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
   xtune cloudflare worker [status | sync | off]   the Worker relay's routes; off deletes it and its configs
   xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
+  xtune backup    schedule [--every 24h] [--telegram] [--s3 https://ENDPOINT/BUCKET[/PREFIX]] | status | now | off
+                                           sealed backups sent off the server (the alert chat, an S3/R2 bucket)
   xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
   (internal, run by systemd: xtune enforce, xtune serve, xtune tunnels run, xtune awg run, xtune vpn-auth)
 
@@ -127,6 +136,8 @@ func main() {
 		err = cmdBot(args)
 	case "peers":
 		err = cmdPeers(args)
+	case "networks":
+		err = cmdNetworks(args)
 	case "follow":
 		err = cmdFollow(args)
 	case "plans":
@@ -143,6 +154,8 @@ func main() {
 		err = cmdCheck(args)
 	case "history":
 		err = cmdHistory(args)
+	case "cfscan":
+		err = cmdCFScan(args)
 	case "measure":
 		err = cmdMeasure(args)
 	case "deploy":
@@ -356,6 +369,7 @@ func cmdTune(args []string) error {
 	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers, e.g. udp:10.0.0.1:53,doh:https://dns.example/dns-query")
 	protocols := fs.String("protocols", "", "also test: ssh, dnstt, awg, worker, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
 	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
+	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
@@ -393,7 +407,7 @@ func cmdTune(args []string) error {
 		r.Helper("cleanup")
 		return err
 	}
-	if err := appendHistory(tuneRecord(r.Conn.Host, o.Network, res.Best)); err != nil {
+	if err := appendHistory(tuneRecord(r.Conn.Host, res.NetName, res.Best)); err != nil {
 		fmt.Println("[!] history:", err)
 	}
 	if *share != "" {
@@ -828,9 +842,32 @@ func cmdSub(args []string) error {
 		return printSub(os.Stdout, st)
 	case "disable":
 		return DisableSub(r)
+	case "metrics":
+		sub := "status"
+		if len(pos) > 1 {
+			sub = pos[1]
+		}
+		var st *State
+		switch sub {
+		case "status":
+			st, err = requireState(r)
+		case "on", "enable":
+			st, err = SetMetrics(r, true, false)
+		case "token":
+			st, err = SetMetrics(r, true, true)
+		case "off", "disable":
+			st, err = SetMetrics(r, false, false)
+		default:
+			return fmt.Errorf("unknown sub metrics action %q (status, on, token, off)", sub)
+		}
+		if err != nil {
+			return err
+		}
+		printMetrics(os.Stdout, st)
+		return nil
 	case "lang":
 		if len(pos) < 2 {
-			return fmt.Errorf("sub lang: en, fa or auto (from the browser)")
+			return fmt.Errorf("sub lang: %s or auto (from the browser)", strings.Join(langs, ", "))
 		}
 		l := strings.ToLower(pos[1])
 		if l == "auto" {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,10 +23,17 @@ type Usage struct {
 	Notified  map[string]int64       `json:"notified,omitempty"` // alerts sent, so each is sent once
 	Failures  int                    `json:"failures,omitempty"` // enforce runs in a row the Xray API failed
 	Entries   map[string]*EntryUsage `json:"entries,omitempty"`  // traffic per deployed config, by entryKey
-	BackupAt  int64                  `json:"backupAt,omitempty"` // last backup the bot sent
+	BackupAt  int64                  `json:"backupAt,omitempty"` // last scheduled backup attempt (before v0.7.0: the bot's)
 	SNIAt     int64                  `json:"sniAt,omitempty"`    // last check of the REALITY targets
 	Synced    map[string][2]int64    `json:"synced,omitempty"`   // follower: traffic already reported to the primary
 	Extra     map[string][2]int64    `json:"extra,omitempty"`    // SSH tunnel and VPN counters at the last run
+
+	LastBackup int64            `json:"lastBackup,omitempty"` // last scheduled backup that was delivered
+	BackupErr  string           `json:"backupErr,omitempty"`  // why the last attempt failed
+	WorkerAt   int64            `json:"workerAt,omitempty"`   // last check of the Workers' request counts
+	WorkerUse  []WorkerUse      `json:"workerUse,omitempty"`  // requests per Worker today, at that check
+	Online     map[string]int64 `json:"online,omitempty"`     // primary: "user|ip" -> when first seen online on any server
+	RotatedAt  int64            `json:"rotatedAt,omitempty"`  // autopilot: last time it moved the server to a new IP
 }
 
 // EntryUsage is the traffic of one deployed config. A config that stops carrying anything while
@@ -413,6 +421,13 @@ func Enforce(r *Server) error {
 	} else if err := reconcile(r, st, active); err != nil {
 		fmt.Println("reconcile:", err) // config.json is right; the next restart fixes the running set
 	}
+	if backupDue(st, us, now) {
+		if err := runScheduledBackup(st, us, now); err != nil {
+			fmt.Println("scheduled backup:", err) // retried in an hour
+		}
+	}
+	alert(st, us, "backup-failed", st.Backups != nil && us.BackupAt > us.LastBackup && us.BackupErr != "",
+		"the scheduled backup failed (retried every hour): "+us.BackupErr)
 	us.Updated = now.Unix()
 	due := sniDue(st, us, now)
 	if err := saveUsage(r, us); err != nil {
@@ -508,8 +523,12 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 }
 
 // applyDeviceLimits blocks, for a while, the client IPs a user has beyond their device limit. IPs
-// that were already connected at the previous check keep their place; newcomers are blocked.
+// that were already connected at the previous check keep their place; newcomers are blocked. On a
+// primary, the limit counts the IPs online on its followers too (their last reports), so a user
+// gets their devices across all servers, not on each; followers block what the primary tells them.
 func applyDeviceLimits(r *Server, st *State, us *Usage, prev map[string][]string, now time.Time) error {
+	remote := st.remoteOnline(now)
+	trackFirstSeen(st, us, remote, now)
 	had := len(us.Blocks) > 0
 	var keep []IPBlock
 	blocked := map[string]bool{}
@@ -534,11 +553,33 @@ func applyDeviceLimits(r *Server, st *State, us *Usage, prev map[string][]string
 				order = append(order, ip)
 			}
 		}
+		local := map[string]bool{}
+		for _, ip := range uu.Online {
+			local[ip] = true
+		}
+		// on followers only (an IP on two servers is one device): established first, by when first seen
+		var elsewhere []string
+		for _, ip := range remote[u.Name] {
+			if !local[ip] && !blocked[ip] && !slices.Contains(elsewhere, ip) {
+				elsewhere = append(elsewhere, ip)
+			}
+		}
+		seen := func(ip string) int64 { return us.Online[u.Name+"|"+ip] }
+		sort.SliceStable(elsewhere, func(i, j int) bool { return seen(elsewhere[i]) < seen(elsewhere[j]) })
+		var fresh []string
+		for _, ip := range elsewhere {
+			if seen(ip) < now.Unix() {
+				order = append(order, ip)
+			} else {
+				fresh = append(fresh, ip)
+			}
+		}
 		for _, ip := range uu.Online {
 			if !was[ip] && !blocked[ip] {
 				order = append(order, ip)
 			}
 		}
+		order = append(order, fresh...)
 		for i := u.Devices; i < len(order); i++ {
 			keep = append(keep, IPBlock{IP: order[i], User: u.Name, Until: now.Add(deviceBlock).Unix()})
 			blocked[order[i]] = true

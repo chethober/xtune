@@ -34,6 +34,7 @@ type Pending struct {
 	ID       string     `json:"id"`
 	Created  int64      `json:"created"`
 	Network  string     `json:"network,omitempty"`
+	ASN      string     `json:"asn,omitempty"` // the tuning network's, for the per-network rankings
 	State    *State     `json:"state"`
 	Variants []*Variant `json:"variants"`
 }
@@ -42,6 +43,8 @@ type Pending struct {
 type NetReport struct {
 	ID      string        `json:"id"`
 	Network string        `json:"network"`
+	ASN     string        `json:"asn,omitempty"`
+	ASName  string        `json:"asName,omitempty"`
 	Time    int64         `json:"time"`
 	Results []CheckResult `json:"results"`
 }
@@ -58,7 +61,8 @@ func publicState(st *State) *State {
 // Share stores the tune on the server for a later deploy and returns the bundle for testers.
 func Share(r *Server, res *TuneResult, depth, network string) (*Bundle, error) {
 	now := time.Now()
-	p := Pending{ID: randHex(8), Created: now.Unix(), Network: network, State: res.State, Variants: res.All}
+	p := Pending{ID: randHex(8), Created: now.Unix(), Network: orStr(network, res.NetName), ASN: res.Network.ASN,
+		State: res.State, Variants: res.All}
 	b, _ := json.Marshal(p)
 	if err := r.Upload(pendingFile, b, "600"); err != nil {
 		return nil, err
@@ -103,8 +107,10 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
 		return nil, err
 	}
+	netw := detectNetwork(&o.Network, o.Log)
 	entries := supported(o.XrayBin, b.State, b.Entries, o.Log)
 	vs := ExpandVariants(entries, b.Depth, o.Resolvers...)
+	vs = addCleanIPVariants(b.State, entries, vs, o.CleanIPs, o.Log) // this network's own clean IPs
 	err := RunTests(o, b.State, b.User, vs)
 	if err != nil && !strings.Contains(err.Error(), "nothing connected") {
 		return nil, err
@@ -117,7 +123,7 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 			o.Log(buf.String())
 		}
 	}
-	rep := &NetReport{ID: b.ID, Network: o.Network, Time: time.Now().Unix()}
+	rep := &NetReport{ID: b.ID, Network: o.Network, ASN: netw.ASN, ASName: netw.Name, Time: time.Now().Unix()}
 	for _, v := range vs {
 		rep.Results = append(rep.Results, CheckResult{ID: v.Entry.ID, Label: v.Label, Ok: v.Ok, N: v.N, Warm: v.Warm,
 			Down: v.Down, Up: v.Up, Score: v.Score})
@@ -278,6 +284,20 @@ func DeployPending(r *Server, reports []*NetReport, n int, w io.Writer) (*State,
 	st, err := DeployVariants(r, p.State, chosen)
 	if err != nil {
 		return st, err
+	}
+	labels := map[string]string{}
+	for _, v := range chosen {
+		labels[v.Entry.ID] = v.Label
+	}
+	scores, addrs := variantRank(st.Entries, p.Variants)
+	if err := RecordNetwork(r, Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
+		fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
+	}
+	for _, rep := range reports {
+		scores, addrs := labelRank(st.Entries, labels, rep.Results)
+		if err := RecordNetwork(r, Network{ASN: rep.ASN, Name: orStr(rep.ASName, rep.Network)}, scores, addrs); err != nil {
+			fmt.Fprintln(w, "[!] ranking the configs for "+rep.Network+":", err)
+		}
 	}
 	r.Root("rm -f " + shq(pendingFile))
 	if _, err := r.Helper("stop-test"); err != nil {

@@ -22,17 +22,23 @@ func (t *tui) check() error {
 		Value(&network).WithTheme(t.theme).Run(); err != nil {
 		return err
 	}
+	network = strings.TrimSpace(network)
+	netw := detectNetwork(&network, func(s string) { fmt.Println(s) })
 	var res []CheckResult
+	var st *State
 	if err := guarded(nil, func() error {
 		var e error
-		res, _, e = Check(t.r, bin, 5, 10, "xtune-results", func(s string) { fmt.Println(s) })
+		res, st, e = Check(t.r, bin, 5, 10, "xtune-results", func(s string) { fmt.Println(s) })
 		return e
 	}); err != nil {
 		return err
 	}
 	fmt.Println()
 	bad := printCheck(os.Stdout, res)
-	appendHistory(Record{Time: time.Now().Unix(), Host: t.r.Conn.Host, Network: strings.TrimSpace(network), Kind: "check", Results: res})
+	appendHistory(Record{Time: time.Now().Unix(), Host: t.r.Conn.Host, Network: network, Kind: "check", Results: res})
+	if err := recordCheck(t.r, netw, st, res); err != nil {
+		fmt.Println("[!] ranking the configs for this network:", err)
+	}
 	if bad > 0 {
 		fmt.Println(errStyle.Render(fmt.Sprintf("\n%d of %d configs have problems from here: run a tune from this network to replace them.", bad, len(res))))
 	} else {
@@ -101,7 +107,7 @@ func (t *tui) move() error {
 	if err != nil {
 		return err
 	}
-	o := TuneOpts{XrayBin: bin, Depth: "smart", Out: "xtune-results", Log: func(s string) { fmt.Println(s) }}
+	o := TuneOpts{XrayBin: bin, Depth: "smart", Out: "xtune-results", CleanIPs: defaultCleanIPs, Log: func(s string) { fmt.Println(s) }}
 	fmt.Println(dimStyle.Render(fmt.Sprintf("moving %d users to %s; Ctrl+C stops and cleans up the new server", len(b.State.Users), nr.Name())))
 	st, err := MoveTo(nr, b, action == "tune", 3, o, bin)
 	if err != nil {

@@ -392,7 +392,7 @@ func (t *tui) tune() error {
 	if err != nil {
 		return err
 	}
-	o := TuneOpts{XrayBin: bin}
+	o := TuneOpts{XrayBin: bin, CleanIPs: defaultCleanIPs}
 	old, err := LoadState(t.r)
 	if err != nil {
 		return err
@@ -446,7 +446,7 @@ func (t *tui) tune() error {
 		t.r.Helper("cleanup")
 		return err
 	}
-	appendHistory(tuneRecord(t.r.Conn.Host, "", res.Best))
+	appendHistory(tuneRecord(t.r.Conn.Host, res.NetName, res.Best))
 	n := "3"
 	if old != nil {
 		fmt.Println(dimStyle.Render(fmt.Sprintf("A deployment already exists: its %d users and server keys are kept.", len(old.Users))))
@@ -708,7 +708,8 @@ func (t *tui) sub() error {
 		lang := st.Sub.Lang
 		if err := huh.NewSelect[string]().Title("Language of users' pages").Options(
 			huh.NewOption("From the browser's setting", ""), huh.NewOption("English", "en"),
-			huh.NewOption("Persian (فارسی), Solar Hijri dates", "fa")).Value(&lang).WithTheme(t.theme).Run(); err != nil {
+			huh.NewOption("Persian (فارسی), Solar Hijri dates", "fa"), huh.NewOption("Russian (Русский)", "ru"),
+			huh.NewOption("Chinese, Simplified (简体中文)", "zh")).Value(&lang).WithTheme(t.theme).Run(); err != nil {
 			return err
 		}
 		return SetSubLang(t.r, lang)

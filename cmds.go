@@ -39,6 +39,7 @@ func cmdMeasure(args []string) error {
 	fs.IntVar(&o.Parallel, "parallel", 6, "parallel screening")
 	fs.IntVar(&o.Rounds, "rounds", 2, "benchmark rounds (median)")
 	fs.StringVar(&o.Out, "out", "xtune-results", "results directory")
+	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	report := fs.String("report", "", "report file (default xtune-report-NETWORK.json)")
 	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers (udp:IP:53, doh:URL, dot:HOST:853)")
 	pos := parse(fs, args)
@@ -136,35 +137,62 @@ func cmdDeploy(args []string) error {
 func cmdCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
 	c := addConnFlags(fs)
-	network := fs.String("network", "", "name of this network (ISP), for the history")
+	network := fs.String("network", "", "name of this network (ISP), for the history (default: the ASN registry's name)")
 	probes := fs.Int("probes", 5, "requests per config")
 	secs := fs.Int("secs", 10, "seconds of download per config")
 	out := fs.String("out", "xtune-results", "working directory")
+	every := fs.Duration("every", 0, "keep checking at this interval (e.g. 6h), reporting each check to the server")
 	parse(fs, args)
 	if *c.host == "" && *c.profile == "" && serverMode() {
 		return errors.New("check measures from where it runs: run it on your computer, on your users' network (xtune check --host H)")
 	}
+	if *every > 0 && *every < 10*time.Minute {
+		return errors.New("--every: at least 10m")
+	}
+	if *every == 0 {
+		return checkOnce(c, *network, *probes, *secs, *out)
+	}
+	fmt.Printf("[*] checking every %s; each check is reported to the server, which ranks subscriptions for this network\n", *every)
+	for {
+		if err := checkOnce(c, *network, *probes, *secs, *out); err != nil {
+			fmt.Println("[!] check failed:", err) // the server may be unreachable from here for a while
+		}
+		next := time.Now().Add(*every)
+		fmt.Printf("\n[*] next check at %s\n", next.Format("15:04"))
+		time.Sleep(time.Until(next))
+	}
+}
+
+// checkOnce checks the deployed configs from this network and reports the results to the server,
+// which ranks subscriptions for this network with them (and its autopilot watches for a blocked IP).
+func checkOnce(c connFlags, network string, probes, secs int, out string) error {
 	r, err := connect(c)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	bin, err := EnsureLocalXray(*c.xray, r, func(s string) { fmt.Println(s) })
+	logf := func(s string) { fmt.Println(s) }
+	bin, err := EnsureLocalXray(*c.xray, r, logf)
 	if err != nil {
 		return err
 	}
+	netw := detectNetwork(&network, logf)
 	var res []CheckResult
+	var st *State
 	if err := guarded(nil, func() error { // nil: a shared test running on the server must survive Ctrl+C here
 		var e error
-		res, _, e = Check(r, bin, *probes, *secs, *out, func(s string) { fmt.Println(s) })
+		res, st, e = Check(r, bin, probes, secs, out, logf)
 		return e
 	}); err != nil {
 		return err
 	}
 	fmt.Println()
 	bad := printCheck(os.Stdout, res)
-	if err := appendHistory(Record{Time: time.Now().Unix(), Host: r.Conn.Host, Network: *network, Kind: "check", Results: res}); err != nil {
+	if err := appendHistory(Record{Time: time.Now().Unix(), Host: r.Conn.Host, Network: network, Kind: "check", Results: res}); err != nil {
 		fmt.Println("[!] history:", err)
+	}
+	if err := recordCheck(r, netw, st, res); err != nil {
+		fmt.Println("[!] ranking the configs for this network:", err)
 	}
 	if bad > 0 {
 		fmt.Printf("\n%d of %d configs have problems from this network: run `xtune tune --host %s` from here to find replacements\n",
@@ -204,6 +232,9 @@ func cmdDoctor(args []string) error {
 // ---------------------------------------------------------------- backup / restore / migrate
 
 func cmdBackup(args []string) error {
+	if len(args) > 0 && args[0] == "schedule" {
+		return cmdBackupSchedule(args[1:])
+	}
 	fs := flag.NewFlagSet("backup", flag.ExitOnError)
 	c := addConnFlags(fs)
 	out := fs.String("o", "", "backup file (default xtune-backup-HOST-DATE.json)")
@@ -287,6 +318,7 @@ func cmdMigrate(args []string) error {
 	fs.StringVar(&o.Depth, "depth", "deep", "smart | deep")
 	fs.IntVar(&o.Rounds, "rounds", 2, "benchmark rounds (median)")
 	fs.StringVar(&o.Network, "network", "", "name of this network (ISP), for the history")
+	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	parse(fs, args)
 	if *to == "" {
 		return errors.New("migrate: --to NEWHOST is required")
@@ -371,7 +403,7 @@ func MoveTo(r *Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string)
 		r.Helper("cleanup") // nothing runs yet, so this removes the copied deployment too
 		return nil, err
 	}
-	appendHistory(tuneRecord(r.Conn.Host, o.Network, res.Best))
+	appendHistory(tuneRecord(r.Conn.Host, res.NetName, res.Best))
 	return Deploy(r, res, n)
 }
 

@@ -53,6 +53,7 @@ type TuneOpts struct {
 	Resolvers                     []string // DNS tunnel resolvers to try first ("udp:IP:53", "doh:URL", "dot:HOST:853")
 	Cloudflare                    string   // API token ("" = the deployment's): DNS records for new domains, the Worker relay
 	Zone                          string   // Cloudflare zone: domains not given get random names in it
+	CleanIPs                      int      // CDN and Worker configs: also measure them through this many clean edge IPs
 	Log                           func(string)
 
 	deployed *State  // the server's deployment, if any
@@ -746,6 +747,9 @@ func simplicity(v *Variant) int {
 	if v.K.MTU != 0 && v.K.MTU != 1420 {
 		s += 2
 	}
+	if v.K.Addr != "" { // a pinned edge IP can be blocked later; the domain follows Cloudflare
+		s += 4
+	}
 	return s
 }
 
@@ -815,11 +819,11 @@ func RunTests(o TuneOpts, st *State, u User, vs []*Variant) error {
 		}
 		return alive[i].Warm < alive[j].Warm
 	})
-	// few-ms latency gaps are noise: give every (entry, fragment, mode) group a throughput number
+	// few-ms latency gaps are noise: give every (entry, fragment, mode, clean IP) group a throughput number
 	var promo []*Variant
 	seen := map[string]bool{}
 	for _, v := range alive {
-		g := v.Entry.ID + "|" + v.K.Frag + "|" + v.K.Mode
+		g := v.Entry.ID + "|" + v.K.Frag + "|" + v.K.Mode + "|" + v.K.Addr
 		if !seen[g] {
 			seen[g] = true
 			promo = append(promo, v)
@@ -933,6 +937,8 @@ type TuneResult struct {
 	Entries []Entry
 	All     []*Variant
 	Best    []*Variant
+	Network Network // the network it was measured from ("" ASN when unknown)
+	NetName string  // its name: --network, else the ASN registry's
 }
 
 // Tune installs/uses the isolated server Xray, starts the test matrix and measures it from here.
@@ -942,6 +948,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 		return nil, err
 	}
 	o.deployed, _ = LoadState(r)
+	netw := detectNetwork(&o.Network, o.Log)
 	made, err := o.tuneCloudflare(r.Conn.Host)
 	if err != nil {
 		return nil, err
@@ -1093,6 +1100,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	time.Sleep(time.Second)
 
 	vs := ExpandVariants(entries, o.Depth, o.Resolvers...)
+	vs = addCleanIPVariants(st, entries, vs, o.CleanIPs, o.Log)
 	if err := RunTests(o, st, tuneUser, vs); err != nil {
 		return nil, err
 	}
@@ -1102,7 +1110,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 		return nil, err
 	}
 	o.Log(buf.String())
-	return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Best: best}, nil
+	return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Best: best, Network: netw, NetName: o.Network}, nil
 }
 
 // prepareExtras gets the server ready for the opt-in protocols: xtune itself runs the SSH and DNS
