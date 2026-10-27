@@ -192,6 +192,18 @@ type mStatus struct {
 	QuotaGB  float64   `json:"quotaGB,omitempty"`
 	Assigned int64     `json:"assigned,omitempty"` // a reseller's users' quotas, added up
 	Plans    []string  `json:"plans"`
+
+	// admin only: the enforce job's background work
+	IPBlocked string      `json:"ipBlocked,omitempty"` // why the server's IP looks blocked
+	Backup    *mBackup    `json:"backup,omitempty"`    // scheduled backups, when on
+	Workers   []WorkerUse `json:"workers,omitempty"`   // Cloudflare Workers' requests today
+	WorkerMax int64       `json:"workerMax,omitempty"` // their daily limit (0 = no alerts)
+}
+
+type mBackup struct {
+	Every int64  `json:"every"`           // seconds
+	Last  int64  `json:"last,omitempty"`  // last delivered
+	Error string `json:"error,omitempty"` // why the last attempt failed, when it did
 }
 
 var errManage = errors.New("not found")
@@ -370,6 +382,18 @@ func manageStatus(r *Server, st *State, us *Usage, m *manager, now time.Time) mS
 		return s
 	}
 	s.Assigned = 0
+	if b, why := ipBlocked(st, us, now); b {
+		s.IPBlocked = why
+	}
+	if st.Backups != nil {
+		s.Backup = &mBackup{Every: st.Backups.Every, Last: us.LastBackup}
+		if us.BackupAt > us.LastBackup {
+			s.Backup.Error = us.BackupErr
+		}
+	}
+	if st.Worker != nil {
+		s.Workers, s.WorkerMax = us.WorkerUse, st.Worker.dailyLimit()
+	}
 	if ss, err := r.Status(); err == nil {
 		s.Xray = orStr(ss.Unit, "?") + " (" + orStr(ss.Xray, "?") + ")"
 		s.Sub = st.Sub.Mode + ", " + orStr(ss.Sub, "?")

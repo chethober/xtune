@@ -326,10 +326,25 @@ func TestCleanIPVariants(t *testing.T) {
 	if st.dialAddr(entries[0], Knobs{Addr: "104.16.1.1"}) != st.Addr() {
 		t.Error("a clean IP must not apply to direct configs")
 	}
-	// deploying keeps it on the entry
-	v := &Variant{Entry: e, K: k}
-	if got := deployChoice([]*Variant{v}, 1)[0]; got.K.Addr != "104.16.1.1" {
-		t.Error("lost the clean IP")
+	// deploying keeps the domain: the clean IP reaches the network it was found on through the rankings
+	viaIP := &Variant{Entry: e, K: k, Score: 30, Ok: 5, N: 5}
+	plain := &Variant{Entry: e, K: Knobs{FP: "chrome", Frag: "none", Mode: "auto"}, Score: 4, Ok: 5, N: 5}
+	frag := &Variant{Entry: e, K: Knobs{FP: "chrome", Frag: "frag-mild", Mode: "auto"}, Score: 6, Ok: 5, N: 5}
+	all := []*Variant{viaIP, plain, frag}
+	if got := domainVariant(viaIP, all); got != frag {
+		t.Errorf("deploy should take the best variant through the domain: %+v", got.K)
+	}
+	if got := domainVariant(plain, all); got != plain {
+		t.Error("a domain variant is deployed as it is")
+	}
+	blocked := []*Variant{viaIP, {Entry: e, K: Knobs{FP: "firefox", Frag: "frag-aggr"}}, {Entry: e, K: Knobs{FP: "chrome", Frag: "none"}}}
+	if got := domainVariant(viaIP, blocked); got.K.Addr != "" || got.K.Frag != "none" {
+		t.Errorf("nothing through the domain from here: its plainest settings, got %+v", got.K)
+	}
+	ent := e
+	ent.FP, ent.Frag, ent.Mode = frag.K.FP, frag.K.Frag, frag.K.Mode
+	if _, addrs := variantRank([]Entry{ent}, all); addrs[entryKey(ent)] != "104.16.1.1" {
+		t.Errorf("the tuning network's ranking should carry the clean IP: %v", addrs)
 	}
 	if e2 := (Entry{Addr: "1.1.1.1"}); e2.Knobs().Addr != "1.1.1.1" {
 		t.Error("Entry.Knobs drops Addr")
@@ -886,6 +901,16 @@ func TestAutopilotRotates(t *testing.T) {
 	st.Notify = Notify{Webhook: "https://hook"}
 	st.Sub = SubConfig{Mode: "cdn", Port: 2096, Path: "p"}
 	st.Autopilot = &Autopilot{Provider: "digitalocean", Token: "dotok", Droplet: 77, Owned: "198.51.100.50"}
+	// the traffic signal alone alerts and asks for a check, but does not move the server
+	runAutopilot(r, st, us, now)
+	if st.ClientIP != "" || len(calls) != 0 || len(sent) != 1 || !strings.Contains(sent[0], "xtune check --host 203.0.113.7") {
+		t.Fatalf("moved on traffic alone, or no alert asking for a check: %q %v %v", st.ClientIP, calls, sent)
+	}
+	sent = nil
+	delete(us.Notified, "ip-blocked")
+	// a check from some network confirms it
+	st.Networks = map[string]*NetRank{"AS1": {Name: "TCI", Updated: now.Unix(),
+		Scores: map[string]float64{"r-tcp/443": 0, "hy2/8443": 0, "cdn-xhttp/2053": 9}}}
 	runAutopilot(r, st, us, now)
 	if st.ClientIP != next || st.Addr() != next || st.Autopilot.Owned != next || us.RotatedAt != now.Unix() {
 		t.Fatalf("not moved: %+v %+v", st.Autopilot, st.ClientIP)
@@ -912,6 +937,7 @@ func TestAutopilotRotates(t *testing.T) {
 	// blocked again the same day: alerts, does not move
 	st2, us2 := blockedSetup(now)
 	st2.Notify, st2.Autopilot = st.Notify, st.Autopilot
+	st2.Networks = map[string]*NetRank{"AS1": {Updated: now.Unix(), Scores: map[string]float64{"r-tcp/443": 0, "cdn-xhttp/2053": 9}}}
 	us2.RotatedAt = now.Add(-time.Hour).Unix()
 	sent = nil
 	runAutopilot(r, st2, us2, now)
@@ -1030,5 +1056,47 @@ func TestCDNOverHTTP3(t *testing.T) {
 	}
 	if (Entry{ALPN: "h3"}).Knobs().ALPN != "h3" {
 		t.Error("Entry.Knobs drops ALPN")
+	}
+}
+
+// ---------------------------------------------------------------- before merge
+
+func TestRankingUpdatesAnOldServer(t *testing.T) {
+	oldVersion := version
+	version = "0.9.0"
+	defer func() { version = oldVersion }()
+	installed := func(fs *fakeServer) bool {
+		return slices.ContainsFunc(fs.calls, func(c string) bool { return strings.HasPrefix(c, "xtune-") })
+	}
+	for _, tc := range []struct {
+		server string
+		update bool
+	}{{"0.8.0", true}, {"none", true}, {"0.9.0", false}, {"0.10.1", false}} {
+		fs := newFake()
+		fs.helper = map[string]string{"status": "ARCH x86_64\nXTUNE " + tc.server + "\nXTUNE_SHA 00"}
+		r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+		saveState(r, rankedState())
+		err := RecordNetwork(r, Network{ASN: "AS1"}, map[string]float64{"r-tcp/443": 3}, nil)
+		if got := installed(fs); got != tc.update {
+			t.Errorf("server xtune %s: updated=%v (err %v, calls %v)", tc.server, got, err, fs.calls)
+		}
+	}
+}
+
+func TestManageStatusReportsJobs(t *testing.T) {
+	r, _ := deployed(t, NewUser("ann"))
+	now := time.Now()
+	st, us := blockedSetup(now)
+	st.Backups = &BackupPlan{Every: 86400}
+	us.BackupAt, us.LastBackup, us.BackupErr = now.Unix(), now.Add(-time.Hour).Unix(), "s3: HTTP 403"
+	st.Worker = &Worker{Host: "w.workers.dev"}
+	us.WorkerUse = []WorkerUse{{Host: "w.workers.dev", Requests: 42}}
+	s := manageStatus(r, st, us, &manager{}, now)
+	if s.IPBlocked == "" || s.Backup == nil || s.Backup.Error != "s3: HTTP 403" || len(s.Workers) != 1 || s.WorkerMax != workerFreeLimit {
+		t.Errorf("admin status %+v %+v", s, s.Backup)
+	}
+	rs := manageStatus(r, st, us, &manager{reseller: "rex", res: &Reseller{}}, now)
+	if rs.IPBlocked != "" || rs.Backup != nil || rs.Workers != nil {
+		t.Error("resellers get users, not the server's jobs")
 	}
 }

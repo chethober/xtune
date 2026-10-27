@@ -265,6 +265,9 @@ func DeployPending(r *Server, reports []*NetReport, n int, w io.Writer) (*State,
 		nets = append(nets, ns)
 	}
 	chosen, uncovered := mergeChoice(p.Variants, nets, n)
+	for i, v := range chosen {
+		chosen[i] = domainVariant(v, p.Variants)
+	}
 	if len(chosen) == 0 {
 		return nil, fmt.Errorf("no config worked on any network")
 	}

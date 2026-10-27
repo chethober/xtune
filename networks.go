@@ -167,6 +167,9 @@ func RecordNetwork(r *Server, n Network, scores map[string]float64, addrs map[st
 	if n.ASN == "" || len(scores) == 0 {
 		return nil
 	}
+	if err := serverXtuneCurrent(r); err != nil {
+		return fmt.Errorf("xtune on the server is older than this one, which would drop the ranking, and updating it failed: %w", err)
+	}
 	defer r.lock()()
 	st, err := requireState(r)
 	if err != nil {
@@ -429,4 +432,20 @@ func printNetworks(w io.Writer, st *State, now time.Time) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a, orStr(nr.Name, "-"), when, strings.Join(ids, ", "))
 	}
 	tw.Flush()
+}
+
+// serverXtuneCurrent updates the server's xtune when it is not this version: an older one would
+// drop the fields it does not know (the rankings among them) the next time it saves the state.
+func serverXtuneCurrent(r *Server) error {
+	if r.Local || version == "dev" {
+		return nil
+	}
+	ss, err := r.Status()
+	if err != nil {
+		return err
+	}
+	if ss.Xtune == version || ss.Xtune != "none" && !newer(version, ss.Xtune) {
+		return nil // this one or newer
+	}
+	return EnsureServerXtune(r, func(s string) { fmt.Println("[*] " + s) })
 }

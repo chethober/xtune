@@ -203,7 +203,11 @@ func restart(r *Server, st *State) error {
 // already has a deployment, the server keys, certificate and users are kept: only ports, SNIs and
 // client settings change, so subscriptions keep working.
 func Deploy(r *Server, res *TuneResult, n int) (*State, error) {
-	st, err := DeployVariants(r, res.State, deployChoice(res.Best, n))
+	var chosen []*Variant
+	for _, v := range deployChoice(res.Best, n) {
+		chosen = append(chosen, domainVariant(v, res.All))
+	}
+	st, err := DeployVariants(r, res.State, chosen)
 	if err != nil {
 		return st, err
 	}
@@ -224,7 +228,7 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 	for _, v := range chosen {
 		e := v.Entry
 		e.FP, e.Mode, e.Frag, e.Split, e.MTU, e.Resolver = v.K.FP, v.K.Mode, v.K.Frag, v.K.Split, v.K.MTU, v.K.Resolver
-		e.Addr, e.ALPN = v.K.Addr, v.K.ALPN
+		e.ALPN = v.K.ALPN // a clean IP (v.K.Addr) is not deployed: see domainVariant
 		st.Entries = append(st.Entries, e)
 	}
 	renumberAWG(st.Entries) // off the test instance's ranges
@@ -252,6 +256,37 @@ func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
 		return st, err
 	}
 	return st, startServices(r, st)
+}
+
+// domainVariant is v, or for a clean-IP variant the best variant of the same config that dials
+// the domain. A clean IP works from the network it was found on: it reaches that network's users
+// through the per-network rankings (variantRank), while everyone else keeps the domain, which
+// follows Cloudflare and stays the fallback when the server's IP is blocked.
+func domainVariant(v *Variant, all []*Variant) *Variant {
+	if v.K.Addr == "" {
+		return v
+	}
+	var same []*Variant
+	for _, x := range all {
+		if x.Entry.ID == v.Entry.ID && x.K.Addr == "" {
+			same = append(same, x)
+		}
+	}
+	if b := pick(same); b != nil {
+		return b
+	}
+	var plain *Variant // nothing got through the domain from here: its plainest settings
+	for _, x := range same {
+		if plain == nil || simplicity(x) < simplicity(plain) {
+			plain = x
+		}
+	}
+	if plain != nil {
+		return plain
+	}
+	c := *v
+	c.K.Addr = ""
+	return &c
 }
 
 // deployChoice is the top n, plus a working CDN config, plus the best working config of each
