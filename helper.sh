@@ -139,6 +139,14 @@ extras_stop() {
     fi ;;
   esac
 }
+# Clear an earlier test before reusing its fixed unit name. Failed transient units
+# remain loaded until reset; collect also prevents new failures leaving stale units.
+start_test_unit() {
+  local unit=$1; shift
+  systemctl stop "$unit" 2>/dev/null || true
+  systemctl reset-failed "$unit" 2>/dev/null || true
+  systemd-run --quiet --collect --unit="$unit" --property=RuntimeMaxSec=7200 "$@"
+}
 test_stop_extras() {
   for u in $(systemctl list-units --all --no-legend 'xray-autotune-test-*' 2>/dev/null | awk '{print $1}'); do
     systemctl stop "$u" 2>/dev/null || true
@@ -308,9 +316,9 @@ test-extras)
   for spec in "$@"; do
     case $spec in
       tunnels)
-        systemd-run --quiet --unit=xray-autotune-test-tunnels --property=RuntimeMaxSec=7200 $XT tunnels run $D/test/tunnels.json ;;
+        start_test_unit xray-autotune-test-tunnels $XT tunnels run $D/test/tunnels.json || true ;;
       awg)
-        systemd-run --quiet --unit=xray-autotune-test-awg --property=RuntimeMaxSec=7200 $XT awg run $D/test/awg.json ;;
+        start_test_unit xray-autotune-test-awg $XT awg run $D/test/awg.json || true ;;
       tnet:*)
         # NAT for a test range, recorded so stop-test removes it
         net=${spec#tnet:}
@@ -320,8 +328,8 @@ test-extras)
         echo "$net" >> $D/test/nets ;;
       openvpn:*)
         id=${spec#openvpn:}
-        systemd-run --quiet --unit="xray-autotune-test-ovpn-$id" --property=RuntimeMaxSec=7200 \
-          "$(command -v openvpn)" --cd $D/test/vpn --config "$D/test/vpn/$id.conf" ;;
+        start_test_unit "xray-autotune-test-ovpn-$id" \
+          "$(command -v openvpn)" --cd $D/test/vpn --config "$D/test/vpn/$id.conf" || true ;;
       ikev2)
         su=$(swan_unit)
         if [ ! -f $SWANCONF ]; then
@@ -406,7 +414,7 @@ start)
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
   if ! $X run -test -c $D/test.json >/dev/null 2>&1; then $X run -test -c $D/test.json 2>&1 | tail -5; exit 1; fi
   fw_open $D/fw.test "$@"
-  systemd-run --quiet --unit=xray-autotune-test --property=LimitNOFILE=65535 --property=RuntimeMaxSec=7200 $X run -c $D/test.json
+  start_test_unit xray-autotune-test --property=LimitNOFILE=65535 $X run -c $D/test.json
   sleep 1; systemctl is-active xray-autotune-test ;;
 stop-test)
   systemctl stop xray-autotune-test 2>/dev/null || true

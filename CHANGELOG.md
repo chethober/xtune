@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-10-28
+
+### Fixed
+- Repeated tuning now stops and resets existing test service units before starting them and collects failed
+  transient units, avoiding the "already loaded or has a fragment file" startup error.
+- Failed optional tunnel, AmneziaWG and OpenVPN test services are skipped so other configurations can still be tested.
+- Network ASN detection falls back to public-IP trace endpoints and Team Cymru DNS when the metadata APIs are
+  blocked or rate limited. If every lookup fails, the warning clarifies that configuration continues without ranking.
+
 ## [0.10.0] - 2026-10-28
 
 ### Added

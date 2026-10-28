@@ -47,7 +47,13 @@ type Network struct {
 // clientNetwork looks up this machine's network, straight (not through a proxy). A variable so
 // tests can choose a network.
 var clientNetwork = func() (Network, error) {
-	c := &http.Client{Timeout: 8 * time.Second, Transport: uaTransport{&http.Transport{Proxy: nil}}}
+	tr := &http.Transport{Proxy: nil}
+	defer tr.CloseIdleConnections()
+	c := &http.Client{Timeout: 8 * time.Second, Transport: uaTransport{tr}}
+	return lookupClientNetwork(c, asnLookup)
+}
+
+func lookupClientNetwork(c *http.Client, lookup func(net.IP) (string, error)) (Network, error) {
 	var errs []string
 	// Cloudflare's speed test answers with the client's ASN; ipinfo.io is the fallback
 	if b, err := getBody(c, "https://speed.cloudflare.com/meta"); err == nil {
@@ -74,6 +80,31 @@ var clientNetwork = func() (Network, error) {
 	} else {
 		errs = append(errs, err.Error())
 	}
+	// Trace endpoints expose the public IP without relying on a rate-limited
+	// geolocation API. Resolve that IP through Team Cymru's DNS service.
+	for _, u := range []string{"https://www.cloudflare.com/cdn-cgi/trace", "https://1.1.1.1/cdn-cgi/trace"} {
+		b, err := getBody(c, u)
+		if err == nil {
+			err = errors.New("no public IP in trace")
+			for _, line := range strings.Split(string(b), "\n") {
+				key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+				ip := net.ParseIP(value)
+				if key != "ip" || ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+					continue
+				}
+				var asn string
+				asn, err = lookup(ip)
+				if err == nil && asn != "" {
+					return Network{ASN: asn}, nil
+				}
+				if err == nil {
+					err = errors.New("empty ASN")
+				}
+				break
+			}
+		}
+		errs = append(errs, u+": "+err.Error())
+	}
 	return Network{}, errors.New(strings.Join(errs, "; "))
 }
 
@@ -94,7 +125,7 @@ func getBody(c *http.Client, u string) ([]byte, error) {
 func detectNetwork(name *string, log func(string)) Network {
 	n, err := clientNetwork()
 	if err != nil {
-		log("[!] could not tell this network's ASN (" + tail(err.Error(), 200) + "): subscriptions will not be ranked for it")
+		log("[!] could not tell this network's ASN (" + tail(err.Error(), 200) + "): continuing configuration without per-network subscription ranking")
 		return Network{}
 	}
 	if *name == "" {
