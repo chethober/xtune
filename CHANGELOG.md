@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- MTProto proxy (`--protocols mtproto`): Telegram's own proxy protocol, served in the tunnel server on a standard
+  and a high TCP port and relayed to Telegram's data centres. Each user gets their own secret (derived from their
+  UUID), so quotas, expiry, device limits and disabling apply; it opens in the Telegram app from a `t.me/proxy` link
+  or QR code, with nothing to install. Tuning measures the handshake and the path to a data centre, like the VPNs.
+- Dashboard: a live, full-screen overview in both the client and server TUIs — each deployed config with its state
+  (active, quiet/probably blocked, idle) and traffic, and the users with quota bars and who is online. Read-only;
+  `r` reloads, `q` goes back.
+- `ROADMAP.md`: the plan toward v1.0 (MTProto, the TUI redesign, a stable state schema and CLI, a package split,
+  a docs site) and v1.1.
+
 ## [0.9.2] - 2026-10-27
 
 ### Fixed

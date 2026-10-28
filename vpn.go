@@ -503,6 +503,8 @@ func (st *State) profiles(e Entry, u User) []Profile {
 		return []Profile{{Name: "DNS tunnel (SlowDNS / dnstt)", File: base + ".txt", Type: "text/plain", Body: st.DNSTTInfo(e, u)}}
 	case "ssh", "ssh-tls", "cdn-ssh":
 		return []Profile{{Name: "SSH apps, HTTP Injector / NetMod (" + e.ID + ")", File: base + ".txt", Type: "text/plain", Body: st.SSHInfo(e, u)}}
+	case "mtproto":
+		return []Profile{{Name: "Telegram MTProto proxy (" + e.ID + ")", File: base + ".txt", Type: "text/plain", Body: st.MTProtoInfo(e, u)}}
 	}
 	return nil
 }

@@ -61,7 +61,7 @@ type TuneOpts struct {
 }
 
 // optionalProtocols can be added to the test matrix with --protocols.
-var optionalProtocols = []string{"ssh", "dnstt", "awg", "worker", "trojan", "openvpn", "ikev2"}
+var optionalProtocols = []string{"ssh", "dnstt", "mtproto", "awg", "worker", "trojan", "openvpn", "ikev2"}
 
 // parseProtocols checks a --protocols list; "all" means every optional protocol.
 func parseProtocols(list string) ([]string, error) {
@@ -286,6 +286,10 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 		// public UDP 53 is forwarded to the tunnel's port (systemd-resolved keeps 127.0.0.53:53)
 		E = append(E, Entry{ID: "dnstt", Kind: "dnstt", Port: port("udp", false)})
 	}
+	if want("mtproto") { // a standard port Telegram apps expect, and a high one in case it is filtered
+		E = append(E, Entry{ID: "mtproto", Kind: "mtproto", Port: port("tcp", true)},
+			Entry{ID: "mtproto-hiport", Kind: "mtproto", Port: port("tcp", false)})
+	}
 	if want("openvpn") {
 		p := 1194
 		if used["udp"][p] || taken[p] {
@@ -490,6 +494,8 @@ func startHarness(bin string, st *State, u User, all []*Variant, dir string, tes
 	h := &harness{}
 	for _, v := range all {
 		switch e := v.Entry; {
+		case e.Kind == "mtproto":
+			v.handshake = func(ctx context.Context) (time.Duration, error) { return st.mtprotoHandshake(ctx, e, u) }
 		case e.HandshakeOnly():
 			v.handshake = func(ctx context.Context) (time.Duration, error) { return st.vpnHandshake(ctx, e) }
 		case e.SSH():

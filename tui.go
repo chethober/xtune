@@ -74,6 +74,7 @@ func runTUI() {
 		err := huh.NewSelect[string]().
 			Title("xtune  -  "+t.r.Name()).
 			Options(
+				huh.NewOption("Dashboard: configs and users at a glance", "dashboard"),
 				huh.NewOption("Status & Xray versions", "status"),
 				huh.NewOption("Install / update Xray", "update"),
 				huh.NewOption("Tune: find the configs that get through, deploy them", "tune"),
@@ -91,6 +92,8 @@ func runTUI() {
 			return
 		}
 		switch action {
+		case "dashboard":
+			showErr(t.dashboard())
 		case "status":
 			showErr(t.status())
 		case "update":
@@ -132,6 +135,7 @@ func runServerTUI() {
 		err := huh.NewSelect[string]().
 			Title("xtune server  -  "+r.Conn.Host).
 			Options(
+				huh.NewOption("Dashboard: configs and users at a glance", "dashboard"),
 				huh.NewOption("Status", "status"),
 				huh.NewOption("Users: limits, usage, links", "users"),
 				huh.NewOption("Subscription server: public links", "sub"),
@@ -156,6 +160,8 @@ func runServerTUI() {
 			return
 		}
 		switch action {
+		case "dashboard":
+			showErr(t.dashboard())
 		case "status":
 			showErr(t.status())
 		case "users":
@@ -418,6 +424,7 @@ func (t *tui) tune() error {
 			Options(
 				huh.NewOption("SSH tunnel (HTTP Injector, NetMod, NapsternetV; also over TLS and the CDN)", "ssh"),
 				huh.NewOption("DNS tunnel (dnstt / SlowDNS; slow, for when only DNS gets through)", "dnstt"),
+				huh.NewOption("MTProto proxy (Telegram only; opens in the Telegram app, nothing to install)", "mtproto"),
 				huh.NewOption("AmneziaWG (WireGuard with a disguised handshake; AmneziaVPN / AmneziaWG apps)", "awg"),
 				huh.NewOption("Cloudflare Worker relay (VLESS over workers.dev; needs a Cloudflare token)", "worker"),
 				huh.NewOption("Trojan over REALITY (for apps and networks that do better with Trojan)", "trojan"),
