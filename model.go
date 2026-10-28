@@ -574,6 +574,8 @@ func (st *State) Link(e Entry, u User, k Knobs) string {
 		if k.Mode == "" {
 			return st.sshLink(e, u, name)
 		}
+	case "mtproto":
+		return st.mtprotoLink(e, u)
 	}
 	if !e.Xray() { // no link scheme: these come as profile files (see Profiles)
 		return ""

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +60,7 @@ type TunnelConf struct {
 type TunnelUser struct {
 	Name    string `json:"name"`
 	Pass    string `json:"pass"`
+	MT      string `json:"mt,omitempty"` // MTProto proxy secret (hex), when an mtproto config is deployed
 	Devices int    `json:"devices,omitempty"`
 }
 
@@ -76,9 +78,14 @@ type tunnelStats struct {
 func (st *State) TunnelConf(entries []Entry, users []User, statsPath string) TunnelConf {
 	c := TunnelConf{Entries: filterEntries(entries, Entry.SSH), HostKey: st.SSHHostKey, CertPEM: st.CertPEM, KeyPEM: st.KeyPEM,
 		DNSTTKey: st.DNSTTKey, DNSDomain: st.DNSDomain, Stats: statsPath, Users: []TunnelUser{}}
+	mt := hasEngine(entries, "tunnel") && slices.ContainsFunc(entries, func(e Entry) bool { return e.Kind == "mtproto" })
 	for _, u := range users {
 		if u.Enabled {
-			c.Users = append(c.Users, TunnelUser{Name: u.Name, Pass: tunnelPassword(u), Devices: u.Devices})
+			tu := TunnelUser{Name: u.Name, Pass: tunnelPassword(u), Devices: u.Devices}
+			if mt {
+				tu.MT = hex.EncodeToString(mtprotoKey(u))
+			}
+			c.Users = append(c.Users, tu)
 		}
 	}
 	return c
@@ -94,6 +101,7 @@ type tunnelServer struct {
 	mu       sync.Mutex
 	users    map[string]TunnelUser
 	sessions map[*tunSession]bool
+	mt       map[*mtSession]bool
 	boot     string
 	traffic  map[string]*[2]atomic.Int64
 	entries  map[string]*atomic.Int64
@@ -115,7 +123,7 @@ func cmdTunnels(args []string) error {
 // manager starts it again with the new ones). ready, if set, is closed once it listens.
 func runTunnels(path string, ready chan<- []net.Addr) error {
 	ts := &tunnelServer{path: path, users: map[string]TunnelUser{}, sessions: map[*tunSession]bool{},
-		boot: randHex(8), traffic: map[string]*[2]atomic.Int64{}, entries: map[string]*atomic.Int64{}}
+		mt: map[*mtSession]bool{}, boot: randHex(8), traffic: map[string]*[2]atomic.Int64{}, entries: map[string]*atomic.Int64{}}
 	if err := readJSONFile(path, &ts.conf); err != nil {
 		return err
 	}
@@ -179,7 +187,12 @@ func (ts *tunnelServer) listen(e Entry, errc chan<- error) (net.Addr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if e.Kind != "ssh" { // ssh-tls, cdn-ssh: TLS with the deployment's certificate
+	serve := func(c net.Conn, ip string) { ts.serve(c, e.ID, ip) }
+	switch e.Kind {
+	case "mtproto": // Telegram's proxy protocol, relayed to Telegram (see mtproto.go)
+		serve = func(c net.Conn, ip string) { ts.serveMT(c, e.ID, ip) }
+	case "ssh": // plain SSH
+	default: // ssh-tls, cdn-ssh: TLS with the deployment's certificate
 		cert, err := tls.X509KeyPair([]byte(ts.conf.CertPEM), []byte(ts.conf.KeyPEM))
 		if err != nil {
 			ln.Close()
@@ -195,7 +208,7 @@ func (ts *tunnelServer) listen(e Entry, errc chan<- error) (net.Addr, error) {
 				return
 			}
 			ip, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-			go ts.serve(c, e.ID, ip)
+			go serve(c, ip)
 		}
 	}()
 	return ln.Addr(), nil
@@ -235,6 +248,11 @@ func (ts *tunnelServer) setUsers(us []TunnelUser) {
 		ts.users[u.Name] = u
 	}
 	for s := range ts.sessions {
+		if u, ok := ts.users[s.user]; !ok || u.Pass != s.pass {
+			s.conn.Close()
+		}
+	}
+	for s := range ts.mt {
 		if u, ok := ts.users[s.user]; !ok || u.Pass != s.pass {
 			s.conn.Close()
 		}
@@ -447,6 +465,11 @@ func (ts *tunnelServer) writeStats() {
 		s.Entries[id] = c.Load()
 	}
 	for x := range ts.sessions {
+		if x.ip != "" && !contains2s(s.Online[x.user], x.ip) {
+			s.Online[x.user] = append(s.Online[x.user], x.ip)
+		}
+	}
+	for x := range ts.mt {
 		if x.ip != "" && !contains2s(s.Online[x.user], x.ip) {
 			s.Online[x.user] = append(s.Online[x.user], x.ip)
 		}

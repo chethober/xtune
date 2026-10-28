@@ -50,6 +50,7 @@ var kindInfo = map[string]struct {
 	"trojan-reality": {Engine: "xray"},
 	"amneziawg":      {Engine: "awg"},
 	"ssh":            {Engine: "tunnel"}, "ssh-tls": {Engine: "tunnel"}, "cdn-ssh": {Engine: "tunnel"}, "dnstt": {Engine: "tunnel"},
+	"mtproto":     {Engine: "tunnel", Handshake: true},
 	"openvpn-udp": {Engine: "openvpn", Handshake: true}, "openvpn-tcp": {Engine: "openvpn", Handshake: true},
 	"ikev2": {Engine: "ikev2", Handshake: true},
 }
@@ -368,6 +369,8 @@ func (e Entry) family() string {
 		return "ssh"
 	case "dnstt":
 		return "dnstt"
+	case "mtproto":
+		return "mtproto"
 	case "openvpn-udp", "openvpn-tcp":
 		return "openvpn"
 	case "ikev2":

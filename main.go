@@ -31,7 +31,7 @@ On your computer (client):
   xtune tune      [conn] [tune flags]      find the configs that get through from this network, deploy them
                   --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
                   --network NAME           name of this network (ISP), for the history and merged deploys
-                  --protocols LIST         also test ssh, dnstt, awg (AmneziaWG), worker (Cloudflare Worker relay),
+                  --protocols LIST         also test ssh, dnstt, mtproto, awg (AmneziaWG), worker (Cloudflare Worker relay),
                                            trojan (Trojan over REALITY), openvpn, ikev2 (vpn = both VPNs, all = every one)
                   --zone Z                 a Cloudflare zone: domains not given get random names in it, with
                                            their DNS records (token: XTUNE_CLOUDFLARE_TOKEN, or the server's)
@@ -375,7 +375,7 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Network, "network", "", "name of this network (ISP), for the history and merged deploys")
 	fs.StringVar(&o.DNSDomain, "dns-domain", "", "zone delegated to the server with an NS record: adds a DNS tunnel (default: the deployed one)")
 	resolvers := fs.String("resolvers", "", "DNS tunnel: also try these resolvers, e.g. udp:10.0.0.1:53,doh:https://dns.example/dns-query")
-	protocols := fs.String("protocols", "", "also test: ssh, dnstt, awg, worker, trojan, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
+	protocols := fs.String("protocols", "", "also test: ssh, dnstt, mtproto, awg, worker, trojan, openvpn, ikev2, vpn (= openvpn,ikev2) or all (default: what is deployed)")
 	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
 	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
