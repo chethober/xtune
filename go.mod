@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/muesli/cancelreader v0.2.2
 	github.com/xtaci/kcp-go/v5 v5.6.8
-	github.com/xtaci/smux v1.5.24
+	github.com/xtaci/smux v2.0.1+incompatible
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/term v0.47.0
