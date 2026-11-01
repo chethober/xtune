@@ -8,20 +8,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
-func publicServer(t *testing.T) (*Server, *httptest.Server) {
+func publicServer(t *testing.T) (*remote.Server, *httptest.Server) {
 	t.Helper()
-	r, _ := deployed(t, NewUser("ann"))
-	st, _ := LoadState(r)
-	st.CDNDomain, st.Sub = "cdn.example.com", SubConfig{Mode: "cdn", Port: 2053, Path: "subs"}
-	saveState(r, st)
-	load := func() (*State, *Usage, error) {
-		st, err := LoadState(r)
+	r, _ := deployed(t, state.NewUser("ann"))
+	st, _ := state.Load(r)
+	st.CDNDomain, st.Sub = "cdn.example.com", state.SubConfig{Mode: "cdn", Port: 2053, Path: "subs"}
+	state.Save(r, st)
+	load := func() (*state.State, *state.Usage, error) {
+		st, err := state.Load(r)
 		if err != nil {
 			return nil, nil, err
 		}
-		us, err := LoadUsage(r)
+		us, err := state.LoadUsage(r)
 		return st, us, err
 	}
 	srv := httptest.NewServer(subHandler{load: load, r: r})
@@ -53,11 +56,11 @@ func pubCall(t *testing.T, srv *httptest.Server, path, label string, out any) in
 
 func TestPublicPool(t *testing.T) {
 	r, srv := publicServer(t)
-	st, err := SetPublic(r, "community", PublicPool{QuotaGB: 20, Days: 30, Devices: 2, Members: 2})
+	st, err := SetPublic(r, "community", state.PublicPool{QuotaGB: 20, Days: 30, Devices: 2, Members: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	link := st.PublicURL("community")
+	link := PublicURL(st, "community")
 	if !strings.HasPrefix(link, "https://cdn.example.com:2053/subs/pub/") {
 		t.Fatalf("connect link: %s", link)
 	}
@@ -78,7 +81,7 @@ func TestPublicPool(t *testing.T) {
 	if again.Sub != j.Sub {
 		t.Error("joining again with the same label made another user")
 	}
-	st, _ = LoadState(r)
+	st, _ = state.Load(r)
 	if _, u := st.User("community-7f3a"); u == nil || u.Pool != "community" || u.Devices != 2 {
 		t.Fatalf("member user: %+v", u)
 	}
@@ -116,11 +119,11 @@ func TestPublicPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	pubCall(t, srv, base+"/leave", "abcd", nil)
-	if _, u := func() (int, *User) { st, _ := LoadState(r); return st.User("community-abcd") }(); u == nil {
+	if _, u := func() (int, *state.User) { st, _ := state.Load(r); return st.User("community-abcd") }(); u == nil {
 		t.Error("leave removed a user outside the pool")
 	}
 	DeleteUser(r, "community-abcd")
-	if st, _ = LoadState(r); len(st.Users) != 2 {
+	if st, _ = state.Load(r); len(st.Users) != 2 {
 		t.Fatalf("users after leave: %+v", st.Users)
 	}
 
@@ -141,14 +144,14 @@ func TestPublicPool(t *testing.T) {
 	if err := DeletePublic(r, "community"); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ = LoadState(r); len(st.Users) != 1 || st.Users[0].Name != "ann" {
+	if st, _ = state.Load(r); len(st.Users) != 1 || st.Users[0].Name != "ann" {
 		t.Errorf("users after deleting the pool: %+v", st.Users)
 	}
 }
 
 func TestPublicPrunesExpiredMembers(t *testing.T) {
 	r, _ := publicServer(t)
-	st, _ := SetPublic(r, "p", PublicPool{Days: 1})
+	st, _ := SetPublic(r, "p", state.PublicPool{Days: 1})
 	token := st.Public["p"].Token
 	now := time.Now()
 	if _, err := JoinPublic(r, token, "aaaa", now); err != nil {
@@ -157,23 +160,26 @@ func TestPublicPrunesExpiredMembers(t *testing.T) {
 	if _, err := PublicInfo(r, token, now.Add(5*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ = LoadState(r); len(st.members("p")) != 1 {
+	if st, _ = state.Load(r); len(poolMembers(st, "p")) != 1 {
 		t.Error("a member expired for 4 days was removed")
 	}
 	info, _ := PublicInfo(r, token, now.Add(10*24*time.Hour))
-	if st, _ = LoadState(r); len(st.members("p")) != 0 || len(info.Members) != 0 {
+	if st, _ = state.Load(r); len(poolMembers(st, "p")) != 0 || len(info.Members) != 0 {
 		t.Error("a member expired for 9 days was kept")
 	}
 }
 
 func TestPublicNeedsSubServer(t *testing.T) {
-	r, _ := deployed(t, NewUser("ann"))
-	if _, err := SetPublic(r, "p", PublicPool{}); err == nil || !strings.Contains(err.Error(), "sub enable") {
+	r, _ := deployed(t, state.NewUser("ann"))
+	if _, err := SetPublic(r, "p", state.PublicPool{}); err == nil || !strings.Contains(err.Error(), "sub enable") {
 		t.Errorf("err: %v", err)
 	}
 }
 
 func TestJoinLimiter(t *testing.T) {
+	joinLimiter.Lock()
+	joinLimiter.seen = map[string][]time.Time{} // runs with -count>1 share the limiter
+	joinLimiter.Unlock()
 	now := time.Now()
 	for i := 0; i < joinsPerMinute; i++ {
 		if !allowJoin("lim", now) {
@@ -189,36 +195,36 @@ func TestJoinLimiter(t *testing.T) {
 }
 
 func TestLinksForBotsUsePort443(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
-	st, _ := LoadState(r)
+	r, fs := deployed(t, state.NewUser("ann"))
+	st, _ := state.Load(r)
 	st.Entries[0].Port = 8443 // 443 is free
-	st.Domain, st.Sub = "vpn.example.com", SubConfig{Mode: "direct", Port: 2096, Path: "subs"}
-	saveState(r, st)
-	st, err := SetPublic(r, "community", PublicPool{})
+	st.Domain, st.Sub = "vpn.example.com", state.SubConfig{Mode: "direct", Port: 2096, Path: "subs"}
+	state.Save(r, st)
+	st, err := SetPublic(r, "community", state.PublicPool{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := st.PublicURL("community"); !strings.HasPrefix(got, "https://vpn.example.com/subs/pub/") {
+	if got := PublicURL(st, "community"); !strings.HasPrefix(got, "https://vpn.example.com/subs/pub/") {
 		t.Errorf("connect link: %s", got)
 	}
-	if got := st.SubURL(st.Users[0]); !strings.HasPrefix(got, "https://vpn.example.com:2096/subs/") {
+	if got := SubURL(st, st.Users[0]); !strings.HasPrefix(got, "https://vpn.example.com:2096/subs/") {
 		t.Errorf("users' links moved: %s", got)
 	}
 	if !strings.Contains(strings.Join(fs.calls, "\n"), "sub-enable 2096/tcp 443/tcp 80/tcp") {
 		t.Errorf("443 not opened: %v", fs.calls)
 	}
-	if st, _ = changeManage(r, func(*State, *Manage) error { return nil }); !strings.HasPrefix(st.manageURL(st.Manage.Token), "https://vpn.example.com/subs/adm/") {
-		t.Errorf("management link: %s", st.manageURL(st.Manage.Token))
+	if st, _ = changeManage(r, func(*state.State, *state.Manage) error { return nil }); !strings.HasPrefix(manageURL(st, st.Manage.Token), "https://vpn.example.com/subs/adm/") {
+		t.Errorf("management link: %s", manageURL(st, st.Manage.Token))
 	}
 
 	// with 443 taken, links keep the subscription port
-	r2, fs2 := deployed(t, NewUser("ann"))
-	st2, _ := LoadState(r2)
-	st2.Domain, st2.Sub = "vpn.example.com", SubConfig{Mode: "direct", Port: 2096, Path: "subs"}
-	saveState(r2, st2)
+	r2, fs2 := deployed(t, state.NewUser("ann"))
+	st2, _ := state.Load(r2)
+	st2.Domain, st2.Sub = "vpn.example.com", state.SubConfig{Mode: "direct", Port: 2096, Path: "subs"}
+	state.Save(r2, st2)
 	fs2.used = "USED tcp 0.0.0.0:443"
-	st2, _ = SetPublic(r2, "community", PublicPool{})
-	if got := st2.PublicURL("community"); !strings.Contains(got, ":2096/") || st2.Sub.Port443 {
+	st2, _ = SetPublic(r2, "community", state.PublicPool{})
+	if got := PublicURL(st2, "community"); !strings.Contains(got, ":2096/") || st2.Sub.Port443 {
 		t.Errorf("443 in use, link: %s", got)
 	}
 }

@@ -14,6 +14,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 var (
@@ -24,7 +27,7 @@ var (
 )
 
 type tui struct {
-	r     *Server
+	r     *remote.Server
 	xray  string
 	theme *huh.Theme
 }
@@ -80,6 +83,7 @@ func runTUI() {
 				huh.NewOption("Tune: find the configs that get through, deploy them", "tune"),
 				huh.NewOption("Check the deployed configs from this network", "check"),
 				huh.NewOption("Server console: users, addresses", "console"),
+				huh.NewOption("Relays: multi-hop through a server in your users' country", "relays"),
 				huh.NewOption("Doctor: diagnose the server", "doctor"),
 				huh.NewOption("Backup / move to a new server", "move"),
 				huh.NewOption("Logs", "logs"),
@@ -104,6 +108,8 @@ func runTUI() {
 			showErr(t.check())
 		case "console":
 			showErr(openConsole(t.r))
+		case "relays":
+			showErr(t.relays())
 		case "doctor":
 			showErr(t.doctor())
 		case "move":
@@ -124,7 +130,7 @@ func runTUI() {
 // runServerTUI is the TUI on the server itself (sudo xtune): users and addresses are managed here.
 func runServerTUI() {
 	lipgloss.SetHasDarkBackground(os.Getenv("XTUNE_LIGHT") == "")
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, errStyle.Render("error: ")+err.Error())
 		os.Exit(1)
@@ -141,6 +147,7 @@ func runServerTUI() {
 				huh.NewOption("Subscription server: public links", "sub"),
 				huh.NewOption("Addresses: direct / CDN domain", "addresses"),
 				huh.NewOption("Client routing: direct country", "country"),
+				huh.NewOption("Names: config and subscription names, country flag", "names"),
 				huh.NewOption("WARP: sites that refuse the server's IP", "warp"),
 				huh.NewOption("Alerts: Telegram / webhook", "notify"),
 				huh.NewOption("Manage from Telegram: links for @chthvpnbot", "manage"),
@@ -172,6 +179,8 @@ func runServerTUI() {
 			showErr(t.addresses())
 		case "country":
 			showErr(t.country())
+		case "names":
+			showErr(t.names())
 		case "warp":
 			showErr(t.warp())
 		case "notify":
@@ -197,7 +206,7 @@ func runServerTUI() {
 		case "logs":
 			showErr(t.logs())
 		case "uninstall":
-			if err := t.uninstall(); err != nil || !serverMode() {
+			if err := t.uninstall(); err != nil || !remote.Installed() {
 				showErr(err)
 				return
 			}
@@ -220,7 +229,7 @@ func (t *tui) connect() error {
 			return err
 		}
 	}
-	var c Conn
+	var c remote.Conn
 	if choice != "new" {
 		c, _ = findProfile(choice)
 	} else {
@@ -255,7 +264,7 @@ func (t *tui) connect() error {
 		}
 	}
 	fmt.Println(dimStyle.Render("connecting to " + c.Host + " ..."))
-	r, err := Dial(c, tuiPrompt)
+	r, err := remote.Dial(c, tuiPrompt)
 	if err != nil {
 		return err
 	}
@@ -308,7 +317,7 @@ func (t *tui) status() error {
 	}
 	fmt.Printf("  arch %s, xray-autotune: %s, xtune on server: %s%s\n", st.Arch, orStr(st.Unit, "-"), orStr(st.Xtune, "none"), mismatch)
 	fmt.Printf("  enforce timer: %s, subscription server: %s\n", orStr(st.Timer, "-"), orStr(st.Sub, "-"))
-	s, err := LoadState(t.r)
+	s, err := state.Load(t.r)
 	if err != nil {
 		return err
 	}
@@ -323,7 +332,7 @@ func (t *tui) status() error {
 	for _, e := range s.Entries {
 		fmt.Printf("  - %-14s %-15s port %d/%s\n", e.ID, e.Kind, e.Port, e.Proto())
 	}
-	us, err := LoadUsage(t.r)
+	us, err := state.LoadUsage(t.r)
 	if err != nil {
 		return err
 	}
@@ -333,7 +342,7 @@ func (t *tui) status() error {
 			online++
 		}
 	}
-	fmt.Printf("  users: %d, %d active, %d online now\n", len(s.Users), len(s.activeUsers(us, time.Now())), online)
+	fmt.Printf("  users: %d, %d active, %d online now\n", len(s.Users), len(activeUsers(s, us, time.Now())), online)
 	pause()
 	return nil
 }
@@ -399,7 +408,7 @@ func (t *tui) tune() error {
 		return err
 	}
 	o := TuneOpts{XrayBin: bin, CleanIPs: defaultCleanIPs}
-	old, err := LoadState(t.r)
+	old, err := state.Load(t.r)
 	if err != nil {
 		return err
 	}
@@ -494,7 +503,7 @@ func (t *tui) users() error {
 		if err != nil {
 			return err
 		}
-		us, err := LoadUsage(t.r)
+		us, err := state.LoadUsage(t.r)
 		if err != nil {
 			return err
 		}
@@ -522,7 +531,7 @@ func (t *tui) users() error {
 }
 
 // limitsForm asks for quota, expiry and device limits, prefilled from u.
-func (t *tui) limitsForm(u User, name *string) (Limits, error) {
+func (t *tui) limitsForm(u state.User, name *string) (Limits, error) {
 	quota, days, devices, reset := "", "", "", u.Reset
 	if u.Quota > 0 {
 		quota = strconv.FormatFloat(float64(u.Quota)/(1<<30), 'f', -1, 64)
@@ -566,7 +575,7 @@ func (t *tui) limitsForm(u User, name *string) (Limits, error) {
 	return l, nil
 }
 
-func (t *tui) userAction(st *State, action string) error {
+func (t *tui) userAction(st *state.State, action string) error {
 	if action == "add" {
 		var name string
 		plan, err := t.pickPlan(st, "Plan", "Custom limits")
@@ -581,7 +590,7 @@ func (t *tui) userAction(st *State, action string) error {
 				return err
 			}
 			l.Plan = &plan
-		} else if l, err = t.limitsForm(User{}, &name); err != nil {
+		} else if l, err = t.limitsForm(state.User{}, &name); err != nil {
 			return err
 		}
 		st, u, err := AddUser(t.r, strings.TrimSpace(name), l)
@@ -755,6 +764,49 @@ func (t *tui) country() error {
 	return SetCountry(t.r, code)
 }
 
+// ---------------------------------------------------------------- names (server)
+
+func (t *tui) names() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nNames"))
+	fmt.Println(describeNaming(st))
+	n := st.Naming
+	label, config, sub := n.Label, n.Config, n.Sub
+	country := "auto"
+	switch {
+	case n.Flag == "off":
+		country = "none"
+	case n.Flag != "" && !n.Detected:
+		country = strings.ToLower(n.Flag)
+	}
+	err = huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Server label ({server})").Description("Shown in config names, e.g. Frankfurt. Empty = none.").Value(&label),
+		huh.NewInput().Title("Country flag").Description("auto (looked up from the server's IP), none, or a code such as de, nl, fi.").
+			Value(&country).Validate(func(s string) error {
+			if s = strings.ToLower(strings.TrimSpace(s)); s == "auto" || s == "none" || protocols.ValidCountryCode(s) {
+				return nil
+			}
+			return fmt.Errorf("auto, none or a two-letter code")
+		}),
+		huh.NewInput().Title("Config names").Description("Empty = "+state.DefaultConfigName+"\n{"+strings.Join(configVars, "} {")+"}").
+			Value(&config).Validate(func(s string) error { return checkTemplate(s, configVars) }),
+		huh.NewInput().Title("Subscription name").Description("Empty = "+state.DefaultSubName+"\n{"+strings.Join(subVars, "} {")+"}").
+			Value(&sub).Validate(func(s string) error { return checkTemplate(s, subVars) }),
+	)).WithTheme(t.theme).Run()
+	if err != nil {
+		return err
+	}
+	st, err = SetNaming(t.r, NamingChange{Label: &label, Country: &country, Config: &config, Sub: &sub}, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Println(describeNaming(st))
+	return nil
+}
+
 // ---------------------------------------------------------------- addresses (server)
 
 func (t *tui) addresses() error {
@@ -896,7 +948,7 @@ func (m logModel) View() string {
 	return head + "\n" + m.vp.View() + "\n" + foot
 }
 
-func viewLogs(r *Server, unit string) error {
+func viewLogs(r *remote.Server, unit string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := make(chan string, 256)

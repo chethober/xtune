@@ -22,8 +22,19 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
-      - run: go test ./...
+      - run: go test -shuffle=on ./...
       - run: go build -trimpath -o xtune-bin .
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # amneziawg-go keeps its packet settings in package globals, which races when the AmneziaWG
+      # end-to-end tests run a server and clients in one process; xtune runs one device per process
+      - run: go test -race -skip 'TestAWGEndToEnd|TestAWGPeerReload' ./...
 
   lint:
     runs-on: ubuntu-latest
@@ -35,7 +46,9 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: shellcheck
-        run: shellcheck helper.sh install.sh
+        run: shellcheck internal/remote/helper.sh install.sh
+      - name: docs links
+        run: python3 scripts/check-links.py
 
   cross-build:
     runs-on: ubuntu-latest

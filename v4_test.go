@@ -10,19 +10,24 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/cloudflare"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // ---------------------------------------------------------------- quiet configs, daily usage
 
 func TestInboundStatsAndDailyUsage(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
+	r, fs := deployed(t, state.NewUser("ann"))
 	fs.stats = `{"stat":[{"name":"user>>>ann>>>traffic>>>downlink","value":3000},
 		{"name":"inbound>>>r-tcp>>>traffic>>>downlink","value":3000},{"name":"inbound>>>api>>>traffic>>>uplink","value":9}]}`
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
-	us, _ := LoadUsage(r)
-	if us.Users["ann"].Daily[dayKey(time.Now())] != 3000 {
+	us, _ := state.LoadUsage(r)
+	if us.Users["ann"].Daily[state.DayKey(time.Now())] != 3000 {
 		t.Errorf("daily: %v", us.Users["ann"].Daily)
 	}
 	if eu := us.Entries["r-tcp/443"]; eu == nil || eu.Bytes != 3000 || eu.Active == 0 {
@@ -31,10 +36,10 @@ func TestInboundStatsAndDailyUsage(t *testing.T) {
 	if eu := us.Entries["ss2022/30001"]; eu == nil || eu.Active != 0 {
 		t.Errorf("ss2022 carried nothing: %+v", eu)
 	}
-	if !strings.Contains(fs.files[remoteDir+"/config.json"], "statsInboundDownlink") {
+	if !strings.Contains(fs.files[remote.Dir+"/config.json"], "statsInboundDownlink") {
 		t.Error("the server config should count traffic per inbound")
 	}
-	st, _ := LoadState(r)
+	st, _ := state.Load(r)
 	p := pageData(st, st.Users[0], us.Users["ann"], time.Now(), "en")
 	if len(p.History) != 30 || p.History[29].Pct != 100 {
 		t.Errorf("page history: %+v", p.History)
@@ -44,10 +49,10 @@ func TestInboundStatsAndDailyUsage(t *testing.T) {
 func TestQuietConfigAlert(t *testing.T) {
 	got := captureAlerts(t)
 	st := testState()
-	st.Entries = []Entry{{ID: "r-tcp", Port: 443}, {ID: "hy2", Port: 8443}}
-	st.Notify = Notify{Webhook: "https://hooks.example.com/x"}
+	st.Entries = []state.Entry{{ID: "r-tcp", Port: 443}, {ID: "hy2", Port: 8443}}
+	st.Notify = state.Notify{Webhook: "https://hooks.example.com/x"}
 	now := time.Now()
-	us := &Usage{Entries: map[string]*EntryUsage{
+	us := &state.Usage{Entries: map[string]*state.EntryUsage{
 		"r-tcp/443": {First: now.Add(-5 * time.Hour).Unix(), Active: now.Add(-3 * time.Hour).Unix()},
 		"hy2/8443":  {First: now.Add(-5 * time.Hour).Unix(), Active: now.Add(-time.Minute).Unix()},
 	}}
@@ -58,7 +63,7 @@ func TestQuietConfigAlert(t *testing.T) {
 	}
 	// nobody uses anything (night): no alert for a fresh deployment either
 	*got = nil
-	us2 := &Usage{Entries: map[string]*EntryUsage{"r-tcp/443": {First: now.Add(-5 * time.Hour).Unix()},
+	us2 := &state.Usage{Entries: map[string]*state.EntryUsage{"r-tcp/443": {First: now.Add(-5 * time.Hour).Unix()},
 		"hy2/8443": {First: now.Add(-5 * time.Hour).Unix()}}}
 	notifyEntries(st, us2, now)
 	if len(*got) != 0 {
@@ -78,7 +83,7 @@ func TestQuietConfigAlert(t *testing.T) {
 // ---------------------------------------------------------------- encrypted backups
 
 func TestEncryptedBackup(t *testing.T) {
-	r, _ := deployed(t, NewUser("ann"))
+	r, _ := deployed(t, state.NewUser("ann"))
 	b, err := TakeBackup(r)
 	if err != nil {
 		t.Fatal(err)
@@ -105,8 +110,8 @@ func TestEncryptedBackup(t *testing.T) {
 // ---------------------------------------------------------------- plans
 
 func TestPlansAndRenew(t *testing.T) {
-	r, _ := deployed(t, NewUser("ann"))
-	if err := SetPlan(r, "basic", Plan{QuotaGB: 50, Days: 30, Devices: 2, Reset: "monthly"}); err != nil {
+	r, _ := deployed(t, state.NewUser("ann"))
+	if err := SetPlan(r, "basic", state.Plan{QuotaGB: 50, Days: 30, Devices: 2, Reset: "monthly"}); err != nil {
 		t.Fatal(err)
 	}
 	plan := "basic"
@@ -123,9 +128,9 @@ func TestPlansAndRenew(t *testing.T) {
 	}
 	// over quota and disabled: renewing extends from the current expiry, resets usage, enables
 	SetUserEnabled(r, "bob", false)
-	us, _ := LoadUsage(r)
-	us.of("bob").Down = 6 << 30
-	saveUsage(r, us)
+	us, _ := state.LoadUsage(r)
+	us.Of("bob").Down = 6 << 30
+	state.SaveUsage(r, us)
 	before := st.Users[1].Expires
 	_, nu, err := Renew(r, "bob", "", 0)
 	if err != nil {
@@ -134,7 +139,7 @@ func TestPlansAndRenew(t *testing.T) {
 	if !nu.Enabled || nu.Expires != time.Unix(before, 0).AddDate(0, 0, 30).Unix() {
 		t.Errorf("renewed bob: %+v (expired %d)", nu, before)
 	}
-	if us, _ = LoadUsage(r); us.Users["bob"] != nil && us.Users["bob"].Down != 0 {
+	if us, _ = state.LoadUsage(r); us.Users["bob"] != nil && us.Users["bob"].Down != 0 {
 		t.Error("renewal keeps the usage")
 	}
 	// a user without plan or expiry stays without expiry; with --days it gets one
@@ -152,7 +157,7 @@ func ptr[T any](v T) *T { return &v }
 
 type fakeCF struct {
 	mu      sync.Mutex
-	records map[string]cfRecord
+	records map[string]cloudflare.Record
 	ssl     string
 	calls   []string
 }
@@ -179,7 +184,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		result = J{"value": f.ssl}
 	case p == "/zones/z1/dns_records" && r.Method == "GET":
-		var out []cfRecord
+		var out []cloudflare.Record
 		for _, rec := range f.records {
 			if rec.Name == r.URL.Query().Get("name") {
 				out = append(out, rec)
@@ -187,7 +192,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		result = out
 	case p == "/zones/z1/dns_records" && r.Method == "POST":
-		var rec cfRecord
+		var rec cloudflare.Record
 		json.NewDecoder(r.Body).Decode(&rec)
 		rec.ID = "r" + rec.Name
 		f.records[rec.ID] = rec
@@ -207,28 +212,28 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestCloudflareDNSAndSSL(t *testing.T) {
-	f := &fakeCF{ssl: "flexible", records: map[string]cfRecord{
+	f := &fakeCF{ssl: "flexible", records: map[string]cloudflare.Record{
 		"a1": {ID: "a1", Type: "A", Name: "vpn.example.com", Content: "198.51.100.1"},
 		"a2": {ID: "a2", Type: "AAAA", Name: "vpn.example.com", Content: "2001:db8::1"},
 	}}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	old := cloudflareAPI
-	cloudflareAPI = srv.URL
-	defer func() { cloudflareAPI = old }()
-	st := &State{Domain: "vpn.example.com", CDNDomain: "cdn.example.com", Cloudflare: Cloudflare{Token: "t"}}
+	old := cloudflare.API
+	cloudflare.API = srv.URL
+	defer func() { cloudflare.API = old }()
+	st := &state.State{Domain: "vpn.example.com", CDNDomain: "cdn.example.com", Cloudflare: state.Cloudflare{Token: "t"}}
 	var log []string
 	if err := CloudflarePoint(st, "203.0.113.9", func(s string) { log = append(log, s) }); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]cfRecord{
+	want := map[string]cloudflare.Record{
 		"a1":               {ID: "a1", Type: "A", Name: "vpn.example.com", Content: "203.0.113.9"},
 		"rcdn.example.com": {ID: "rcdn.example.com", Type: "A", Name: "cdn.example.com", Content: "203.0.113.9", Proxied: true, TTL: 1},
 	}
 	if len(f.records) != 2 || f.records["a1"] != want["a1"] || f.records["rcdn.example.com"] != want["rcdn.example.com"] {
 		t.Errorf("records: %+v", f.records)
 	}
-	if mode, err := cfSSL("t", "cdn.example.com", true); err != nil || mode != "full" || f.ssl != "full" {
+	if mode, err := cloudflare.SSL("t", "cdn.example.com", true); err != nil || mode != "full" || f.ssl != "full" {
 		t.Errorf("ssl: %s %v", mode, err)
 	}
 }
@@ -236,22 +241,22 @@ func TestCloudflareDNSAndSSL(t *testing.T) {
 // ---------------------------------------------------------------- several servers
 
 func TestPrimaryAndFollower(t *testing.T) {
-	ann := NewUser("ann")
+	ann := state.NewUser("ann")
 	ann.Quota = 10 << 30
-	pr, _ := deployed(t, ann, NewUser("bob"))
-	st, _ := LoadState(pr)
-	st.CDNDomain, st.Sub = "cdn.example.com", SubConfig{Mode: "cdn", Port: 2053, Path: "subs"}
-	saveState(pr, st)
+	pr, _ := deployed(t, ann, state.NewUser("bob"))
+	st, _ := state.Load(pr)
+	st.CDNDomain, st.Sub = "cdn.example.com", state.SubConfig{Mode: "cdn", Port: 2053, Path: "subs"}
+	state.Save(pr, st)
 	if _, err := EnablePeers(pr); err != nil {
 		t.Fatal(err)
 	}
 	SetUserEnabled(pr, "bob", false)
-	load := func() (*State, *Usage, error) {
-		st, err := LoadState(pr)
+	load := func() (*state.State, *state.Usage, error) {
+		st, err := state.Load(pr)
 		if err != nil {
 			return nil, nil, err
 		}
-		us, err := LoadUsage(pr)
+		us, err := state.LoadUsage(pr)
 		return st, us, err
 	}
 	srv := httptest.NewTLSServer(subHandler{load: load, r: pr})
@@ -259,13 +264,13 @@ func TestPrimaryAndFollower(t *testing.T) {
 	old := peerClient
 	peerClient = srv.Client()
 	defer func() { peerClient = old }()
-	st, _ = LoadState(pr)
+	st, _ = state.Load(pr)
 	peerURL := srv.URL + "/subs/peer/" + st.Peers.Secret
 
-	fr, ffs := deployed(t, NewUser("local"))
-	fst, _ := LoadState(fr)
+	fr, ffs := deployed(t, state.NewUser("local"))
+	fst, _ := state.Load(fr)
 	fst.Host = "198.51.100.20"
-	saveState(fr, fst)
+	state.Save(fr, fst)
 	if _, err := SetFollow(fr, srv.URL+"/subs/peer/wrong", "de1"); err == nil {
 		t.Fatal("a wrong secret was accepted")
 	}
@@ -286,14 +291,14 @@ func TestPrimaryAndFollower(t *testing.T) {
 	}
 	ffs.stats = ""
 	Enforce(fr) // nothing new to report
-	us, _ := LoadUsage(pr)
+	us, _ := state.LoadUsage(pr)
 	if us.Users["ann"].Down != 5000 {
 		t.Errorf("primary's count of ann: %+v", us.Users["ann"])
 	}
 	// the primary's subscription lists the follower's configs, at the follower's address
-	st, _ = LoadState(pr)
+	st, _ = state.Load(pr)
 	var names []string
-	for _, l := range st.NamedLinks(st.Users[0]) {
+	for _, l := range protocols.NamedLinks(st, st.Users[0]) {
 		names = append(names, l.Name)
 		if strings.HasPrefix(l.Name, "de1-") && !strings.Contains(l.URL, "198.51.100.20") {
 			t.Errorf("follower link %s points elsewhere", l.URL)
@@ -302,7 +307,7 @@ func TestPrimaryAndFollower(t *testing.T) {
 	if got := strings.Join(names, ","); got != "r-tcp,ss2022,de1-r-tcp,de1-ss2022" {
 		t.Errorf("links: %s", got)
 	}
-	if fc, _ := json.Marshal(st.FailoverConfig(st.Users[0])); !strings.Contains(string(fc), "proxy-de1-r-tcp") {
+	if fc, _ := json.Marshal(protocols.FailoverConfig(st, st.Users[0])); !strings.Contains(string(fc), "proxy-de1-r-tcp") {
 		t.Error("the failover config lacks the follower")
 	}
 	if st.Peers.Servers["de1"].State.RealityPriv != "" {
@@ -314,35 +319,35 @@ func TestPrimaryAndFollower(t *testing.T) {
 
 func TestSNIRefresh(t *testing.T) {
 	got := captureAlerts(t)
-	r, fs := deployed(t, NewUser("ann"))
+	r, fs := deployed(t, state.NewUser("ann"))
 	fs.used = "SNI a.com fail\nSNI a.com fail\nSNI a.com fail\nSNI www.amd.com 2 0.050\nSNI www.nvidia.com 2 0.020\nSNI dl.google.com 1.1 0.010"
-	st, _ := LoadState(r)
-	st.Notify = Notify{Webhook: "https://hooks.example.com/x"}
-	saveState(r, st)
+	st, _ := state.Load(r)
+	st.Notify = state.Notify{Webhook: "https://hooks.example.com/x"}
+	state.Save(r, st)
 	if err := checkSNIs(r); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ = LoadState(r); st.Entries[0].SNI != "a.com" {
+	if st, _ = state.Load(r); st.Entries[0].SNI != "a.com" {
 		t.Fatal("changed a link without subscriptions")
 	}
 	if len(*got) != 1 || !strings.Contains((*got)[0], "use www.nvidia.com") {
 		t.Fatalf("alert: %v", *got)
 	}
 	*got = nil
-	st.CDNDomain, st.Sub = "cdn.example.com", SubConfig{Mode: "cdn", Port: 2053, Path: "subs"}
-	saveState(r, st)
+	st.CDNDomain, st.Sub = "cdn.example.com", state.SubConfig{Mode: "cdn", Port: 2053, Path: "subs"}
+	state.Save(r, st)
 	if err := checkSNIs(r); err != nil {
 		t.Fatal(err)
 	}
-	st, _ = LoadState(r)
-	if st.Entries[0].SNI != "www.nvidia.com" || !strings.Contains(fs.files[remoteDir+"/config.json"], "www.nvidia.com:443") {
+	st, _ = state.Load(r)
+	if st.Entries[0].SNI != "www.nvidia.com" || !strings.Contains(fs.files[remote.Dir+"/config.json"], "www.nvidia.com:443") {
 		t.Errorf("not refreshed: %+v", st.Entries[0])
 	}
 	if len(*got) != 1 || !strings.Contains((*got)[0], "changed REALITY targets") {
 		t.Errorf("alert: %v", *got)
 	}
 	// weekly
-	us := &Usage{}
+	us := &state.Usage{}
 	now := time.Now()
 	if sniDue(st, us, now) || us.SNIAt == 0 || sniDue(st, us, now.Add(time.Hour)) || !sniDue(st, us, now.Add(8*24*time.Hour)) {
 		t.Error("sniDue schedule")

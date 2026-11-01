@@ -3,6 +3,49 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-11-01
+
+The first stable release: from here on, `state.json`, backups, commands and flags, `--json` output and users'
+links stay compatible across 1.x (see [docs/compatibility.md](docs/compatibility.md)).
+
+### Added
+- Country flags: config names in apps start with the flag of the country the server is in (looked up from its
+  IP with Team Cymru's DNS service, again after `xtune migrate`; or chosen with `xtune names --country de`).
+  Followers keep their own flags in the primary's subscriptions.
+- `xtune names` (and *Names* in the server TUI): a server label and templates for config names
+  (`{flag} {country} {server} {user} {id} {proto} {port} {via}`) and the subscription's name in apps
+  (`Profile-Title` and the failover config). Without templates, names stay as before: `USER-ID` and
+  `xtune - USER`, after the flag.
+- Multi-hop through a relay (`xtune relay add NAME --ssh RELAY_HOST`, and *Relays* in the TUI): a server in your
+  users' own country forwards ports to the main server (client → relay → server), for networks that filter
+  international routes more than domestic ones. The relay runs only an Xray port forwarder (unit
+  `xray-autotune-relay`): no keys and no users, so REALITY, Hysteria2, WireGuard and the SSH tunnels still end at
+  the main server. Each TCP port is measured from the relay and left out when it cannot be reached. Configs through
+  the relay join every subscription and the failover config as `RELAY-ID`, with the main server's flag
+  (`{via}` names the relay in custom templates). `xtune relay sync` updates a relay after a redeploy or a move;
+  until then its changed configs are left out of subscriptions, and `xtune doctor` says so.
+- Named subscription import links: the user's page and `xtune users links` give one-tap links that add the
+  subscription under its name to v2rayNG, Hiddify, Streisand and sing-box.
+
+### Changed
+- `state.json` and `usage.json` carry a schema number (`"schema": 1`). Files from every 0.x release are read and
+  migrated (the only change: users' links to the Telegram bot removed in 0.7.0 are dropped); files from a newer
+  xtune are refused instead of being rewritten without the fields this release does not know. Backups go through
+  the same migrations. Tests read what each release from 0.1.0 to 0.10.1 wrote, with every field set.
+- Internal: the server transport (SSH and local command execution, the state lock and the embedded `helper.sh`)
+  moved to `internal/remote`. No change in behaviour.
+- Internal: the data model and its storage (`State`, `Entry`, `User`, `Usage` and the settings they hold, with
+  reading and writing `state.json` and `usage.json`) moved to `internal/state`. The format of both files is
+  unchanged.
+- Internal: building configs, share links, subscriptions, names and the VPN, tunnel and AmneziaWG profiles moved to
+  `internal/protocols`.
+- Internal: the Cloudflare API client moved to `internal/cloudflare`, and network and country lookups to
+  `internal/netinfo`.
+- CI runs the tests in random order, with the race detector, and checks the docs' links.
+
+### Fixed
+- Tests that failed when run more than once in a process (`-count`), because of a shared join limiter and ASN cache.
+
 ## [0.10.1] - 2026-10-28
 
 ### Fixed
@@ -299,6 +342,9 @@ All notable changes to this project are documented here. The format follows
 - Safety: interrupt-safe cleanup, self-expiring server test instance, private-address blocking in deployed configs.
 - One-line installers for Linux, macOS, FreeBSD and Windows.
 
+[1.0.0]: https://github.com/chethober/xtune/compare/v0.10.1...v1.0.0
+[0.10.1]: https://github.com/chethober/xtune/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/chethober/xtune/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/chethober/xtune/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/chethober/xtune/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/chethober/xtune/compare/v0.8.0...v0.9.0

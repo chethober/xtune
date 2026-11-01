@@ -5,6 +5,9 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Traffic per deployed config: Xray counts it per inbound. A config that carries nothing for
@@ -18,17 +21,17 @@ const (
 )
 
 // countEntries adds this run's traffic per inbound tag and forgets configs no longer deployed.
-func countEntries(st *State, us *Usage, byTag map[string]int64, now time.Time) {
+func countEntries(st *state.State, us *state.Usage, byTag map[string]int64, now time.Time) {
 	if us.Entries == nil {
-		us.Entries = map[string]*EntryUsage{}
+		us.Entries = map[string]*state.EntryUsage{}
 	}
 	keep := map[string]bool{}
 	for _, e := range st.Entries {
-		k := entryKey(e)
+		k := state.EntryKey(e)
 		keep[k] = true
 		eu := us.Entries[k]
 		if eu == nil {
-			eu = &EntryUsage{First: now.Unix()}
+			eu = &state.EntryUsage{First: now.Unix()}
 			us.Entries[k] = eu
 		}
 		if n := byTag[e.ID]; n > 0 {
@@ -46,10 +49,10 @@ func countEntries(st *State, us *Usage, byTag map[string]int64, now time.Time) {
 // quietEntries are the deployed configs that look blocked: nothing for quietAfter, while another
 // config carried traffic within busyWithin. Without inbound stats (older deployments) nothing is
 // ever active, so nothing is reported.
-func quietEntries(st *State, us *Usage, now time.Time) map[string]time.Duration {
+func quietEntries(st *state.State, us *state.Usage, now time.Time) map[string]time.Duration {
 	busy := false
 	for _, e := range st.Entries {
-		if eu := us.Entries[entryKey(e)]; eu != nil && now.Unix()-eu.Active < int64(busyWithin/time.Second) {
+		if eu := us.Entries[state.EntryKey(e)]; eu != nil && now.Unix()-eu.Active < int64(busyWithin/time.Second) {
 			busy = true
 		}
 	}
@@ -58,7 +61,7 @@ func quietEntries(st *State, us *Usage, now time.Time) map[string]time.Duration 
 		return out
 	}
 	for _, e := range st.Entries {
-		eu := us.Entries[entryKey(e)]
+		eu := us.Entries[state.EntryKey(e)]
 		if eu == nil {
 			continue
 		}
@@ -71,7 +74,7 @@ func quietEntries(st *State, us *Usage, now time.Time) map[string]time.Duration 
 }
 
 // notifyEntries alerts when a config goes quiet and when it carries traffic again.
-func notifyEntries(st *State, us *Usage, now time.Time) {
+func notifyEntries(st *state.State, us *state.Usage, now time.Time) {
 	quiet := quietEntries(st, us, now)
 	ids := map[string]bool{}
 	for _, e := range st.Entries {
@@ -79,7 +82,7 @@ func notifyEntries(st *State, us *Usage, now time.Time) {
 		key := quietPrefix + e.ID
 		d, isQuiet := quiet[e.ID]
 		if !isQuiet && us.Notified[key] != 0 && st.Notify.On() {
-			eu := us.Entries[entryKey(e)]
+			eu := us.Entries[state.EntryKey(e)]
 			if eu != nil && eu.Active > us.Notified[key] {
 				if sendAlert(st.Notify, st.Addr(), "config-back", e.ID+" carries traffic again") != nil {
 					continue // keep the alert, so the next run retries
@@ -125,7 +128,7 @@ func sparkline(vals []int64) string {
 }
 
 // printUsageHistory shows a user's traffic per day over the last 30 days.
-func printUsageHistory(w io.Writer, r *Server, name string) error {
+func printUsageHistory(w io.Writer, r *remote.Server, name string) error {
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -133,12 +136,12 @@ func printUsageHistory(w io.Writer, r *Server, name string) error {
 	if _, u := st.User(name); u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	us, err := LoadUsage(r)
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
-	days := orUsage(us.Users[name]).lastDays(now, 30)
+	days := orUsage(us.Users[name]).LastDays(now, 30)
 	total := int64(0)
 	for _, v := range days {
 		total += v
@@ -146,7 +149,7 @@ func printUsageHistory(w io.Writer, r *Server, name string) error {
 	fmt.Fprintf(w, "%s, last 30 days: %s  %s\n\n", name, sparkline(days), fmtBytes(total))
 	for i := len(days) - 1; i >= 0; i-- {
 		if days[i] > 0 {
-			fmt.Fprintf(w, "%s  %s\n", dayKey(now.AddDate(0, 0, i-len(days)+1)), fmtBytes(days[i]))
+			fmt.Fprintf(w, "%s  %s\n", state.DayKey(now.AddDate(0, 0, i-len(days)+1)), fmtBytes(days[i]))
 		}
 	}
 	return nil

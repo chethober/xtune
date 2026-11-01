@@ -17,6 +17,9 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Clean IPs: on many censored networks, part of Cloudflare's edge is blocked or throttled, and
@@ -109,7 +112,7 @@ func sampleCF(n int, rnd *mrand.Rand) []string {
 // variable so tests can stand in for the edge.
 var cfProbe = func(ctx context.Context, ip string, port int, sni string) (string, error) {
 	var d net.Dialer
-	c, err := d.DialContext(ctx, "tcp", hostPort(ip, port))
+	c, err := d.DialContext(ctx, "tcp", protocols.HostPort(ip, port))
 	if err != nil {
 		return "", err
 	}
@@ -218,8 +221,8 @@ func ScanCleanIPs(o ScanOpts) []CleanIP {
 // ---------------------------------------------------------------- tuning through clean IPs
 
 // cleanIPTargets are the CDN and Worker entries, by the hostname and port the scan must use.
-func cleanIPTargets(st *State, entries []Entry) map[string][]Entry {
-	out := map[string][]Entry{}
+func cleanIPTargets(st *state.State, entries []state.Entry) map[string][]state.Entry {
+	out := map[string][]state.Entry{}
 	for _, e := range entries {
 		if !e.Xray() || !e.CDN() && !e.Worker() {
 			continue
@@ -231,7 +234,7 @@ func cleanIPTargets(st *State, entries []Entry) map[string][]Entry {
 		if host == "" {
 			continue
 		}
-		k := hostPort(host, port)
+		k := protocols.HostPort(host, port)
 		out[k] = append(out[k], e)
 	}
 	return out
@@ -239,7 +242,7 @@ func cleanIPTargets(st *State, entries []Entry) map[string][]Entry {
 
 // addCleanIPVariants scans for clean IPs for every CDN and Worker hostname and adds, for each
 // such entry, its plainest variant dialed through each one.
-func addCleanIPVariants(st *State, entries []Entry, vs []*Variant, keep int, log func(string)) []*Variant {
+func addCleanIPVariants(st *state.State, entries []state.Entry, vs []*Variant, keep int, log func(string)) []*Variant {
 	if keep <= 0 {
 		return vs
 	}
@@ -295,7 +298,7 @@ func cmdCFScan(args []string) error {
 		if err != nil {
 			return err
 		}
-		st, err := LoadState(r)
+		st, err := state.Load(r)
 		r.Close()
 		if err != nil {
 			return err

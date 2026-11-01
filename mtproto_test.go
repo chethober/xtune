@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // mtprotoClientFrame builds the first 64 bytes a Telegram client sends for user key and DC: a
@@ -20,14 +23,14 @@ func mtprotoClientFrame(key []byte, dc int) (enc []byte, send, recv interface {
 	frame := mtprotoFrame(dc)
 	s := ctrStream(frame, key)
 	r := ctrStream(reversed(frame), key)
-	enc = make([]byte, mtprotoFrameLen)
+	enc = make([]byte, protocols.MTProtoFrameLen)
 	s.XORKeyStream(enc, frame)
 	copy(enc[8:56], frame[8:56])
 	return enc, s, r
 }
 
 func TestMTProtoObfuscationRoundTrip(t *testing.T) {
-	key := mtprotoKey(NewUser("ann"))
+	key := protocols.MTProtoKey(state.NewUser("ann"))
 	enc, _, _ := mtprotoClientFrame(key, 3)
 
 	// what the server reads: the same key recovers the DC and a de-obfuscating conn.
@@ -46,19 +49,19 @@ func TestMTProtoObfuscationRoundTrip(t *testing.T) {
 	}
 
 	// a wrong key does not authenticate.
-	if _, _, ok := mtprotoReadHandshake(srv, enc, mtprotoKey(NewUser("bob"))); ok {
+	if _, _, ok := mtprotoReadHandshake(srv, enc, protocols.MTProtoKey(state.NewUser("bob"))); ok {
 		t.Error("handshake authenticated with the wrong key")
 	}
 }
 
 func TestMTProtoSecretAndLink(t *testing.T) {
-	u := NewUser("ann")
-	sec := mtprotoSecret(u)
-	if len(sec) != 2+2*mtprotoKeyLen || sec[:2] != "dd" {
-		t.Errorf("secret %q: want dd + %d hex chars", sec, 2*mtprotoKeyLen)
+	u := state.NewUser("ann")
+	sec := protocols.MTProtoSecret(u)
+	if len(sec) != 2+2*protocols.MTProtoKeyLen || sec[:2] != "dd" {
+		t.Errorf("secret %q: want dd + %d hex chars", sec, 2*protocols.MTProtoKeyLen)
 	}
-	st := &State{Host: "203.0.113.10"}
-	link := st.mtprotoLink(Entry{ID: "mtproto", Port: 443}, u)
+	st := &state.State{Host: "203.0.113.10"}
+	link := protocols.MTProtoLink(st, state.Entry{ID: "mtproto", Port: 443}, u)
 	for _, want := range []string{"t.me/proxy", "203.0.113.10", "443", sec} {
 		if !strings.Contains(link, want) {
 			t.Errorf("link %q missing %q", link, want)
@@ -82,7 +85,7 @@ func TestMTProtoRelay(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		hdr := make([]byte, mtprotoFrameLen)
+		hdr := make([]byte, protocols.MTProtoFrameLen)
 		if _, err := io.ReadFull(c, hdr); err != nil {
 			return
 		}
@@ -98,11 +101,11 @@ func TestMTProtoRelay(t *testing.T) {
 		return net.Dial("tcp", dcLn.Addr().String())
 	}
 
-	ts := &tunnelServer{users: map[string]TunnelUser{}, sessions: map[*tunSession]bool{}, mt: map[*mtSession]bool{},
+	ts := &tunnelServer{users: map[string]protocols.TunnelUser{}, sessions: map[*tunSession]bool{}, mt: map[*mtSession]bool{},
 		boot: "test", traffic: map[string]*[2]atomic.Int64{}, entries: map[string]*atomic.Int64{}}
 	ts.entries["mt"] = &atomic.Int64{}
-	u := NewUser("ann")
-	ts.setUsers([]TunnelUser{{Name: "ann", MT: mtHex(u)}})
+	u := state.NewUser("ann")
+	ts.setUsers([]protocols.TunnelUser{{Name: "ann", MT: mtHex(u)}})
 
 	cliLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -124,7 +127,7 @@ func TestMTProtoRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	enc, send, recv := mtprotoClientFrame(mtprotoKey(u), 2)
+	enc, send, recv := mtprotoClientFrame(protocols.MTProtoKey(u), 2)
 	if _, err := conn.Write(enc); err != nil {
 		t.Fatal(err)
 	}
@@ -157,4 +160,4 @@ func TestMTProtoRelay(t *testing.T) {
 }
 
 // mtHex is the user's MTProto key in hex, as TunnelConf stores it.
-func mtHex(u User) string { return hex.EncodeToString(mtprotoKey(u)) }
+func mtHex(u state.User) string { return hex.EncodeToString(protocols.MTProtoKey(u)) }

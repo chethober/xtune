@@ -16,6 +16,10 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // TestCheckEndToEnd runs a real local Xray as the "server" and measures it with xtune check.
@@ -26,18 +30,18 @@ func TestCheckEndToEnd(t *testing.T) {
 	}
 	bin := localXray(t)
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "127.0.0.1"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "127.0.0.1"}}
 	st, err := NewState("127.0.0.1", bin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ports, _ := freePorts(6)
-	st.Entries = []Entry{{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: ports[0]}, {ID: "ss2022", Kind: "ss2022", Port: ports[1]},
+	st.Entries = []state.Entry{{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: ports[0]}, {ID: "ss2022", Kind: "ss2022", Port: ports[1]},
 		// one-port "range": the client still runs its port-hopping code against the real server
 		{ID: "hy2-hop", Kind: "hysteria2", Port: ports[2], Hop: itoa(ports[2]) + "-" + itoa(ports[2])},
 		{ID: "wg", Kind: "wireguard", Port: ports[3], MTU: 1280},
 		{ID: "ssh", Kind: "ssh", Port: ports[4], Mode: "ws"}, {ID: "ssh-tls", Kind: "ssh-tls", Port: ports[5], SNI: "www.bing.com"}}
-	st.Users = []User{NewUser("ann")}
+	st.Users = []state.User{state.NewUser("ann")}
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "hy.crt"), []byte(st.CertPEM), 0o600)
 	os.WriteFile(filepath.Join(dir, "hy.key"), []byte(st.KeyPEM), 0o600)
 	var cfg J
-	json.Unmarshal([]byte(fs.files[remoteDir+"/config.json"]), &cfg)
+	json.Unmarshal([]byte(fs.files[remote.Dir+"/config.json"]), &cfg)
 	inbounds := []J{}
 	for _, ib := range cfg["inbounds"].([]any) {
 		inbounds = append(inbounds, ib.(map[string]any))
@@ -67,8 +71,8 @@ func TestCheckEndToEnd(t *testing.T) {
 	}
 	defer func() { srv.Process.Kill(); srv.Wait() }()
 	// the SSH tunnels: xtune's own server, in this process, with the config the deploy wrote
-	var tc TunnelConf
-	json.Unmarshal([]byte(fs.files[remoteDir+"/tunnels.json"]), &tc)
+	var tc protocols.TunnelConf
+	json.Unmarshal([]byte(fs.files[remote.Dir+"/tunnels.json"]), &tc)
 	tc.Stats = filepath.Join(dir, "tunnels-stats.json")
 	writeJSON(filepath.Join(dir, "tunnels.json"), tc)
 	go runTunnels(filepath.Join(dir, "tunnels.json"), nil)
@@ -97,7 +101,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	}
 	bin := localXray(t)
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "127.0.0.1"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "127.0.0.1"}}
 	st, err := NewState("127.0.0.1", bin)
 	if err != nil {
 		t.Fatal(err)
@@ -106,9 +110,9 @@ func TestSplitEndToEnd(t *testing.T) {
 	caPEM := testCA(t, st) // the server certificate, signed by a CA the client trusts
 
 	ports, _ := freePorts(2)
-	st.Entries = []Entry{{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: ports[0], Path: "/a", Mode: "packet-up"},
+	st.Entries = []state.Entry{{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: ports[0], Path: "/a", Mode: "packet-up"},
 		{ID: "cdn-split", Kind: "cdn-xhttp", Port: ports[1], Path: "/b", Mode: "packet-up", Split: "cdn-up"}}
-	st.Users = []User{NewUser("ann")}
+	st.Users = []state.User{state.NewUser("ann")}
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +121,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "hy.key"), []byte(st.KeyPEM), 0o600)
 	os.WriteFile(filepath.Join(dir, "ca.crt"), caPEM, 0o600)
 	var cfg J
-	json.Unmarshal([]byte(fs.files[remoteDir+"/config.json"]), &cfg)
+	json.Unmarshal([]byte(fs.files[remote.Dir+"/config.json"]), &cfg)
 	inbounds := []J{}
 	for _, ib := range cfg["inbounds"].([]any) {
 		inbounds = append(inbounds, ib.(map[string]any))
@@ -142,7 +146,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	cport, _ := freePorts(len(st.Entries))
 	ccfg := J{"log": J{"loglevel": "warning"}, "inbounds": []J{}, "outbounds": []J{}, "routing": J{"rules": []J{}}}
 	for i, e := range st.Entries {
-		ob := st.Outbound(e, st.Users[0], e.Knobs(), "out"+itoa(i))
+		ob := protocols.Outbound(st, e, st.Users[0], e.Knobs(), "out"+itoa(i))
 		ob["streamSettings"].(J)["tlsSettings"].(J)["certificates"] = []J{{"usage": "verify", "certificateFile": filepath.Join(dir, "ca.crt")}}
 		ccfg["outbounds"] = append(ccfg["outbounds"].([]J), ob)
 		ccfg["inbounds"] = append(ccfg["inbounds"].([]J), J{"tag": "in" + itoa(i), "listen": "127.0.0.1", "port": cport[i], "protocol": "socks"})
@@ -172,7 +176,7 @@ func TestSplitEndToEnd(t *testing.T) {
 }
 
 // testCA gives st a certificate for localhost signed by a new CA and returns the CA's PEM.
-func testCA(t *testing.T, st *State) []byte {
+func testCA(t *testing.T, st *state.State) []byte {
 	t.Helper()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	ca := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "xtune test CA"}, IsCA: true,

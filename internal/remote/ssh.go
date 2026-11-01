@@ -1,4 +1,4 @@
-package main
+package remote
 
 import (
 	"bufio"
@@ -93,7 +93,7 @@ func Dial(cfg Conn, ask Prompter) (*Server, error) {
 		client.Close()
 		return nil, err
 	}
-	return &Server{sh: t, Conn: cfg}, nil
+	return &Server{Transport: t, Conn: cfg}, nil
 }
 
 func isAuthErr(err error) bool {
@@ -196,12 +196,12 @@ func (r *sshTransport) setupSudo(ask Prompter) error {
 	if r.isRoot {
 		return nil
 	}
-	if _, _, err := r.exec("true", "", true); err == nil {
+	if _, _, err := r.Exec("true", "", true); err == nil {
 		return nil // passwordless sudo
 	}
 	try := func(pw string) bool {
 		r.sudoPass = &pw
-		_, _, err := r.exec("true", "", true)
+		_, _, err := r.Exec("true", "", true)
 		return err == nil
 	}
 	if r.password != "" && try(r.password) {
@@ -228,12 +228,12 @@ func (r *sshTransport) wrap(cmd, stdin string, sudo bool) (string, string) {
 		return cmd, stdin
 	}
 	if r.sudoPass != nil {
-		return "sudo -S -p '' bash -c " + shq(cmd), *r.sudoPass + "\n" + stdin
+		return "sudo -S -p '' bash -c " + Quote(cmd), *r.sudoPass + "\n" + stdin
 	}
-	return "sudo -n bash -c " + shq(cmd), stdin
+	return "sudo -n bash -c " + Quote(cmd), stdin
 }
 
-func (r *sshTransport) exec(cmd, stdin string, sudo bool) (string, string, error) {
+func (r *sshTransport) Exec(cmd, stdin string, sudo bool) (string, string, error) {
 	s, err := r.c.NewSession()
 	if err != nil {
 		return "", "", err
@@ -248,7 +248,7 @@ func (r *sshTransport) exec(cmd, stdin string, sudo bool) (string, string, error
 	return out.String(), errb.String(), err
 }
 
-func (r *sshTransport) stream(ctx context.Context, cmd string, fn func(string)) error {
+func (r *sshTransport) Stream(ctx context.Context, cmd string, fn func(string)) error {
 	s, err := r.c.NewSession()
 	if err != nil {
 		return err
@@ -271,12 +271,12 @@ func (r *sshTransport) stream(ctx context.Context, cmd string, fn func(string)) 
 	return nil
 }
 
-func (r *sshTransport) close() { r.c.Close() }
+func (r *sshTransport) Close() { r.c.Close() }
 
 // Console runs cmd on the server in an interactive terminal; this is how a client reaches the
 // server-side TUI. sudo, when needed, prompts inside that terminal.
 func (r *Server) Console(cmd string) error {
-	t, ok := r.sh.(*sshTransport)
+	t, ok := r.Transport.(*sshTransport)
 	if !ok {
 		return errors.New("the console needs an SSH connection")
 	}

@@ -12,6 +12,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/cloudflare"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // The autopilot watches for the server's IP being blocked: every config that is reached at the
@@ -23,24 +27,16 @@ import (
 // the direct domain's DNS record follows (with a Cloudflare token), and subscriptions hand users
 // configs with the new address. At most once a day.
 
-// Autopilot is the provider the server can get a new IP from.
-type Autopilot struct {
-	Provider string `json:"provider"`          // digitalocean
-	Token    string `json:"token"`             // API token (write access to reserved IPs)
-	Droplet  int64  `json:"droplet,omitempty"` // this server's droplet ID
-	Owned    string `json:"owned,omitempty"`   // the reserved IP xtune assigned, released at the next move
-}
-
 const (
 	rotateEvery   = 24 * time.Hour
 	checkSignalIn = 6 * time.Hour // how recent a check must be to count
 )
 
-// relayed entries are not reached at the server's address, so they keep working when it is blocked.
-func (e Entry) relayed() bool { return e.CDN() || e.Worker() || e.Kind == "dnstt" }
+// isRelayed entries are not reached at the server's address, so they keep working when it is blocked.
+func isRelayed(e state.Entry) bool { return e.CDN() || e.Worker() || e.Kind == "dnstt" }
 
 // ipBlocked reports whether the server's IP looks blocked, by either signal, and why.
-func ipBlocked(st *State, us *Usage, now time.Time) (bool, string) {
+func ipBlocked(st *state.State, us *state.Usage, now time.Time) (bool, string) {
 	if b, why := blockConfirmed(st, us, now); b {
 		return b, why
 	}
@@ -48,9 +44,9 @@ func ipBlocked(st *State, us *Usage, now time.Time) (bool, string) {
 }
 
 // splitRelayed sorts the entries into those reached at the server's address and the relayed ones.
-func splitRelayed(st *State) (direct, relayed []Entry) {
+func splitRelayed(st *state.State) (direct, relayed []state.Entry) {
 	for _, e := range st.Entries {
-		if e.relayed() {
+		if isRelayed(e) {
 			relayed = append(relayed, e)
 		} else {
 			direct = append(direct, e)
@@ -62,15 +58,15 @@ func splitRelayed(st *State) (direct, relayed []Entry) {
 // blockedByTraffic is the traffic signal: every direct config quiet for 2 hours while a relayed
 // one is in use. It is a hint, not proof (a few users whose apps prefer the CDN config look the
 // same), so it only alerts.
-func blockedByTraffic(st *State, us *Usage, now time.Time) (bool, string) {
+func blockedByTraffic(st *state.State, us *state.Usage, now time.Time) (bool, string) {
 	direct, relayed := splitRelayed(st)
 	if len(direct) == 0 || len(relayed) == 0 {
 		return false, "" // nothing to tell a blocked IP from an idle server
 	}
 	quiet := quietEntries(st, us, now)
-	allQuiet := !slices.ContainsFunc(direct, func(e Entry) bool { return quiet[e.ID] == 0 })
-	relayBusy := slices.ContainsFunc(relayed, func(e Entry) bool {
-		eu := us.Entries[entryKey(e)]
+	allQuiet := !slices.ContainsFunc(direct, func(e state.Entry) bool { return quiet[e.ID] == 0 })
+	relayBusy := slices.ContainsFunc(relayed, func(e state.Entry) bool {
+		eu := us.Entries[state.EntryKey(e)]
 		return eu != nil && now.Unix()-eu.Active < int64(busyWithin/time.Second)
 	})
 	if allQuiet && relayBusy {
@@ -81,7 +77,7 @@ func blockedByTraffic(st *State, us *Usage, now time.Time) (bool, string) {
 
 // blockConfirmed is the check signal: a recent check from some network (since the last move)
 // found every direct config blocked while a relayed one worked. Only this one moves the server.
-func blockConfirmed(st *State, us *Usage, now time.Time) (bool, string) {
+func blockConfirmed(st *state.State, us *state.Usage, now time.Time) (bool, string) {
 	direct, relayed := splitRelayed(st)
 	if len(direct) == 0 || len(relayed) == 0 {
 		return false, ""
@@ -92,12 +88,12 @@ func blockConfirmed(st *State, us *Usage, now time.Time) (bool, string) {
 		}
 		blocked, measured := true, 0
 		for _, e := range direct {
-			if s, ok := nr.Scores[entryKey(e)]; ok {
+			if s, ok := nr.Scores[state.EntryKey(e)]; ok {
 				measured++
 				blocked = blocked && s == 0
 			}
 		}
-		works := slices.ContainsFunc(relayed, func(e Entry) bool { return nr.Scores[entryKey(e)] > 0 })
+		works := slices.ContainsFunc(relayed, func(e state.Entry) bool { return nr.Scores[state.EntryKey(e)] > 0 })
 		if measured > 0 && blocked && works {
 			return true, fmt.Sprintf("a check from %s found every config at the server's address blocked while the CDN or Worker configs worked", orStr(nr.Name, asn))
 		}
@@ -107,7 +103,7 @@ func blockConfirmed(st *State, us *Usage, now time.Time) (bool, string) {
 
 // runAutopilot alerts when the IP looks blocked and, with a provider, moves the server to a new
 // IP (the enforce job runs it every minute, under the server lock).
-func runAutopilot(r *Server, st *State, us *Usage, now time.Time) {
+func runAutopilot(r *remote.Server, st *state.State, us *state.Usage, now time.Time) {
 	blocked, why := ipBlocked(st, us, now)
 	confirmed, _ := blockConfirmed(st, us, now)
 	ap := st.Autopilot
@@ -139,7 +135,7 @@ func runAutopilot(r *Server, st *State, us *Usage, now time.Time) {
 }
 
 // rotateIP gets the server a new IP from the provider and points clients at it.
-func rotateIP(r *Server, st *State, us *Usage, now time.Time) (string, error) {
+func rotateIP(r *remote.Server, st *state.State, us *state.Usage, now time.Time) (string, error) {
 	ap := st.Autopilot
 	if ap == nil || ap.Provider != "digitalocean" {
 		return "", errors.New("no provider to get a new IP from (xtune autopilot digitalocean)")
@@ -157,22 +153,22 @@ func rotateIP(r *Server, st *State, us *Usage, now time.Time) (string, error) {
 	}
 	ap.Owned, st.ClientIP, us.RotatedAt = ip, ip, now.Unix()
 	for _, e := range st.Entries { // the configs start over: quiet now means nothing yet
-		if eu := us.Entries[entryKey(e)]; eu != nil {
+		if eu := us.Entries[state.EntryKey(e)]; eu != nil {
 			eu.First, eu.Active = now.Unix(), 0
 		}
 	}
 	delete(us.Notified, "ip-blocked")
 	if st.Domain != "" && st.Cloudflare.Token != "" {
-		if msg, err := cfPoint(st.Cloudflare.Token, st.Domain, ip, false); err != nil {
+		if msg, err := cloudflare.Point(st.Cloudflare.Token, st.Domain, ip, false); err != nil {
 			fmt.Println("autopilot: the direct domain's DNS record:", err)
 		} else {
 			fmt.Println("autopilot: DNS", msg)
 		}
 	}
-	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") {
+	if state.HasEngine(st.Entries, "openvpn") || state.HasEngine(st.Entries, "ikev2") {
 		return ip, Apply(r, st) // the VPN certificate names the address
 	}
-	return ip, saveState(r, st)
+	return ip, state.Save(r, st)
 }
 
 // ---------------------------------------------------------------- DigitalOcean
@@ -310,7 +306,7 @@ func cmdAutopilot(args []string) error {
 	if err := serverOnly("autopilot", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -318,12 +314,12 @@ func cmdAutopilot(args []string) error {
 	if len(args) > 0 {
 		action = args[0]
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
 	}
-	us, err := LoadUsage(r)
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return err
 	}
@@ -352,7 +348,7 @@ func cmdAutopilot(args []string) error {
 				return err
 			}
 		}
-		ap := &Autopilot{Provider: "digitalocean", Token: strings.TrimSpace(tok)}
+		ap := &state.Autopilot{Provider: "digitalocean", Token: strings.TrimSpace(tok)}
 		if ap.Droplet, err = doDropletID(ap.Token, st.Host); err != nil {
 			return err
 		}
@@ -364,7 +360,7 @@ func cmdAutopilot(args []string) error {
 		if st.Domain != "" && st.Cloudflare.Token == "" {
 			fmt.Println("note: links use the direct domain; set a Cloudflare token (xtune cloudflare token) so its DNS record follows")
 		}
-		return saveState(r, st)
+		return state.Save(r, st)
 	case "rotate", "move":
 		if st.Autopilot == nil {
 			return errors.New("no provider: xtune autopilot digitalocean")
@@ -374,14 +370,14 @@ func cmdAutopilot(args []string) error {
 			return err
 		}
 		fmt.Println("clients now connect to", ip)
-		return saveUsage(r, us)
+		return state.SaveUsage(r, us)
 	case "off":
 		st.Autopilot = nil
 		fmt.Println("autopilot: alerts only")
-		return saveState(r, st)
+		return state.Save(r, st)
 	case "reset": // back to the droplet's own address
 		st.ClientIP = ""
-		return saveState(r, st)
+		return state.Save(r, st)
 	}
 	return fmt.Errorf("unknown autopilot action %q (status, digitalocean, rotate, off, reset)", action)
 }

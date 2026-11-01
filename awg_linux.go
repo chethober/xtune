@@ -8,10 +8,11 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // awgServerDevice brings up entry e on its own TUN interface with the server's tunnel address.
-func awgServerDevice(e Entry, uapi string) (*device.Device, error) {
+func awgServerDevice(e state.Entry, uapi string) (*device.Device, error) {
 	name := awgIface(e)
 	t, err := tun.CreateTUN(name, 1420)
 	if err != nil {

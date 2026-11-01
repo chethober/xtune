@@ -1,0 +1,80 @@
+xtune - Xray tuner and manager
+
+On your computer (client):
+  xtune                                    interactive TUI: connect, tune, deploy, open the server console
+  xtune tune      [conn] [tune flags]      find the configs that get through from this network, deploy them
+                  --domain D --cdn C       direct (DNS-only) and CDN-proxied domains for the links
+                  --network NAME           name of this network (ISP), for the history and merged deploys
+                  --protocols LIST         also test ssh, dnstt, mtproto, awg (AmneziaWG), worker (Cloudflare Worker relay),
+                                           trojan (Trojan over REALITY), openvpn, ikev2 (vpn = both VPNs, all = every one)
+                  --zone Z                 a Cloudflare zone: domains not given get random names in it, with
+                                           their DNS records (token: XTUNE_CLOUDFLARE_TOKEN, or the server's)
+                  --dns-domain Z           zone delegated to the server (NS record): the DNS tunnel
+                  --resolvers LIST         DNS tunnel: also try these (udp:IP:53, doh:URL, dot:HOST:853)
+                  --clean-ips N            measure the CDN and Worker configs through the N best Cloudflare edge
+                                           IPs from here too (default 3, 0 = off)
+                  --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
+  xtune measure   FILE [--network NAME] [--report OUT]   measure a shared test from this network (no SSH)
+  xtune deploy    [conn] [-n N] [REPORT ...]   deploy the shared test, so every network gets a config that works
+  xtune check     [conn] [--network NAME] [--every 6h]   quick check of the deployed configs from this network;
+                                           --every keeps checking and reporting to the server (rankings, autopilot)
+  xtune history   [--host H] [-n N]        past tunes and checks
+  xtune cfscan    [conn] [--sni D] [-n N]  find the Cloudflare edge IPs that get through from this network
+  xtune doctor    [conn]                   diagnose services, ports, DNS, the CDN, clocks and certificates
+  xtune backup    [conn] [-o FILE] [--encrypt]   save the deployment (keys, users, usage) to a local file
+  xtune restore   [conn] FILE              rebuild a backup on a new server, configs as they were
+  xtune migrate   [conn | --backup FILE] --to [user@]host[:port] [--no-tune] [tune flags]
+                                           move the deployment to a new server, keeping users and links
+  xtune relay     [conn] [list | add NAME --ssh RELAY [--addr A] [--only ID,ID] | sync [NAME] | del NAME]
+                                           multi-hop: a server in your users' country forwards to this one
+  xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
+  xtune xray      [conn] status|update     check / update Xray here and on the server
+  xtune logs      [conn] [-n N] [-f]
+  xtune uninstall [conn]                   remove everything xtune installed on the server
+  xtune self-update [--version vX.Y.Z]     update this xtune (on the server: its copy)
+  xtune version
+
+On the server (as root):
+  sudo xtune                               server TUI: users, subscriptions, addresses, Xray, logs
+  xtune users     list [--json]
+  xtune users     add NAME [--quota GB] [--days N] [--devices N] [--reset monthly|weekly]
+  xtune users     limit NAME [--quota GB] [--days N] [--devices N] [--reset monthly|weekly|none]
+                                           (0 = unlimited / never; --reset starts usage from zero each period)
+  xtune users     links NAME [--json] [--qr]
+  xtune users     profiles NAME [--out DIR]   files for apps without share links (OpenVPN, IKEv2, WireGuard, DNS tunnel)
+  xtune users     add|limit NAME --plan P  a plan's limits (flags given override them)
+  xtune users     renew NAME [--plan P] [--days N]   extend expiry, usage from zero, enable
+  xtune users     usage NAME               traffic per day, the last 30 days
+  xtune users     enable|disable|rotate|reset-usage|reset-sub|del NAME
+  xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
+  xtune public    [list | add NAME [--quota GB] [--days N] [--devices N] [--plan P] [--members N]]
+  xtune public    limit|link|token|pause|resume|del NAME   pools of users shared through the community VPN bot
+  xtune sub       [status | enable [--mode cdn|direct] [--port P] | disable | lang en|fa|ru|zh|auto]
+  xtune sub       metrics [status | on | token | off]   Prometheus metrics on the subscription server
+  xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
+  xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
+  xtune names     [--label NAME] [--country CC|auto|none] [--config T] [--sub T]
+                                           config and subscription names in apps, with the server's flag
+  xtune networks  [list | del ASN | clear] configs ranked per network (ASN): subscriptions list each
+                                           network's best configs first (from tunes, checks and reports)
+  xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
+  xtune warp      [status | on [--domains D,D] [--all] | off]   chosen sites (default: AI services) via WARP
+  xtune manage    [status | link | token | off]   a link to manage users and plans from @chthvpnbot
+  xtune manage    reseller [list | add|limit NAME [--users N] [--quota GB] | link|token|del NAME]
+  xtune peers     [status | enable | remove NAME | disable]   let other servers join this one's subscriptions
+  xtune follow    [PEER_URL [--name N] | off]   take users from a primary, add this server's configs to it
+  xtune cloudflare [status | token | dns [--ip IP] | ssl | off]   DNS records and SSL mode via the API
+  xtune cloudflare worker [status | sync | off]   the Worker relay's routes; off deletes it and its configs
+  xtune cloudflare worker add | remove HOST | limit N|none   more Workers in other accounts (each has its own
+                                           100,000 requests a day); usage alerts at 80% and 100% of the limit
+  xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
+  xtune autopilot [status | digitalocean | rotate | off | reset]   alerts when the server's IP looks blocked;
+                                           on DigitalOcean, moves it to a new reserved IP (at most once a day)
+  xtune backup    schedule [--every 24h] [--telegram] [--s3 https://ENDPOINT/BUCKET[/PREFIX]] | status | now | off
+                                           sealed backups sent off the server (the alert chat, an S3/R2 bucket)
+  xtune xray|logs|doctor|backup|uninstall|self-update   as above, for this server
+  (internal, run by systemd: xtune enforce, xtune serve, xtune tunnels run, xtune awg run, xtune vpn-auth)
+
+Connection flags (conn):
+  --host H --port 22 --user root --key PATH --password-env VAR --profile NAME
+  sudo password: prompted, or XTUNE_SUDO_PASSWORD

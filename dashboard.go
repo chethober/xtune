@@ -8,6 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // The dashboard is a full-screen overview of a deployment: the server's configs with their
@@ -49,16 +52,16 @@ type dashUser struct {
 }
 
 // snapshotDash gathers the dashboard's data from a deployment. now is passed in so tests fix it.
-func snapshotDash(st *State, us *Usage, now time.Time) dashData {
+func snapshotDash(st *state.State, us *state.Usage, now time.Time) dashData {
 	d := dashData{Host: st.Host}
 	if b, why := ipBlocked(st, us, now); b {
 		d.IPBlocked = why
 	}
 	quiet := quietEntries(st, us, now)
-	for _, srv := range st.servers() {
+	for _, srv := range protocols.PeerServers(st) {
 		for _, e := range srv.Entries {
 			c := dashConfig{ID: e.ID, Kind: e.Kind, Port: e.Port, Proto: e.Proto(), State: "idle"}
-			eu := us.Entries[entryKey(e)]
+			eu := us.Entries[state.EntryKey(e)]
 			switch {
 			case srv != st:
 				c.State, c.Server = "follower", srv.Host
@@ -73,9 +76,9 @@ func snapshotDash(st *State, us *Usage, now time.Time) dashData {
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		if uu == nil {
-			uu = &UserUsage{}
+			uu = &state.UserUsage{}
 		}
-		du := dashUser{Name: u.Name, Status: userStatus(u, uu, now), Up: uu.Up, Down: uu.Down,
+		du := dashUser{Name: u.Name, Status: state.UserStatus(u, uu, now), Up: uu.Up, Down: uu.Down,
 			Quota: u.Quota, Percent: -1, Online: len(uu.Online), Devices: u.Devices, Expires: u.Expires}
 		if u.Quota > 0 {
 			du.Percent = int(min(100, (uu.Up+uu.Down)*100/u.Quota))
@@ -233,7 +236,7 @@ func trunc(s string, n int) string {
 
 // dashModel is the live dashboard: it reloads the snapshot on r and on a timer.
 type dashModel struct {
-	r      *Server
+	r      *remote.Server
 	data   dashData
 	err    error
 	width  int
@@ -242,16 +245,16 @@ type dashModel struct {
 
 type dashTick time.Time
 
-func dashReload(r *Server) tea.Cmd {
+func dashReload(r *remote.Server) tea.Cmd {
 	return func() tea.Msg {
-		st, err := LoadState(r)
+		st, err := state.Load(r)
 		if err != nil {
 			return err
 		}
 		if st == nil {
 			return dashData{Host: r.Conn.Host}
 		}
-		us, err := LoadUsage(r)
+		us, err := state.LoadUsage(r)
 		if err != nil {
 			return err
 		}

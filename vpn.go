@@ -8,23 +8,23 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // OpenVPN and IKEv2 run on the distribution's openvpn and strongSwan (installed with --vpn).
@@ -33,22 +33,11 @@ import (
 // which the profiles carry. Client traffic is NATed out of the server's default interface;
 // clients cannot reach private addresses (as with Xray's geoip:private block).
 
-const vpnDir = remoteDir + "/vpn"
-
-// vpnSubnet is each VPN entry's client address range.
-func vpnSubnet(e Entry) string {
-	switch e.Kind {
-	case "openvpn-udp":
-		return "10.68.0.0/20"
-	case "openvpn-tcp":
-		return "10.68.16.0/20"
-	}
-	return "10.69.0.0/16" // ikev2
-}
+const vpnDir = remote.Dir + "/vpn"
 
 // ---------------------------------------------------------------- PKI
 
-func (st *State) makeVPNPKI() error {
+func makeVPNPKI(st *state.State) error {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return err
@@ -68,17 +57,17 @@ func (st *State) makeVPNPKI() error {
 }
 
 // ensureVPNCert issues the server certificate for the address clients use, again when it changed.
-func (st *State) ensureVPNCert() error {
+func ensureVPNCert(st *state.State) error {
 	name := st.Addr()
 	if st.VPNCert != "" && st.VPNName == name {
 		return nil
 	}
 	if st.VPNCA == "" {
-		if err := st.makeVPNPKI(); err != nil {
+		if err := makeVPNPKI(st); err != nil {
 			return err
 		}
 	}
-	ca, err := parseCertPEM(st.VPNCA)
+	ca, err := protocols.ParseCertPEM(st.VPNCA)
 	if err != nil {
 		return err
 	}
@@ -118,132 +107,19 @@ func (st *State) ensureVPNCert() error {
 
 // ---------------------------------------------------------------- server configs
 
-// vpnUser is what `xtune vpn-auth` checks an OpenVPN login against.
-type vpnUser struct {
-	Pass    string `json:"pass"`
-	Devices int    `json:"devices,omitempty"`
-}
-
-func vpnUsers(users []User) map[string]vpnUser {
-	out := map[string]vpnUser{}
-	for _, u := range users {
-		if u.Enabled {
-			out[u.Name] = vpnUser{Pass: tunnelPassword(u), Devices: u.Devices}
-		}
-	}
-	return out
-}
-
-// OpenVPNConf is the server config of one OpenVPN entry; files live in dir.
-func (st *State) OpenVPNConf(e Entry, dir string) string {
-	proto := "udp"
-	if e.Kind == "openvpn-tcp" {
-		proto = "tcp-server"
-	}
-	_, n, _ := net.ParseCIDR(vpnSubnet(e))
-	var b strings.Builder
-	fmt.Fprintf(&b, `# written by xtune
-port %d
-proto %s
-dev tun
-topology subnet
-server %s %s
-dh none
-ecdh-curve prime256v1
-tls-version-min 1.2
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-verify-client-cert none
-username-as-common-name
-duplicate-cn
-script-security 2
-auth-user-pass-verify "%s/xtune vpn-auth %s/users.json" via-file
-push "redirect-gateway def1 bypass-dhcp"
-push "dhcp-option DNS 1.1.1.1"
-push "dhcp-option DNS 8.8.8.8"
-push "block-outside-dns"
-keepalive 10 60
-persist-key
-persist-tun
-status %s/%s.status 10
-status-version 2
-management %s/%s.sock unix
-verb 1
-`, e.Port, proto, n.IP, net.IP(n.Mask), remoteDir, dir, dir, e.ID, dir, e.ID)
-	if proto == "udp" {
-		b.WriteString("explicit-exit-notify 1\n")
-	}
-	fmt.Fprintf(&b, "<ca>\n%s</ca>\n<cert>\n%s</cert>\n<key>\n%s</key>\n", st.VPNCA, st.VPNCert, st.VPNKey)
-	return b.String()
-}
-
-// SwanctlConf is strongSwan's config for the ikev2 entry and the active users' EAP secrets. The
-// helper installs the certificate and key into strongSwan's x509 and private directories, the
-// only place it loads unencrypted keys from.
-func (st *State) SwanctlConf(users []User) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, `# written by xtune
-connections {
-  xtune-ikev2 {
-    version = 2
-    proposals = aes256gcm16-prfsha384-ecp384,aes256-sha256-modp2048,aes256-sha256-ecp256,aes128-sha256-modp2048,aes256-sha1-modp2048,aes256-sha1-modp1024,default
-    local_addrs = %%any
-    pools = xtune-v4
-    send_cert = always
-    unique = never
-    dpd_delay = 30s
-    local {
-      auth = pubkey
-      certs = xtune-ikev2.crt
-      id = %s
-    }
-    remote {
-      auth = eap-mschapv2
-      eap_id = %%any
-    }
-    children {
-      net {
-        local_ts = 0.0.0.0/0
-        esp_proposals = aes256gcm16,aes128gcm16,aes256-sha256,aes256-sha1,default
-        dpd_action = clear
-      }
-    }
-  }
-}
-pools {
-  xtune-v4 {
-    addrs = %s
-    dns = 1.1.1.1, 8.8.8.8
-  }
-}
-secrets {
-`, st.VPNName, vpnSubnet(Entry{Kind: "ikev2"}))
-	names := []string{}
-	pass := map[string]string{}
-	for n, u := range vpnUsers(users) {
-		names = append(names, n)
-		pass[n] = u.Pass
-	}
-	sort.Strings(names)
-	for i, n := range names {
-		fmt.Fprintf(&b, "  eap-%d {\n    id = %s\n    secret = \"%s\"\n  }\n", i, n, pass[n])
-	}
-	b.WriteString("}\n")
-	return b.String()
-}
-
 // vpnFiles are the files the VPN entries need in dir, by path.
-func (st *State) vpnFiles(entries []Entry, users []User, dir string) map[string]string {
+func vpnFiles(st *state.State, entries []state.Entry, users []state.User, dir string) map[string]string {
 	files := map[string]string{}
-	uj, _ := json.Marshal(vpnUsers(users))
+	uj, _ := json.Marshal(protocols.VPNUsers(users))
 	files[dir+"/users.json"] = string(uj)
 	for _, e := range entries {
 		switch e.Engine() {
 		case "openvpn":
-			files[dir+"/"+e.ID+".conf"] = st.OpenVPNConf(e, dir)
+			files[dir+"/"+e.ID+".conf"] = protocols.OpenVPNConf(st, e, dir)
 		case "ikev2":
 			files[dir+"/ikev2.crt"] = st.VPNCert
 			files[dir+"/ikev2.key"] = st.VPNKey
-			files[dir+"/swanctl.conf"] = st.SwanctlConf(users)
+			files[dir+"/swanctl.conf"] = protocols.SwanctlConf(st, users)
 		}
 	}
 	return files
@@ -251,14 +127,14 @@ func (st *State) vpnFiles(entries []Entry, users []User, dir string) map[string]
 
 // vpnSpecs are the helper's arguments for the VPN entries: "openvpn:ID", "ikev2" and
 // "net:SUBNET" for each client range to NAT.
-func vpnSpecs(entries []Entry) []string {
+func vpnSpecs(entries []state.Entry) []string {
 	var out []string
 	for _, e := range entries {
 		switch e.Engine() {
 		case "openvpn":
-			out = append(out, "openvpn:"+e.ID, "net:"+vpnSubnet(e))
+			out = append(out, "openvpn:"+e.ID, "net:"+protocols.VPNSubnet(e))
 		case "ikev2":
-			out = append(out, "ikev2", "net:"+vpnSubnet(e))
+			out = append(out, "ikev2", "net:"+protocols.VPNSubnet(e))
 		}
 	}
 	return out
@@ -272,7 +148,7 @@ func cmdVPNAuth(args []string) error {
 	if len(args) != 2 {
 		return errors.New("usage: xtune vpn-auth USERS CREDFILE")
 	}
-	var users map[string]vpnUser
+	var users map[string]protocols.VPNUser
 	if err := readJSONFile(args[0], &users); err != nil {
 		return err
 	}
@@ -465,181 +341,22 @@ func ikeSessions(raw string) []vpnSession {
 
 // ---------------------------------------------------------------- profiles
 
-// Profile is a file a user imports into an app.
-type Profile struct {
-	Name string // shown to the user
-	File string
-	Type string // MIME type
-	Body string
-}
-
-// Profiles are the user's files for the entries that have no share link, and a WireGuard config
-// for the official app.
-func (st *State) Profiles(u User) []Profile {
-	var out []Profile
-	for _, s := range st.servers() {
-		for _, e := range s.Entries {
-			out = append(out, s.profiles(e, u)...)
-		}
-	}
-	return out
-}
-
-func (st *State) profiles(e Entry, u User) []Profile {
-	base := u.Name + "-" + e.ID
-	switch e.Kind {
-	case "wireguard":
-		return []Profile{{Name: "WireGuard app (" + e.ID + ")", File: base + ".conf", Type: "text/plain", Body: st.WGConf(e, u)}}
-	case "amneziawg":
-		return []Profile{{Name: "AmneziaWG / AmneziaVPN app (" + e.ID + ")", File: base + ".conf", Type: "text/plain", Body: st.AWGConfFile(e, u)}}
-	case "openvpn-udp", "openvpn-tcp":
-		return []Profile{{Name: "OpenVPN (" + e.ID + ")", File: base + ".ovpn", Type: "application/x-openvpn-profile", Body: st.OVPNProfile(e, u)}}
-	case "ikev2":
-		return []Profile{
-			{Name: "IKEv2, strongSwan app (Android)", File: base + ".sswan", Type: "application/vnd.strongswan.profile", Body: st.SswanProfile(u)},
-			{Name: "IKEv2, iPhone / iPad / Mac", File: base + ".mobileconfig", Type: "application/x-apple-aspen-config", Body: st.MobileConfig(u)},
-		}
-	case "dnstt":
-		return []Profile{{Name: "DNS tunnel (SlowDNS / dnstt)", File: base + ".txt", Type: "text/plain", Body: st.DNSTTInfo(e, u)}}
-	case "ssh", "ssh-tls", "cdn-ssh":
-		return []Profile{{Name: "SSH apps, HTTP Injector / NetMod (" + e.ID + ")", File: base + ".txt", Type: "text/plain", Body: st.SSHInfo(e, u)}}
-	case "mtproto":
-		return []Profile{{Name: "Telegram MTProto proxy (" + e.ID + ")", File: base + ".txt", Type: "text/plain", Body: st.MTProtoInfo(e, u)}}
-	}
-	return nil
-}
-
 // hasLogin is true when the deployment has configs users log in to with name and password.
-func (st *State) hasLogin() bool {
-	for _, s := range st.servers() {
-		if hasEngine(s.Entries, "tunnel") || hasEngine(s.Entries, "openvpn") || hasEngine(s.Entries, "ikev2") {
+func hasLogin(st *state.State) bool {
+	for _, s := range protocols.PeerServers(st) {
+		if state.HasEngine(s.Entries, "tunnel") || state.HasEngine(s.Entries, "openvpn") || state.HasEngine(s.Entries, "ikev2") {
 			return true
 		}
 	}
 	return false
 }
 
-// MobileConfig is an Apple configuration profile (iOS, macOS) with the CA and the IKEv2 VPN.
-func (st *State) MobileConfig(u User) string {
-	ca, _ := pem.Decode([]byte(st.VPNCA))
-	caCert, _ := parseCertPEM(st.VPNCA)
-	id := func(s string) string { return strings.ToUpper(hex.EncodeToString(secret(u, "mobileconfig/"+s)[:16])) }
-	cn := ""
-	if caCert != nil {
-		cn = caCert.Subject.CommonName
-	}
-	x := html.EscapeString
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>PayloadContent</key>
-  <array>
-    <dict>
-      <key>PayloadType</key><string>com.apple.security.root</string>
-      <key>PayloadIdentifier</key><string>xtune.ca.%s</string>
-      <key>PayloadUUID</key><string>%s</string>
-      <key>PayloadVersion</key><integer>1</integer>
-      <key>PayloadDisplayName</key><string>%s</string>
-      <key>PayloadContent</key><data>%s</data>
-    </dict>
-    <dict>
-      <key>PayloadType</key><string>com.apple.vpn.managed</string>
-      <key>PayloadIdentifier</key><string>xtune.vpn.%s</string>
-      <key>PayloadUUID</key><string>%s</string>
-      <key>PayloadVersion</key><integer>1</integer>
-      <key>PayloadDisplayName</key><string>xtune IKEv2</string>
-      <key>UserDefinedName</key><string>xtune %s</string>
-      <key>VPNType</key><string>IKEv2</string>
-      <key>IKEv2</key>
-      <dict>
-        <key>RemoteAddress</key><string>%s</string>
-        <key>RemoteIdentifier</key><string>%s</string>
-        <key>LocalIdentifier</key><string>%s</string>
-        <key>AuthenticationMethod</key><string>None</string>
-        <key>ExtendedAuthEnabled</key><integer>1</integer>
-        <key>AuthName</key><string>%s</string>
-        <key>AuthPassword</key><string>%s</string>
-        <key>ServerCertificateIssuerCommonName</key><string>%s</string>
-        <key>EnablePFS</key><integer>1</integer>
-        <key>IKESecurityAssociationParameters</key>
-        <dict><key>EncryptionAlgorithm</key><string>AES-256</string><key>IntegrityAlgorithm</key><string>SHA2-256</string><key>DiffieHellmanGroup</key><integer>14</integer></dict>
-        <key>ChildSecurityAssociationParameters</key>
-        <dict><key>EncryptionAlgorithm</key><string>AES-256</string><key>IntegrityAlgorithm</key><string>SHA2-256</string><key>DiffieHellmanGroup</key><integer>14</integer></dict>
-      </dict>
-    </dict>
-  </array>
-  <key>PayloadDisplayName</key><string>xtune %s</string>
-  <key>PayloadIdentifier</key><string>xtune.%s</string>
-  <key>PayloadType</key><string>Configuration</string>
-  <key>PayloadUUID</key><string>%s</string>
-  <key>PayloadVersion</key><integer>1</integer>
-</dict>
-</plist>
-`, id("ca"), uuidFmt(id("ca")), x(cn), base64.StdEncoding.EncodeToString(ca.Bytes),
-		id("vpn"), uuidFmt(id("vpn")), x(u.Name), x(st.VPNName), x(st.VPNName), x(u.Name), x(u.Name), x(tunnelPassword(u)), x(cn),
-		x(u.Name), id("root"), uuidFmt(id("root")))
-}
-
-func uuidFmt(h string) string {
-	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
-}
-
-// OVPNProfile is an OpenVPN client profile; the app asks for the user name and password.
-func (st *State) OVPNProfile(e Entry, u User) string {
-	proto := "udp"
-	if e.Kind == "openvpn-tcp" {
-		proto = "tcp"
-	}
-	return fmt.Sprintf(`# xtune: %s, user name %s, password %s
-client
-dev tun
-proto %s
-remote %s %d
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-verify-x509-name %s name
-auth-user-pass
-auth-nocache
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-verb 3
-<ca>
-%s</ca>
-`, e.ID, u.Name, tunnelPassword(u), proto, st.VPNName, e.Port, st.VPNName, st.VPNCA)
-}
-
-// SswanProfile is a strongSwan app profile: the CA is included, the app asks for the password.
-func (st *State) SswanProfile(u User) string {
-	ca, _ := pem.Decode([]byte(st.VPNCA))
-	b, _ := json.MarshalIndent(J{"uuid": uuidFmt(hex.EncodeToString(secret(u, "sswan")[:16])), "name": "xtune " + u.Name,
-		"type": "ikev2-eap", "remote": J{"addr": st.VPNName, "id": st.VPNName, "cert": base64.StdEncoding.EncodeToString(ca.Bytes)},
-		"local": J{"eap_id": u.Name}}, "", "  ")
-	return string(b)
-}
-
-// DNSTTInfo is what SlowDNS/dnstt apps (HTTP Injector, NetMod, ...) need.
-func (st *State) DNSTTInfo(e Entry, u User) string {
-	return fmt.Sprintf(`DNS tunnel (dnstt / SlowDNS) for %s
-
-Name server (NS) domain: %s
-Public key: %s
-DNS resolver: %s (or any resolver that works on your network, e.g. 8.8.8.8, 1.1.1.1)
-SSH host: 127.0.0.1 or %s, port 22 (the tunnel ends at the SSH server)
-SSH user name: %s
-SSH password: %s
-
-It is slow (tens of KB/s): use it when nothing else gets through.
-`, u.Name, st.DNSDomain, st.DNSTTPub, strings.SplitN(orStr(e.Resolver, dnsResolvers[0]), ":", 2)[1], st.Addr(), u.Name, tunnelPassword(u))
-}
-
 // ---------------------------------------------------------------- handshake probes
 
 // vpnHandshake sends one handshake to a VPN entry and waits for the server's answer. It reports
 // the round trip.
-func (st *State) vpnHandshake(ctx context.Context, e Entry) (time.Duration, error) {
-	addr := hostPort(st.Addr(), e.Port)
+func vpnHandshake(st *state.State, ctx context.Context, e state.Entry) (time.Duration, error) {
+	addr := protocols.HostPort(st.Addr(), e.Port)
 	var d net.Dialer
 	t0 := time.Now()
 	switch e.Kind {

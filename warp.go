@@ -12,66 +12,27 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
-
-// Warp sends chosen sites (or all traffic) out through Cloudflare WARP instead of the server's
-// own IP: many services refuse datacenter IPs. The account is a free WARP registration.
-type Warp struct {
-	PrivateKey string   `json:"privateKey"`
-	Address4   string   `json:"address4"`
-	Address6   string   `json:"address6,omitempty"`
-	PeerKey    string   `json:"peerPublicKey"`
-	Endpoint   string   `json:"endpoint"`
-	Reserved   []int    `json:"reserved,omitempty"` // client id, sent in every packet
-	Domains    []string `json:"domains,omitempty"`  // routing domains that use WARP
-	All        bool     `json:"all,omitempty"`      // all traffic uses WARP
-}
-
-// defaultWarpDomains are AI services that block datacenter IPs or whole countries.
-var defaultWarpDomains = []string{"geosite:category-ai-!cn", "geosite:google-gemini"}
 
 // warpAPI is Cloudflare's client API, as used by the WARP apps; a variable so tests can replace it.
 var warpAPI = "https://api.cloudflareclient.com/v0a2158"
 
-func (w *Warp) outbound() J {
-	addrs := []string{w.Address4 + "/32"}
-	if w.Address6 != "" {
-		addrs = append(addrs, w.Address6+"/128")
-	}
-	s := J{"secretKey": w.PrivateKey, "address": addrs, "mtu": 1280,
-		"peers": []J{{"publicKey": w.PeerKey, "endpoint": w.Endpoint}}}
-	if len(w.Reserved) == 3 {
-		s["reserved"] = w.Reserved
-	}
-	return J{"tag": "warp", "protocol": "wireguard", "settings": s}
-}
-
-func (w *Warp) rule() J {
-	if w.All {
-		return J{"network": "tcp,udp", "outboundTag": "warp"}
-	}
-	return J{"domain": w.domains(), "outboundTag": "warp"}
-}
-
-func (w *Warp) domains() []string {
-	if len(w.Domains) == 0 {
-		return defaultWarpDomains
-	}
-	return w.Domains
-}
-
-func (w *Warp) describe() string {
+func describeWarp(w *state.Warp) string {
 	if w == nil {
 		return "off"
 	}
 	if w.All {
 		return "on, all traffic"
 	}
-	return "on for " + strings.Join(w.domains(), ", ")
+	return "on for " + strings.Join(protocols.WarpDomains(w), ", ")
 }
 
 // registerWarp creates a free WARP account for a new WireGuard key.
-func registerWarp() (*Warp, error) {
+func registerWarp() (*state.Warp, error) {
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -114,7 +75,7 @@ func registerWarp() (*Warp, error) {
 	if len(c.Peers) == 0 || c.Peers[0].PublicKey == "" || c.Interface.Addresses.V4 == "" {
 		return nil, fmt.Errorf("WARP registration: unexpected answer %s", tail(string(raw), 200))
 	}
-	w := &Warp{PrivateKey: base64.StdEncoding.EncodeToString(priv.Bytes()), Address4: c.Interface.Addresses.V4,
+	w := &state.Warp{PrivateKey: base64.StdEncoding.EncodeToString(priv.Bytes()), Address4: c.Interface.Addresses.V4,
 		Address6: c.Interface.Addresses.V6, PeerKey: c.Peers[0].PublicKey, Endpoint: c.Peers[0].Endpoint.Host}
 	if w.Endpoint == "" {
 		w.Endpoint = "engage.cloudflareclient.com:2408"
@@ -128,8 +89,8 @@ func registerWarp() (*Warp, error) {
 // SetWarp turns WARP on with the given routing (registering an account when there is none), or
 // off when on is false. Xray restarts, because outbounds change. Settings Xray rejects (an unknown
 // geosite list, say) are rolled back.
-func SetWarp(r *Server, on bool, domains []string, all bool) (*State, error) {
-	defer r.lock()()
+func SetWarp(r *remote.Server, on bool, domains []string, all bool) (*state.State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err

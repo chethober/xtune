@@ -19,6 +19,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 	"golang.org/x/term"
 )
 
@@ -51,6 +55,8 @@ On your computer (client):
   xtune restore   [conn] FILE              rebuild a backup on a new server, configs as they were
   xtune migrate   [conn | --backup FILE] --to [user@]host[:port] [--no-tune] [tune flags]
                                            move the deployment to a new server, keeping users and links
+  xtune relay     [conn] [list | add NAME --ssh RELAY [--addr A] [--only ID,ID] | sync [NAME] | del NAME]
+                                           multi-hop: a server in your users' country forwards to this one
   xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
   xtune xray      [conn] status|update     check / update Xray here and on the server
   xtune logs      [conn] [-n N] [-f]
@@ -77,6 +83,8 @@ On the server (as root):
   xtune sub       metrics [status | on | token | off]   Prometheus metrics on the subscription server
   xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
+  xtune names     [--label NAME] [--country CC|auto|none] [--config T] [--sub T]
+                                           config and subscription names in apps, with the server's flag
   xtune networks  [list | del ASN | clear] configs ranked per network (ASN): subscriptions list each
                                            network's best configs first (from tunes, checks and reports)
   xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
@@ -103,8 +111,9 @@ Connection flags (conn):
 `
 
 func main() {
+	netinfo.UserAgent = "xtune/" + version
 	if len(os.Args) < 2 {
-		if serverMode() {
+		if remote.Installed() {
 			runServerTUI()
 		} else {
 			runTUI()
@@ -132,6 +141,10 @@ func main() {
 		err = cmdSub(args)
 	case "country":
 		err = cmdCountry(args)
+	case "names":
+		err = cmdNames(args)
+	case "relay":
+		err = cmdRelay(args)
 	case "notify":
 		err = cmdNotify(args)
 	case "warp":
@@ -177,8 +190,8 @@ func main() {
 	case "self-update":
 		err = cmdSelfUpdate(args)
 	case "enforce":
-		var r *Server
-		if r, err = OpenLocal(); err == nil {
+		var r *remote.Server
+		if r, err = remote.OpenLocal(); err == nil {
 			err = Enforce(r)
 		}
 	case "serve":
@@ -225,8 +238,8 @@ func addConnFlags(fs *flag.FlagSet) connFlags {
 	}
 }
 
-func (c connFlags) conn() (Conn, error) {
-	var cn Conn
+func (c connFlags) conn() (remote.Conn, error) {
+	var cn remote.Conn
 	if *c.profile != "" {
 		p, ok := findProfile(*c.profile)
 		if !ok {
@@ -272,18 +285,18 @@ func cliPrompt(label string, secret bool) (string, error) {
 	return strings.TrimSpace(s), err
 }
 
-func connect(c connFlags) (*Server, error) {
+func connect(c connFlags) (*remote.Server, error) {
 	cn, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
-	return Dial(cn, cliPrompt)
+	return remote.Dial(cn, cliPrompt)
 }
 
 // target connects to --host/--profile, or manages this machine when xtune runs on the server.
-func target(c connFlags) (*Server, error) {
-	if *c.host == "" && *c.profile == "" && serverMode() {
-		return OpenLocal()
+func target(c connFlags) (*remote.Server, error) {
+	if *c.host == "" && *c.profile == "" && remote.Installed() {
+		return remote.OpenLocal()
 	}
 	return connect(c)
 }
@@ -330,7 +343,7 @@ func setActiveHarness(h *harness) { activeMu.Lock(); activeHarness = h; activeMu
 
 // guarded runs fn; on Ctrl+C / SIGTERM it stops the local harness and the server test
 // instance (when r is set) before exiting, so an interrupted tune never leaves ports open.
-func guarded(r *Server, fn func() error) error {
+func guarded(r *remote.Server, fn func() error) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
@@ -398,7 +411,7 @@ func cmdTune(args []string) error {
 		return err
 	}
 	defer r.Close()
-	old, _ := LoadState(r)
+	old, _ := state.Load(r)
 	o.inherit(old, flagsSet(fs))
 	o.Cloudflare = os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
 	if o.Cloudflare == "" && (old == nil || old.Cloudflare.Token == "") && (o.Zone != "" || slices.Contains(o.Protocols, "worker")) {
@@ -440,16 +453,21 @@ func cmdTune(args []string) error {
 }
 
 // afterDeploy shows the deployment and installs xtune on the server, where users are managed.
-func afterDeploy(r *Server, st *State) {
+func afterDeploy(r *remote.Server, st *state.State) {
 	printDeployment(st)
 	if err := EnsureServerXtune(r, func(s string) { fmt.Println("[*] " + s) }); err != nil {
 		fmt.Println("[!] xtune could not be installed on the server, so users cannot be managed there yet:", err)
 	} else if len(st.Users) == 0 {
 		fmt.Printf("\nNo users yet. Add them on the server: xtune console --host %s  (or ssh in and run sudo xtune)\n", r.Conn.Host)
 	}
+	for _, rl := range st.Relays {
+		if p := relayProblem(st, rl, ""); p != "" {
+			fmt.Printf("[!] relay %s %s\n", rl.Name, p)
+		}
+	}
 }
 
-func printDeployment(st *State) {
+func printDeployment(st *state.State) {
 	fmt.Printf("\n[+] deployed %d configs (systemd unit xray-autotune), address %s", len(st.Entries), st.Addr())
 	if st.CDNDomain != "" {
 		fmt.Printf(", CDN %s", st.CDNDomain)
@@ -459,12 +477,12 @@ func printDeployment(st *State) {
 		if !u.Enabled {
 			continue
 		}
-		if sub := st.SubURL(u); sub != "" {
+		if sub := SubURL(st, u); sub != "" {
 			fmt.Printf("  %-16s %s  (refresh to get the new configs)\n", u.Name, sub)
 			continue
 		}
 		fmt.Printf("\n# %s\n", u.Name)
-		for _, l := range st.Links(u) {
+		for _, l := range protocols.Links(st, u) {
 			fmt.Println(l)
 		}
 	}
@@ -483,11 +501,11 @@ func cmdConsole(args []string) error {
 }
 
 // openConsole makes sure the server has this xtune, then runs its server TUI over SSH.
-func openConsole(r *Server) error {
+func openConsole(r *remote.Server) error {
 	if err := EnsureServerXtune(r, func(s string) { fmt.Println(s) }); err != nil {
 		return err
 	}
-	return r.Console(remoteDir + "/xtune server")
+	return r.Console(remote.Dir + "/xtune server")
 }
 
 // ---------------------------------------------------------------- xray
@@ -504,8 +522,8 @@ func cmdXray(args []string) error {
 	if len(pos) > 0 {
 		action = pos[0]
 	}
-	var r *Server
-	if *c.host != "" || *c.profile != "" || serverMode() {
+	var r *remote.Server
+	if *c.host != "" || *c.profile != "" || remote.Installed() {
 		var err error
 		if r, err = target(c); err != nil {
 			return err
@@ -530,7 +548,7 @@ func cmdXray(args []string) error {
 	return fmt.Errorf("unknown xray action %q", action)
 }
 
-func xrayStatus(w io.Writer, r *Server, xrayFlag string, stable, local bool) error {
+func xrayStatus(w io.Writer, r *remote.Server, xrayFlag string, stable, local bool) error {
 	latest, lerr := LatestXray(stable, r)
 	if lerr != nil {
 		latest = "unknown"
@@ -558,7 +576,7 @@ func xrayStatus(w io.Writer, r *Server, xrayFlag string, stable, local bool) err
 	return tw.Flush()
 }
 
-func xrayUpdate(r *Server, xrayFlag, tag string, local, server bool) error {
+func xrayUpdate(r *remote.Server, xrayFlag, tag string, local, server bool) error {
 	logf := func(s string) { fmt.Println(s) }
 	if local {
 		cur := XrayVersion(FindLocalXray(xrayFlag))
@@ -624,7 +642,7 @@ func cmdUsers(args []string) error {
 	if len(pos) == 0 {
 		pos = []string{"list"}
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -652,7 +670,7 @@ func cmdUsers(args []string) error {
 	if set["plan"] {
 		l.Plan = plan
 	}
-	show := func(st *State, err error) error {
+	show := func(st *state.State, err error) error {
 		switch {
 		case err != nil:
 			return err
@@ -669,7 +687,7 @@ func cmdUsers(args []string) error {
 		if err != nil {
 			return err
 		}
-		us, err := LoadUsage(r)
+		us, err := state.LoadUsage(r)
 		if err != nil {
 			return err
 		}
@@ -722,7 +740,7 @@ func cmdUsers(args []string) error {
 	return fmt.Errorf("unknown users action %q", pos[0])
 }
 
-func printUsers(w io.Writer, st *State, us *Usage) error {
+func printUsers(w io.Writer, st *state.State, us *state.Usage) error {
 	if len(st.Users) == 0 {
 		fmt.Fprintln(w, "no users yet")
 		return nil
@@ -733,7 +751,7 @@ func printUsers(w io.Writer, st *State, us *Usage) error {
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		if uu == nil {
-			uu = &UserUsage{}
+			uu = &state.UserUsage{}
 		}
 		quota, devices, last := "-", fmt.Sprintf("%d/-", len(uu.Online)), "never"
 		if u.Quota > 0 {
@@ -747,13 +765,13 @@ func printUsers(w io.Writer, st *State, us *Usage) error {
 		} else if uu.LastSeen > 0 {
 			last = time.Unix(uu.LastSeen, 0).Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, userStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, state.UserStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
 			quota, fmtReset(u), fmtExpiry(u.Expires, now), devices, last)
 	}
 	return tw.Flush()
 }
 
-func printLinks(w io.Writer, st *State, name string) error {
+func printLinks(w io.Writer, st *state.State, name string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
@@ -762,40 +780,45 @@ func printLinks(w io.Writer, st *State, name string) error {
 	if !u.Enabled {
 		state = ", DISABLED"
 	}
-	if sub := st.SubURL(*u); sub != "" {
-		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n\n", u.Name, state, sub, sub)
+	if sub := SubURL(st, *u); sub != "" {
+		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n", u.Name, state, sub, sub)
+		fmt.Fprintf(w, "add it as %q in one tap:\n", protocols.SubName(st, *u))
+		for _, a := range subImports(sub, protocols.SubName(st, *u)) {
+			fmt.Fprintf(w, "  %-10s %s\n", a.Name, a.URL)
+		}
+		fmt.Fprintln(w)
 	} else {
 		fmt.Fprintf(w, "# %s (%d configs%s, base64 subscription body below the links)\n", u.Name, len(st.Entries), state)
 	}
-	for _, l := range st.Links(*u) {
+	for _, l := range protocols.Links(st, *u) {
 		fmt.Fprintln(w, l)
 	}
-	if st.SubURL(*u) == "" {
-		fmt.Fprintf(w, "\n%s\n", st.Subscription(*u))
+	if SubURL(st, *u) == "" {
+		fmt.Fprintf(w, "\n%s\n", protocols.Subscription(st, *u))
 	}
-	if ps := st.Profiles(*u); len(ps) > 0 {
+	if ps := protocols.Profiles(st, *u); len(ps) > 0 {
 		fmt.Fprintf(w, "\nFiles for apps without share links (xtune users profiles %s writes them):\n", u.Name)
 		for _, p := range ps {
 			where := p.File
-			if sub := st.SubURL(*u); sub != "" {
+			if sub := SubURL(st, *u); sub != "" {
 				where = sub + "/f/" + url.PathEscape(p.File)
 			}
 			fmt.Fprintf(w, "  %-34s %s\n", p.Name, where)
 		}
-		if st.hasLogin() {
-			fmt.Fprintf(w, "SSH / VPN login: user name %s, password %s\n", u.Name, tunnelPassword(*u))
+		if hasLogin(st) {
+			fmt.Fprintf(w, "SSH / VPN login: user name %s, password %s\n", u.Name, protocols.TunnelPassword(*u))
 		}
 	}
 	return nil
 }
 
 // writeProfiles writes the user's profile files into dir.
-func writeProfiles(w io.Writer, st *State, name, dir string) error {
+func writeProfiles(w io.Writer, st *state.State, name, dir string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	ps := st.Profiles(*u)
+	ps := protocols.Profiles(st, *u)
 	if len(ps) == 0 {
 		return fmt.Errorf("the deployment has no configs that need profile files")
 	}
@@ -820,7 +843,7 @@ func cmdSub(args []string) error {
 	mode := fs.String("mode", "", "cdn (through the CDN domain) or direct (Let's Encrypt on the direct domain)")
 	port := fs.Int("port", 0, "HTTPS port (default: a free CDN-compatible port)")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -855,7 +878,7 @@ func cmdSub(args []string) error {
 		if len(pos) > 1 {
 			sub = pos[1]
 		}
-		var st *State
+		var st *state.State
 		switch sub {
 		case "status":
 			st, err = requireState(r)
@@ -887,23 +910,23 @@ func cmdSub(args []string) error {
 }
 
 // defaultSubMode prefers the CDN: it hides the server's IP and keeps working when the IP is blocked.
-func defaultSubMode(st *State) string {
+func defaultSubMode(st *state.State) string {
 	if st.CDNDomain == "" && st.Domain != "" {
 		return "direct"
 	}
 	return "cdn"
 }
 
-func printSub(w io.Writer, st *State) error {
+func printSub(w io.Writer, st *state.State) error {
 	if st.Sub.Mode == "" {
 		fmt.Fprintln(w, "subscription server: off (xtune sub enable)")
 		return nil
 	}
 	fmt.Fprintf(w, "subscription server: %s mode, https://%s, page language %s\n\n", st.Sub.Mode,
-		hostPort(subHost(st), st.Sub.Port), orStr(st.Sub.Lang, "from the browser"))
+		protocols.HostPort(subHost(st), st.Sub.Port), orStr(st.Sub.Lang, "from the browser"))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, u := range st.Users {
-		fmt.Fprintf(tw, "%s\t%s\n", u.Name, st.SubURL(u))
+		fmt.Fprintf(tw, "%s\t%s\n", u.Name, SubURL(st, u))
 	}
 	return tw.Flush()
 }
@@ -912,7 +935,7 @@ func cmdCountry(args []string) error {
 	if err := serverOnly("country", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -940,7 +963,7 @@ func cmdDomains(args []string) error {
 	cdn := fs.String("cdn", "", "CDN-proxied domain; --cdn= clears it and removes the CDN entry")
 	dnsZone := fs.String("dns", "", "zone delegated to the server for the DNS tunnel; --dns= clears it")
 	parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -988,7 +1011,7 @@ func cmdDomains(args []string) error {
 	return nil
 }
 
-func printAddresses(w io.Writer, st *State) {
+func printAddresses(w io.Writer, st *state.State) {
 	fmt.Fprintf(w, "server IP / host: %s\n", st.Host)
 	fmt.Fprintf(w, "direct domain:    %s\n", orStr(st.Domain, "-  (links use the IP)"))
 	fmt.Fprintf(w, "CDN domain:       %s\n", orStr(st.CDNDomain, "-"))
@@ -1008,7 +1031,7 @@ func printAddresses(w io.Writer, st *State) {
 // ---------------------------------------------------------------- logs / uninstall
 
 func logCmd(unit string, n int, follow bool) string {
-	c := fmt.Sprintf("journalctl -u %s -n %d --no-pager -o short-iso", shq(unit), n)
+	c := fmt.Sprintf("journalctl -u %s -n %d --no-pager -o short-iso", remote.Quote(unit), n)
 	if follow {
 		c += " -f"
 	}
@@ -1050,25 +1073,25 @@ func cmdUninstall(args []string) error {
 
 func profilesPath() string { return filepath.Join(dataDir(), "profiles.json") }
 
-func loadProfiles() []Conn {
-	var ps []Conn
+func loadProfiles() []remote.Conn {
+	var ps []remote.Conn
 	if b, err := os.ReadFile(profilesPath()); err == nil {
 		json.Unmarshal(b, &ps)
 	}
 	return ps
 }
 
-func findProfile(name string) (Conn, bool) {
+func findProfile(name string) (remote.Conn, bool) {
 	for _, p := range loadProfiles() {
 		if p.Name == name || p.Host == name {
 			return p, true
 		}
 	}
-	return Conn{}, false
+	return remote.Conn{}, false
 }
 
 // saveProfile stores connection details (never passwords).
-func saveProfile(c Conn) error {
+func saveProfile(c remote.Conn) error {
 	if c.Name == "" {
 		c.Name = c.Host
 	}

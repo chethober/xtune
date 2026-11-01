@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Several servers under one subscription. One server is the primary: it owns the users, their
@@ -26,30 +29,9 @@ import (
 // limits: followers report who is online, the primary counts each user's devices on all servers
 // and tells followers which IPs to block.
 
-// PeerHub is the primary's side: the secret followers use, and what they last reported.
-type PeerHub struct {
-	Secret  string                 `json:"secret"`
-	Servers map[string]*PeerServer `json:"servers,omitempty"`
-}
-
-type PeerServer struct {
-	State  *State              `json:"state"` // public settings only: addresses, public keys, entries
-	Seen   int64               `json:"seen"`
-	Online map[string][]string `json:"online,omitempty"` // client IPs per user at its last report
-}
-
-// Follow is a follower's side: the primary's peer URL and the name it is listed under.
-type Follow struct {
-	URL  string `json:"url"`
-	Name string `json:"name"`
-}
-
-// peerStale is how long a follower that stopped reporting stays in subscriptions.
-const peerStale = 24 * time.Hour
-
 type peerReport struct {
 	Name   string              `json:"name"`
-	State  *State              `json:"state"`
+	State  *state.State        `json:"state"`
 	Usage  map[string][2]int64 `json:"usage,omitempty"`  // up, down since the last report
 	Online map[string][]string `json:"online,omitempty"` // client IPs per user, for device limits across servers
 }
@@ -67,12 +49,12 @@ type peerReply struct {
 	Users []peerUser `json:"users"`
 }
 
-// public is what clients need to connect to this deployment, and nothing secret.
-func (st *State) public() *State {
-	p := &State{Host: st.Host, ClientIP: st.ClientIP, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
+// peerState is what clients need to connect to this deployment, and nothing secret.
+func peerState(st *state.State) *state.State {
+	p := &state.State{Host: st.Host, ClientIP: st.ClientIP, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
 		ShortID: st.ShortID, VencEnc: st.VencEnc, SSKey: st.SSKey, CertSNI: st.CertSNI, CertHash: st.CertHash,
 		WGPub: st.WGPub, SSHHostPub: st.SSHHostPub, DNSTTPub: st.DNSTTPub, DNSDomain: st.DNSDomain,
-		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries}
+		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries, Naming: st.Naming}
 	if st.AWG != nil {
 		awg := *st.AWG
 		awg.Priv = ""
@@ -81,57 +63,8 @@ func (st *State) public() *State {
 	return p
 }
 
-// servers are this deployment and, on a primary, the followers that reported recently, with
-// their entries named after them.
-func (st *State) servers() []*State {
-	out := []*State{st}
-	if st.Peers == nil {
-		return out
-	}
-	names := make([]string, 0, len(st.Peers.Servers))
-	for n := range st.Peers.Servers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		p := st.Peers.Servers[n]
-		if p.State == nil || time.Since(time.Unix(p.Seen, 0)) > peerStale {
-			continue
-		}
-		ps := *p.State
-		ps.Entries = nil
-		for _, e := range p.State.Entries {
-			e.ID = n + "-" + e.ID
-			ps.Entries = append(ps.Entries, e)
-		}
-		out = append(out, &ps)
-	}
-	return out
-}
-
-// NamedLinks are the user's share links on every server, named by config.
-func (st *State) NamedLinks(u User) []pageLink {
-	var out []pageLink
-	for _, s := range st.servers() {
-		for _, e := range s.linkEntries() {
-			if l := s.Link(e, u, e.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
-				out = append(out, pageLink{Name: e.ID, URL: l})
-			}
-		}
-	}
-	return out
-}
-
-func (st *State) Links(u User) []string {
-	var out []string
-	for _, l := range st.NamedLinks(u) {
-		out = append(out, l.URL)
-	}
-	return out
-}
-
 // errFollower is returned for user changes on a follower: the primary owns the users.
-func errFollower(st *State) error {
+func errFollower(st *state.State) error {
 	host := st.Follow.URL
 	if u, err := url.Parse(host); err == nil {
 		host = u.Hostname()
@@ -142,16 +75,16 @@ func errFollower(st *State) error {
 // ---------------------------------------------------------------- primary
 
 // PeerURL is the URL followers report to, or "" when the subscription server or peers are off.
-func (st *State) PeerURL() string {
+func PeerURL(st *state.State) string {
 	if st.Peers == nil || subHost(st) == "" {
 		return ""
 	}
-	return "https://" + hostPort(subHost(st), st.Sub.Port) + "/" + st.Sub.Path + "/peer/" + st.Peers.Secret
+	return "https://" + protocols.HostPort(subHost(st), st.Sub.Port) + "/" + st.Sub.Path + "/peer/" + st.Peers.Secret
 }
 
 // EnablePeers lets followers join; it needs the subscription server, which they report to.
-func EnablePeers(r *Server) (*State, error) {
-	defer r.lock()()
+func EnablePeers(r *remote.Server) (*state.State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -163,25 +96,25 @@ func EnablePeers(r *Server) (*State, error) {
 		return nil, errors.New("followers report to the subscription server: turn it on first (xtune sub enable)")
 	}
 	if st.Peers == nil {
-		st.Peers = &PeerHub{Secret: randHex(16)}
+		st.Peers = &state.PeerHub{Secret: randHex(16)}
 	}
-	return st, saveState(r, st)
+	return st, state.Save(r, st)
 }
 
 // DisablePeers drops the followers from subscriptions and makes their URL stop working.
-func DisablePeers(r *Server) error {
-	defer r.lock()()
+func DisablePeers(r *remote.Server) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
 	}
 	st.Peers = nil
-	return saveState(r, st)
+	return state.Save(r, st)
 }
 
 // RemovePeer drops one follower from subscriptions; it comes back if it reports again.
-func RemovePeer(r *Server, name string) error {
-	defer r.lock()()
+func RemovePeer(r *remote.Server, name string) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -190,12 +123,12 @@ func RemovePeer(r *Server, name string) error {
 		return fmt.Errorf("no follower %q", name)
 	}
 	delete(st.Peers.Servers, name)
-	return saveState(r, st)
+	return state.Save(r, st)
 }
 
 // acceptPeer records a follower's report and returns the users it should serve.
-func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
-	defer r.lock()()
+func acceptPeer(r *remote.Server, in peerReport, now time.Time) (*peerReply, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -203,7 +136,7 @@ func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
 	if st.Peers == nil {
 		return nil, errors.New("peers are off")
 	}
-	us, err := LoadUsage(r)
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return nil, err
 	}
@@ -211,33 +144,33 @@ func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
 		if _, u := st.User(name); u == nil || d[0] < 0 || d[1] < 0 {
 			continue
 		}
-		uu := us.of(name)
+		uu := us.Of(name)
 		uu.Up += d[0]
 		uu.Down += d[1]
-		uu.addDaily(now, d[0]+d[1])
+		uu.AddDaily(now, d[0]+d[1])
 	}
 	if st.Peers.Servers == nil {
-		st.Peers.Servers = map[string]*PeerServer{}
+		st.Peers.Servers = map[string]*state.PeerServer{}
 	}
-	st.Peers.Servers[in.Name] = &PeerServer{State: in.State.public(), Seen: now.Unix(), Online: in.Online}
-	if err := saveState(r, st); err != nil {
+	st.Peers.Servers[in.Name] = &state.PeerServer{State: peerState(in.State), Seen: now.Unix(), Online: in.Online}
+	if err := state.Save(r, st); err != nil {
 		return nil, err
 	}
-	if err := saveUsage(r, us); err != nil {
+	if err := state.SaveUsage(r, us); err != nil {
 		return nil, err
 	}
 	rep := &peerReply{Users: []peerUser{}}
-	for _, u := range st.activeUsers(us, now) {
+	for _, u := range activeUsers(st, us, now) {
 		if st.Check == nil || u.Name != st.Check.Name {
 			rep.Users = append(rep.Users, peerUser{Name: u.Name, UUID: u.UUID, SSKey: u.SSKey, WGIP: u.WGIP,
-				Devices: u.Devices, Block: us.blocksFor(u.Name, now)})
+				Devices: u.Devices, Block: blocksFor(us, u.Name, now)})
 		}
 	}
 	return rep, nil
 }
 
 // servePeer answers a follower's POST to /PATH/peer/SECRET.
-func (h subHandler) servePeer(w http.ResponseWriter, req *http.Request, st *State, secret string) {
+func (h subHandler) servePeer(w http.ResponseWriter, req *http.Request, st *state.State, secret string) {
 	if st.Peers == nil || h.r == nil || subtle.ConstantTimeCompare([]byte(st.Peers.Secret), []byte(secret)) != 1 {
 		http.NotFound(w, req)
 		return
@@ -264,7 +197,7 @@ var peerClient = &http.Client{Timeout: 20 * time.Second}
 
 // syncPrimary reports this follower's traffic and settings to the primary and takes its users.
 // It reports whether the users changed.
-func syncPrimary(st *State, us *Usage) (bool, error) {
+func syncPrimary(st *state.State, us *state.Usage) (bool, error) {
 	deltas := map[string][2]int64{}
 	for name, uu := range us.Users {
 		if name == checkUserName {
@@ -285,7 +218,7 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 			online[name] = uu.Online
 		}
 	}
-	b, _ := json.Marshal(peerReport{Name: st.Follow.Name, State: st.public(), Usage: deltas, Online: online})
+	b, _ := json.Marshal(peerReport{Name: st.Follow.Name, State: peerState(st), Usage: deltas, Online: online})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", st.Follow.URL, bytes.NewReader(b))
@@ -310,7 +243,7 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 		uu := us.Users[name]
 		us.Synced[name] = [2]int64{uu.Up, uu.Down}
 	}
-	var users []User
+	var users []state.User
 	now := time.Now()
 	blocked := map[string]bool{}
 	for _, b := range us.Blocks {
@@ -320,7 +253,7 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 		if validUserName(p.Name) != nil || p.UUID == "" {
 			continue
 		}
-		u := User{Name: p.Name, UUID: p.UUID, SSKey: p.SSKey, WGIP: p.WGIP, Devices: max(p.Devices, 0), Enabled: true, Created: now.Unix()}
+		u := state.User{Name: p.Name, UUID: p.UUID, SSKey: p.SSKey, WGIP: p.WGIP, Devices: max(p.Devices, 0), Enabled: true, Created: now.Unix()}
 		if _, old := st.User(p.Name); old != nil {
 			u.Created, u.SubToken = old.Created, old.SubToken
 		}
@@ -328,7 +261,7 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 		for _, ip := range p.Block { // over the user's limit across all servers
 			if net.ParseIP(ip) != nil && !blocked[ip] {
 				blocked[ip] = true
-				us.Blocks = append(us.Blocks, IPBlock{IP: ip, User: p.Name, Until: now.Add(deviceBlock).Unix()})
+				us.Blocks = append(us.Blocks, state.IPBlock{IP: ip, User: p.Name, Until: now.Add(deviceBlock).Unix()})
 			}
 		}
 	}
@@ -343,15 +276,15 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 }
 
 // SetFollow makes this server follow a primary (url "" stops following; the users stay).
-func SetFollow(r *Server, peerURL, name string) (*State, error) {
-	defer r.lock()()
+func SetFollow(r *remote.Server, peerURL, name string) (*state.State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
 	}
 	if peerURL == "" {
 		st.Follow = nil
-		return st, saveState(r, st)
+		return st, state.Save(r, st)
 	}
 	u, err := url.Parse(peerURL)
 	if err != nil || u.Scheme != "https" || !strings.Contains(u.Path, "/peer/") {
@@ -365,8 +298,8 @@ func SetFollow(r *Server, peerURL, name string) (*State, error) {
 		return nil, fmt.Errorf("invalid server name %q", name)
 	}
 	prev := st.Follow
-	st.Follow = &Follow{URL: peerURL, Name: name}
-	us, err := LoadUsage(r)
+	st.Follow = &state.Follow{URL: peerURL, Name: name}
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +308,7 @@ func SetFollow(r *Server, peerURL, name string) (*State, error) {
 		return nil, err
 	}
 	st.Peers = nil
-	if err := saveUsage(r, us); err != nil {
+	if err := state.SaveUsage(r, us); err != nil {
 		return nil, err
 	}
 	return st, commit(r, st)
@@ -387,7 +320,7 @@ func cmdPeers(args []string) error {
 	if err := serverOnly("peers", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -425,7 +358,7 @@ func cmdPeers(args []string) error {
 	return nil
 }
 
-func printPeers(st *State) {
+func printPeers(st *state.State) {
 	switch {
 	case st.Follow != nil:
 		primary, _, _ := strings.Cut(st.Follow.URL, "/peer/")
@@ -436,7 +369,7 @@ func printPeers(st *State) {
 		return
 	}
 	fmt.Println("followers: on. On each other xtune server, run:")
-	fmt.Printf("  sudo xtune follow %s\n\n", orStr(st.PeerURL(), "(turn the subscription server on first)"))
+	fmt.Printf("  sudo xtune follow %s\n\n", orStr(PeerURL(st), "(turn the subscription server on first)"))
 	if len(st.Peers.Servers) == 0 {
 		fmt.Println("no followers yet")
 		return
@@ -457,7 +390,7 @@ func printPeers(st *State) {
 		if seen > 5*time.Minute {
 			state = "last report " + fmtSince(seen) + " ago"
 		}
-		if seen > peerStale {
+		if seen > protocols.PeerStale {
 			state += ", left out of subscriptions"
 		}
 		fmt.Printf("%-20s %-28s %s  (%s)\n", n, p.State.Addr(), strings.Join(ids, ", "), state)
@@ -468,7 +401,7 @@ func cmdFollow(args []string) error {
 	if err := serverOnly("follow", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -516,7 +449,7 @@ func cmdFollow(args []string) error {
 const peerOnlineFresh = 5 * time.Minute
 
 // remoteOnline are the IPs each user has online on the followers that reported recently.
-func (st *State) remoteOnline(now time.Time) map[string][]string {
+func remoteOnline(st *state.State, now time.Time) map[string][]string {
 	out := map[string][]string{}
 	if st.Peers == nil {
 		return out
@@ -538,7 +471,7 @@ func (st *State) remoteOnline(now time.Time) map[string][]string {
 
 // trackFirstSeen records when each user's IP was first online on any server (on a primary with
 // followers): the device limit keeps established devices and blocks newcomers.
-func trackFirstSeen(st *State, us *Usage, remote map[string][]string, now time.Time) {
+func trackFirstSeen(st *state.State, us *state.Usage, remote map[string][]string, now time.Time) {
 	if len(remote) == 0 && len(us.Online) == 0 {
 		return
 	}
@@ -573,7 +506,7 @@ func trackFirstSeen(st *State, us *Usage, remote map[string][]string, now time.T
 }
 
 // blocksFor are the IPs blocked for a user over their device limit, for a follower to block too.
-func (us *Usage) blocksFor(name string, now time.Time) []string {
+func blocksFor(us *state.Usage, name string, now time.Time) []string {
 	var out []string
 	for _, b := range us.Blocks {
 		if b.User == name && b.Until > now.Unix() {

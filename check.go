@@ -12,6 +12,9 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // `xtune check` measures the deployed configs from this network, quickly: are they reachable,
@@ -34,8 +37,8 @@ type CheckResult struct {
 }
 
 // ensureCheckUser gives the deployment its hidden check user, live, when it has none.
-func ensureCheckUser(r *Server) (*State, error) {
-	defer r.lock()()
+func ensureCheckUser(r *remote.Server) (*state.State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -43,7 +46,7 @@ func ensureCheckUser(r *Server) (*State, error) {
 	if st.Check != nil {
 		return st, nil
 	}
-	u := NewUser(checkUserName)
+	u := state.NewUser(checkUserName)
 	u.SubToken = ""
 	st.Check = &u
 	return st, commit(r, st)
@@ -137,7 +140,7 @@ func checkStatus(r CheckResult, t throughput) string {
 }
 
 // Check measures every deployed config from this machine.
-func Check(r *Server, xrayBin string, probes, secs int, out string, log func(string)) ([]CheckResult, *State, error) {
+func Check(r *remote.Server, xrayBin string, probes, secs int, out string, log func(string)) ([]CheckResult, *state.State, error) {
 	st, err := ensureCheckUser(r)
 	if err != nil {
 		return nil, nil, err

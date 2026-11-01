@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/chethober/xtune/internal/netinfo"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // ---------------------------------------------------------------- client
@@ -23,9 +27,9 @@ func (t *tui) check() error {
 		return err
 	}
 	network = strings.TrimSpace(network)
-	netw := detectNetwork(&network, func(s string) { fmt.Println(s) })
+	netw := netinfo.Detect(&network, func(s string) { fmt.Println(s) })
 	var res []CheckResult
-	var st *State
+	var st *state.State
 	if err := guarded(nil, func() error {
 		var e error
 		res, st, e = Check(t.r, bin, 5, 10, "xtune-results", func(s string) { fmt.Println(s) })
@@ -98,7 +102,7 @@ func (t *tui) move() error {
 		return errors.New("the new server is this one")
 	}
 	fmt.Println(dimStyle.Render("connecting to " + c.Host + " ..."))
-	nr, err := Dial(c, tuiPrompt)
+	nr, err := remote.Dial(c, tuiPrompt)
 	if err != nil {
 		return err
 	}
@@ -125,9 +129,95 @@ func (t *tui) move() error {
 	return nil
 }
 
+// relays lists the relays and adds, syncs or removes one.
+func (t *tui) relays() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nRelays (multi-hop)"))
+	fmt.Println(dimStyle.Render("A relay is a server in your users' country that forwards ports to this one: domestic routes\n" +
+		"are often filtered less. It runs only a port forwarder (no keys, no users); its configs join the subscriptions."))
+	printRelays(st)
+	action := "back"
+	opts := []huh.Option[string]{huh.NewOption("Add a relay", "add")}
+	for _, rl := range st.Relays {
+		opts = append(opts, huh.NewOption("Sync "+rl.Name+" (after a redeploy or a move)", "sync:"+rl.Name),
+			huh.NewOption("Remove "+rl.Name, "del:"+rl.Name))
+	}
+	opts = append(opts, huh.NewOption("Back", "back"))
+	if err := huh.NewSelect[string]().Title("Relays").Options(opts...).Value(&action).WithTheme(t.theme).Run(); err != nil || action == "back" {
+		return err
+	}
+	log := func(s string) { fmt.Println(s) }
+	kind, name, _ := strings.Cut(action, ":")
+	var rl *state.Relay
+	for i := range st.Relays {
+		if st.Relays[i].Name == name {
+			rl = &st.Relays[i]
+		}
+	}
+	dial := func(title string) (*remote.Server, error) {
+		c, err := t.askServer(title)
+		if err != nil {
+			return nil, err
+		}
+		return remote.Dial(c, tuiPrompt)
+	}
+	switch kind {
+	case "add":
+		addr := ""
+		if err := huh.NewInput().Title("Relay name").Description("Lowercase letters, digits and dashes, e.g. teh1. Configs through it are named after it.").
+			Value(&name).Validate(func(s string) error {
+			if !relayNameRe.MatchString(s) {
+				return errors.New("lowercase letters, digits and dashes")
+			}
+			return nil
+		}).WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+		relay, err := dial("Relay")
+		if err != nil {
+			return err
+		}
+		defer relay.Close()
+		if err := huh.NewInput().Title("Address clients dial (empty = " + relay.Conn.Host + ")").Value(&addr).WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+		st, err = SyncRelay(t.r, relay, RelayOpts{Name: name, Addr: strings.TrimSpace(addr), Log: log})
+	case "sync":
+		var relay *remote.Server
+		if relay, err = remote.Dial(remote.Conn{Host: rl.SSH.Host, Port: rl.SSH.Port, User: rl.SSH.User}, tuiPrompt); err != nil {
+			if relay, err = dial("Relay " + name); err != nil {
+				return err
+			}
+		}
+		defer relay.Close()
+		st, err = SyncRelay(t.r, relay, RelayOpts{Name: name, Log: log})
+	case "del":
+		relay, derr := remote.Dial(remote.Conn{Host: rl.SSH.Host, Port: rl.SSH.Port, User: rl.SSH.User}, tuiPrompt)
+		if derr != nil {
+			forget := false
+			if err := huh.NewConfirm().Title("Cannot reach the relay (" + derr.Error() + "). Forget it anyway?").Value(&forget).WithTheme(t.theme).Run(); err != nil || !forget {
+				return err
+			}
+			relay = nil
+		} else {
+			defer relay.Close()
+		}
+		st, err = RemoveRelay(t.r, relay, name)
+	}
+	if err != nil {
+		return err
+	}
+	printRelays(st)
+	pause()
+	return nil
+}
+
 // askServer asks for another server's SSH details.
-func (t *tui) askServer(title string) (Conn, error) {
-	c := Conn{User: "root"}
+func (t *tui) askServer(title string) (remote.Conn, error) {
+	c := remote.Conn{User: "root"}
 	port, auth := "22", "key"
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title(title+": address").Value(&c.Host).Validate(func(s string) error {
@@ -182,11 +272,11 @@ func (t *tui) warp() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(titleStyle.Render("\nWARP") + "  " + st.Warp.describe())
+	fmt.Println(titleStyle.Render("\nWARP") + "  " + describeWarp(st.Warp))
 	fmt.Println(dimStyle.Render("Many services refuse datacenter IPs or whole countries. With WARP, Xray reaches them\n" +
 		"through Cloudflare's free WARP network instead of this server's IP."))
 	choice := "ai"
-	opts := []huh.Option[string]{huh.NewOption("On for AI services ("+strings.Join(defaultWarpDomains, ", ")+")", "ai"),
+	opts := []huh.Option[string]{huh.NewOption("On for AI services ("+strings.Join(protocols.DefaultWarpDomains, ", ")+")", "ai"),
 		huh.NewOption("On for chosen sites ...", "custom"), huh.NewOption("On for all traffic", "all")}
 	if st.Warp != nil {
 		opts = append(opts, huh.NewOption("Off", "off"))
@@ -220,7 +310,7 @@ func (t *tui) warp() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(okStyle.Render("WARP: " + st.Warp.describe()))
+	fmt.Println(okStyle.Render("WARP: " + describeWarp(st.Warp)))
 	pause()
 	return nil
 }
@@ -230,7 +320,7 @@ func (t *tui) notify() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(titleStyle.Render("\nAlerts") + "  " + st.Notify.describe())
+	fmt.Println(titleStyle.Render("\nAlerts") + "  " + describeNotify(st.Notify))
 	fmt.Println(dimStyle.Render("Sent once each: a user at 80% and 100% of their quota, 3 days before and at expiry,\n" +
 		"and when the deployed Xray stops answering."))
 	n := st.Notify
@@ -276,12 +366,12 @@ func (t *tui) notify() error {
 		pause()
 		return nil
 	case "off":
-		n = Notify{}
+		n = state.Notify{}
 	}
 	if err := SetNotify(t.r, n); err != nil {
 		return err
 	}
-	fmt.Println(okStyle.Render("alerts: " + n.describe()))
+	fmt.Println(okStyle.Render("alerts: " + describeNotify(n)))
 	pause()
 	return nil
 }

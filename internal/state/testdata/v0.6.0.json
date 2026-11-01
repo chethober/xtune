@@ -1,0 +1,218 @@
+{
+ "state": {
+  "host": "x-Host",
+  "domain": "x-Domain",
+  "cdnDomain": "x-CDNDomain",
+  "realityPrivateKey": "x-RealityPriv",
+  "realityPublicKey": "x-RealityPub",
+  "shortId": "x-ShortID",
+  "vlessDecryption": "x-VencDec",
+  "vlessEncryption": "x-VencEnc",
+  "ssServerKey": "x-SSKey",
+  "certSni": "x-CertSNI",
+  "certSha256": "x-CertHash",
+  "certPem": "x-CertPEM",
+  "keyPem": "x-KeyPEM",
+  "entries": [
+   {
+    "id": "x-ID",
+    "kind": "x-Kind",
+    "port": 7,
+    "sni": "x-SNI",
+    "path": "x-Path",
+    "svc": "x-Svc",
+    "primary": true,
+    "fp": "x-FP",
+    "mode": "x-Mode",
+    "frag": "x-Frag",
+    "split": "x-Split",
+    "hop": "x-Hop",
+    "mtu": 7,
+    "resolver": "x-Resolver"
+   }
+  ],
+  "users": [
+   {
+    "name": "x-Name",
+    "uuid": "x-UUID",
+    "ssKey": "x-SSKey",
+    "enabled": true,
+    "created": 7,
+    "quota": 7,
+    "expires": 7,
+    "devices": 7,
+    "subToken": "x-SubToken",
+    "reset": "x-Reset",
+    "resetAt": 7,
+    "plan": "x-Plan",
+    "telegram": 7,
+    "owner": 7,
+    "wgIp": "x-WGIP",
+    "pool": "x-Pool"
+   }
+  ],
+  "apiPort": 7,
+  "country": "x-Country",
+  "sub": {
+   "mode": "x-Mode",
+   "port": 7,
+   "path": "x-Path",
+   "lang": "x-Lang"
+  },
+  "check": {
+   "name": "x-Name",
+   "uuid": "x-UUID",
+   "ssKey": "x-SSKey",
+   "enabled": true,
+   "created": 7,
+   "quota": 7,
+   "expires": 7,
+   "devices": 7,
+   "subToken": "x-SubToken",
+   "reset": "x-Reset",
+   "resetAt": 7,
+   "plan": "x-Plan",
+   "telegram": 7,
+   "owner": 7,
+   "wgIp": "x-WGIP",
+   "pool": "x-Pool"
+  },
+  "warp": {
+   "privateKey": "x-PrivateKey",
+   "address4": "x-Address4",
+   "address6": "x-Address6",
+   "peerPublicKey": "x-PeerKey",
+   "endpoint": "x-Endpoint",
+   "reserved": [
+    7
+   ],
+   "domains": [
+    "x-Domains"
+   ],
+   "all": true
+  },
+  "notify": {
+   "telegramToken": "x-TelegramToken",
+   "telegramChat": "x-TelegramChat",
+   "webhook": "x-Webhook"
+  },
+  "bot": {
+   "token": "x-Token",
+   "admins": [
+    7
+   ],
+   "lang": "x-Lang",
+   "selfService": true,
+   "resellers": [
+    {
+     "id": 7,
+     "name": "x-Name",
+     "maxUsers": 7,
+     "quotaGB": 1.5
+    }
+   ],
+   "backup": {
+    "hours": 7,
+    "passphrase": "x-Passphrase"
+   }
+  },
+  "plans": {
+   "x-k": {
+    "quotaGB": 1.5,
+    "days": 7,
+    "devices": 7,
+    "reset": "x-Reset"
+   }
+  },
+  "cloudflare": {
+   "token": "x-Token"
+  },
+  "peers": {
+   "secret": "x-Secret",
+   "servers": {
+    "x-k": {
+     "state": null,
+     "seen": 0
+    }
+   }
+  },
+  "follow": {
+   "url": "x-URL",
+   "name": "x-Name"
+  },
+  "public": {
+   "x-k": {
+    "token": "x-Token",
+    "quotaGB": 1.5,
+    "days": 7,
+    "devices": 7,
+    "reset": "x-Reset",
+    "plan": "x-Plan",
+    "members": 7,
+    "paused": true,
+    "created": 7
+   }
+  },
+  "wgPrivateKey": "x-WGPriv",
+  "wgPublicKey": "x-WGPub",
+  "sshHostKey": "x-SSHHostKey",
+  "sshHostPub": "x-SSHHostPub",
+  "dnsttKey": "x-DNSTTKey",
+  "dnsttPub": "x-DNSTTPub",
+  "dnsDomain": "x-DNSDomain",
+  "vpnCa": "x-VPNCA",
+  "vpnCaKey": "x-VPNCAKey",
+  "vpnCert": "x-VPNCert",
+  "vpnKey": "x-VPNKey",
+  "vpnName": "x-VPNName"
+ },
+ "usage": {
+  "users": {
+   "x-k": {
+    "up": 7,
+    "down": 7,
+    "lastSeen": 7,
+    "online": [
+     ""
+    ],
+    "daily": {
+     "": 0
+    }
+   }
+  },
+  "blocks": [
+   {
+    "ip": "x-IP",
+    "user": "x-User",
+    "until": 7
+   }
+  ],
+  "activeKey": "x-ActiveKey",
+  "updated": 7,
+  "notified": {
+   "x-k": 7
+  },
+  "failures": 7,
+  "entries": {
+   "x-k": {
+    "bytes": 7,
+    "first": 7,
+    "active": 7
+   }
+  },
+  "backupAt": 7,
+  "sniAt": 7,
+  "synced": {
+   "x-k": [
+    0,
+    0
+   ]
+  },
+  "extra": {
+   "x-k": [
+    0,
+    0
+   ]
+  }
+ }
+}

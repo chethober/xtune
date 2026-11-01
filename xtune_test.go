@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 func TestNewer(t *testing.T) {
@@ -56,16 +59,16 @@ func TestPlanEntriesAvoidsUsedPorts(t *testing.T) {
 	}
 }
 
-func testState() *State {
-	return &State{Host: "203.0.113.7", RealityPriv: "priv", RealityPub: "pub", ShortID: "abcd1234",
+func testState() *state.State {
+	return &state.State{Host: "203.0.113.7", RealityPriv: "priv", RealityPub: "pub", ShortID: "abcd1234",
 		VencDec: "mlkem768x25519plus.native.600s.dec", VencEnc: "mlkem768x25519plus.native.0rtt.enc",
 		SSKey: "c2VydmVya2V5c2VydmVya2V5", CertSNI: "www.bing.com", CertHash: "ff"}
 }
 
 func TestLinks(t *testing.T) {
 	st := testState()
-	u := User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555", SSKey: "dXNlcmtleXVzZXJrZXk="}
-	l := st.Link(Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 2053, SNI: "www.b.com"}, u, Knobs{FP: "firefox"})
+	u := state.User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555", SSKey: "dXNlcmtleXVzZXJrZXk="}
+	l := protocols.Link(st, state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 2053, SNI: "www.b.com"}, u, state.Knobs{FP: "firefox"})
 	pu, err := url.Parse(l)
 	if err != nil {
 		t.Fatal(err)
@@ -75,21 +78,21 @@ func TestLinks(t *testing.T) {
 		q.Get("flow") != "xtls-rprx-vision" || q.Get("pbk") != "pub" || q.Get("sni") != "www.b.com" {
 		t.Errorf("bad reality link: %s", l)
 	}
-	l = st.Link(Entry{ID: "venc", Kind: "vlessenc-xhttp", Port: 3000, Path: "/p"}, u, Knobs{Mode: "packet-up"})
+	l = protocols.Link(st, state.Entry{ID: "venc", Kind: "vlessenc-xhttp", Port: 3000, Path: "/p"}, u, state.Knobs{Mode: "packet-up"})
 	q = mustQuery(t, l)
 	if q.Get("encryption") != st.VencEnc || q.Get("mode") != "packet-up" || q.Get("path") != "/p" || q.Get("security") != "none" {
 		t.Errorf("bad vless-encryption link: %s", l)
 	}
-	l = st.Link(Entry{ID: "ss", Kind: "ss2022", Port: 4000}, u, Knobs{})
+	l = protocols.Link(st, state.Entry{ID: "ss", Kind: "ss2022", Port: 4000}, u, state.Knobs{})
 	if !strings.HasPrefix(l, "ss://2022-blake3-aes-128-gcm%3A") || !strings.Contains(l, "@203.0.113.7:4000") {
 		t.Errorf("bad ss link: %s", l)
 	}
-	l = st.Link(Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, Knobs{})
+	l = protocols.Link(st, state.Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, state.Knobs{})
 	if !strings.HasPrefix(l, "hysteria2://"+u.UUID+"@203.0.113.7:5000?") || !strings.Contains(l, "pinSHA256=ff") {
 		t.Errorf("bad hysteria2 link: %s", l)
 	}
 	st.Host = "2001:db8::1"
-	if l = st.Link(Entry{ID: "x", Kind: "reality-tcp", Port: 1}, u, Knobs{}); !strings.Contains(l, "@[2001:db8::1]:1?") {
+	if l = protocols.Link(st, state.Entry{ID: "x", Kind: "reality-tcp", Port: 1}, u, state.Knobs{}); !strings.Contains(l, "@[2001:db8::1]:1?") {
 		t.Errorf("IPv6 host not bracketed: %s", l)
 	}
 }
@@ -104,10 +107,10 @@ func mustQuery(t *testing.T, l string) url.Values {
 
 func TestServerConfigOnlyEnabledUsers(t *testing.T) {
 	st := testState()
-	on, off := NewUser("on"), NewUser("off")
+	on, off := state.NewUser("on"), state.NewUser("off")
 	off.Enabled = false
-	entries := []Entry{{ID: "a", Kind: "reality-tcp", Port: 1, SNI: "x.com"}, {ID: "s", Kind: "ss2022", Port: 2}}
-	cfg := st.ServerConfig(entries, []User{on, off})
+	entries := []state.Entry{{ID: "a", Kind: "reality-tcp", Port: 1, SNI: "x.com"}, {ID: "s", Kind: "ss2022", Port: 2}}
+	cfg := protocols.ServerConfig(st, entries, []state.User{on, off})
 	ibs := cfg["inbounds"].([]J)
 	if len(ibs) != 2 {
 		t.Fatalf("want 2 inbounds, got %d", len(ibs))
@@ -116,14 +119,14 @@ func TestServerConfigOnlyEnabledUsers(t *testing.T) {
 	if len(clients) != 1 || clients[0]["email"] != "on" || clients[0]["flow"] != "xtls-rprx-vision" {
 		t.Errorf("disabled user leaked or flow missing: %v", clients)
 	}
-	if got := st.ServerConfig(entries, []User{off})["inbounds"].([]J); len(got) != 0 {
+	if got := protocols.ServerConfig(st, entries, []state.User{off})["inbounds"].([]J); len(got) != 0 {
 		t.Errorf("no enabled users should mean no inbounds, got %d", len(got))
 	}
 }
 
 func TestPickPrefersSimplestWithinTie(t *testing.T) {
-	plain := &Variant{K: Knobs{FP: "chrome", Frag: "none"}, Score: 95}
-	frag := &Variant{K: Knobs{FP: "chrome", Frag: "frag-aggr"}, Score: 100}
+	plain := &Variant{K: state.Knobs{FP: "chrome", Frag: "none"}, Score: 95}
+	frag := &Variant{K: state.Knobs{FP: "chrome", Frag: "frag-aggr"}, Score: 100}
 	if pick([]*Variant{frag, plain}) != plain {
 		t.Error("a 5% gain should not justify fragmentation")
 	}
@@ -139,7 +142,7 @@ func TestPickPrefersSimplestWithinTie(t *testing.T) {
 func TestPlanEntriesCDN(t *testing.T) {
 	probe := "SNI www.a.com 2 0.20\nUSED tcp 0.0.0.0:2053"
 	entries, _ := PlanEntries(probe, true)
-	var cdn []Entry
+	var cdn []state.Entry
 	for _, e := range entries {
 		if e.CDN() {
 			cdn = append(cdn, e)
@@ -168,16 +171,16 @@ func TestPlanEntriesCDN(t *testing.T) {
 func TestDomainsInLinks(t *testing.T) {
 	st := testState()
 	st.Domain, st.CDNDomain = "direct.example.com", "cdn.example.com"
-	u := NewUser("ann")
-	l := st.Link(Entry{ID: "r", Kind: "reality-tcp", Port: 443, SNI: "www.b.com"}, u, Knobs{})
+	u := state.NewUser("ann")
+	l := protocols.Link(st, state.Entry{ID: "r", Kind: "reality-tcp", Port: 443, SNI: "www.b.com"}, u, state.Knobs{})
 	if !strings.Contains(l, "@direct.example.com:443?") {
 		t.Errorf("direct entry should use the direct domain: %s", l)
 	}
-	if l = st.Link(Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, Knobs{}); !strings.Contains(l, "@direct.example.com:5000?") {
+	if l = protocols.Link(st, state.Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, state.Knobs{}); !strings.Contains(l, "@direct.example.com:5000?") {
 		t.Errorf("hysteria2 should use the direct domain: %s", l)
 	}
-	cdn := Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
-	l = st.Link(cdn, u, Knobs{FP: "firefox", Mode: "packet-up"})
+	cdn := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
+	l = protocols.Link(st, cdn, u, state.Knobs{FP: "firefox", Mode: "packet-up"})
 	pu, err := url.Parse(l)
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +190,7 @@ func TestDomainsInLinks(t *testing.T) {
 		q.Get("host") != "cdn.example.com" || q.Get("fp") != "firefox" || q.Get("mode") != "packet-up" || q.Get("path") != "/p" || q.Get("flow") != "" {
 		t.Errorf("bad CDN link: %s", l)
 	}
-	ob := st.Outbound(cdn, u, Knobs{}, "proxy")
+	ob := protocols.Outbound(st, cdn, u, state.Knobs{}, "proxy")
 	if addr := ob["settings"].(J)["vnext"].([]J)[0]["address"]; addr != "cdn.example.com" {
 		t.Errorf("CDN outbound address %v", addr)
 	}
@@ -195,21 +198,21 @@ func TestDomainsInLinks(t *testing.T) {
 	if ss["security"] != "tls" || ss["xhttpSettings"].(J)["host"] != "cdn.example.com" {
 		t.Errorf("CDN outbound stream settings: %v", ss)
 	}
-	ib := st.ServerConfig([]Entry{cdn}, []User{u})["inbounds"].([]J)[0]
+	ib := protocols.ServerConfig(st, []state.Entry{cdn}, []state.User{u})["inbounds"].([]J)[0]
 	iss := ib["streamSettings"].(J)
 	if iss["security"] != "tls" || iss["network"] != "xhttp" || iss["tlsSettings"].(J)["certificates"] == nil {
 		t.Errorf("CDN inbound needs TLS with the origin certificate: %v", iss)
 	}
 	st.Domain = ""
-	if l = st.Link(Entry{ID: "s", Kind: "ss2022", Port: 4000}, u, Knobs{}); !strings.Contains(l, "@203.0.113.7:4000") {
+	if l = protocols.Link(st, state.Entry{ID: "s", Kind: "ss2022", Port: 4000}, u, state.Knobs{}); !strings.Contains(l, "@203.0.113.7:4000") {
 		t.Errorf("without a direct domain links use the IP: %s", l)
 	}
 }
 
 func TestTestCertsCoverAllTLSInbounds(t *testing.T) {
 	st := testState()
-	cfg := st.ServerConfig([]Entry{{ID: "hy", Kind: "hysteria2", Port: 1}, {ID: "c", Kind: "cdn-xhttp", Port: 2, Path: "/p"},
-		{ID: "r", Kind: "reality-tcp", Port: 3, SNI: "x.com"}, {ID: "s", Kind: "ss2022", Port: 4}}, []User{NewUser("a")})
+	cfg := protocols.ServerConfig(st, []state.Entry{{ID: "hy", Kind: "hysteria2", Port: 1}, {ID: "c", Kind: "cdn-xhttp", Port: 2, Path: "/p"},
+		{ID: "r", Kind: "reality-tcp", Port: 3, SNI: "x.com"}, {ID: "s", Kind: "ss2022", Port: 4}}, []state.User{state.NewUser("a")})
 	testCerts(cfg, "/t")
 	for _, ib := range cfg["inbounds"].([]J) {
 		ss, _ := ib["streamSettings"].(J)
@@ -242,18 +245,18 @@ func TestParseAllowsFlagsAfterArgs(t *testing.T) {
 
 func TestSubscriptionIsBase64Links(t *testing.T) {
 	st := testState()
-	st.Entries = []Entry{{ID: "a", Kind: "reality-tcp", Port: 1, SNI: "x.com"}}
-	u := NewUser("z")
-	raw, err := base64.StdEncoding.DecodeString(st.Subscription(u))
+	st.Entries = []state.Entry{{ID: "a", Kind: "reality-tcp", Port: 1, SNI: "x.com"}}
+	u := state.NewUser("z")
+	raw, err := base64.StdEncoding.DecodeString(protocols.Subscription(st, u))
 	if err != nil || !strings.HasPrefix(string(raw), "vless://"+u.UUID) {
 		t.Errorf("subscription body: %q %v", raw, err)
 	}
 }
 
 func TestDeployChoiceKeepsCDN(t *testing.T) {
-	a := &Variant{Entry: Entry{ID: "r-tcp", Kind: "reality-tcp"}}
-	b := &Variant{Entry: Entry{ID: "hy2", Kind: "hysteria2"}}
-	c := &Variant{Entry: Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp"}}
+	a := &Variant{Entry: state.Entry{ID: "r-tcp", Kind: "reality-tcp"}}
+	b := &Variant{Entry: state.Entry{ID: "hy2", Kind: "hysteria2"}}
+	c := &Variant{Entry: state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp"}}
 	if got := deployChoice([]*Variant{a, b, c}, 1); len(got) != 2 || got[0] != a || got[1] != c {
 		t.Errorf("top 1 plus the CDN entry expected, got %d", len(got))
 	}
@@ -360,13 +363,13 @@ func (f *fakeServer) api(args []string) (string, error) {
 	return "{}", nil
 }
 
-func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
+func (f *fakeServer) Exec(cmd, stdin string, _ bool) (string, string, error) {
 	if _, args, ok := strings.Cut(cmd, "helper.sh "); ok {
 		f.calls = append(f.calls, strings.ReplaceAll(args, "'", ""))
 	}
 	switch {
-	case strings.HasPrefix(cmd, remoteDir+"/xray api "):
-		out, err := f.api(strings.Fields(strings.TrimPrefix(cmd, remoteDir+"/xray api ")))
+	case strings.HasPrefix(cmd, remote.Dir+"/xray api "):
+		out, err := f.api(strings.Fields(strings.TrimPrefix(cmd, remote.Dir+"/xray api ")))
 		return out, "", err
 	case strings.HasPrefix(cmd, "cat "):
 		return f.files[strings.Fields(cmd)[1]], "", nil
@@ -379,7 +382,7 @@ func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
 		f.restarts++
 		f.live = map[string]map[string]string{} // a restart loads config.json's users
 		var cfg struct{ Inbounds []J }
-		json.Unmarshal([]byte(f.files[remoteDir+"/config.json"]), &cfg)
+		json.Unmarshal([]byte(f.files[remote.Dir+"/config.json"]), &cfg)
 		for _, ib := range cfg.Inbounds {
 			f.live[ib["tag"].(string)] = map[string]string{}
 			if ib["protocol"] == "wireguard" {
@@ -416,15 +419,15 @@ func newFake() *fakeServer {
 	return &fakeServer{files: map[string]string{}, live: map[string]map[string]string{}}
 }
 
-func (f *fakeServer) stream(context.Context, string, func(string)) error { return nil }
-func (f *fakeServer) close()                                             {}
+func (f *fakeServer) Stream(context.Context, string, func(string)) error { return nil }
+func (f *fakeServer) Close()                                             {}
 
 func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	first := testState()
-	first.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
-	first.Users = []User{NewUser("ann")}
+	first.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
+	first.Users = []state.User{state.NewUser("ann")}
 	if err := Apply(r, first); err != nil {
 		t.Fatal(err)
 	}
@@ -432,8 +435,8 @@ func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 	fresh.RealityPriv, fresh.RealityPub, fresh.CertHash = "new-priv", "new-pub", "00"
 	fresh.CDNDomain = "cdn.example.com"
 	res := &TuneResult{State: fresh, Best: []*Variant{
-		{Entry: Entry{ID: "hy2", Kind: "hysteria2", Port: 8443}},
-		{Entry: Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}, K: Knobs{FP: "chrome", Frag: "none", Mode: "packet-up"}},
+		{Entry: state.Entry{ID: "hy2", Kind: "hysteria2", Port: 8443}},
+		{Entry: state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}, K: state.Knobs{FP: "chrome", Frag: "none", Mode: "packet-up"}},
 	}}
 	st, err := Deploy(r, res, 1)
 	if err != nil {
@@ -448,7 +451,7 @@ func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 	if len(st.Entries) != 2 || st.Entries[1].Mode != "packet-up" {
 		t.Errorf("want top 1 plus the CDN entry with its tuned knobs: %+v", st.Entries)
 	}
-	if !strings.Contains(fs.files[remoteDir+"/config.json"], `"cdn-xhttp"`) {
+	if !strings.Contains(fs.files[remote.Dir+"/config.json"], `"cdn-xhttp"`) {
 		t.Error("config.json does not contain the CDN inbound")
 	}
 
@@ -466,36 +469,18 @@ func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 			t.Errorf("new CDN entry on a used port or without the CDN-safe mode: %+v", e)
 		}
 	}
-	if loaded, _ := LoadState(r); loaded == nil || loaded.CDNDomain != "cdn2.example.invalid" {
+	if loaded, _ := state.Load(r); loaded == nil || loaded.CDNDomain != "cdn2.example.invalid" {
 		t.Error("domains not persisted in state.json")
 	}
 }
 
-func TestLocalTransport(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("no bash")
-	}
-	var l localTransport
-	if out, _, err := l.exec("cat; echo -n done", "in-", false); err != nil || out != "in-done" {
-		t.Errorf("exec: %q %v", out, err)
-	}
-	if _, _, err := l.exec("echo boom >&2; exit 3", "", false); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Errorf("exec error should carry stderr: %v", err)
-	}
-	var lines []string
-	l.stream(context.Background(), "printf 'a\\nb\\n'", func(s string) { lines = append(lines, s) })
-	if strings.Join(lines, ",") != "a,b" {
-		t.Errorf("stream: %v", lines)
-	}
-}
-
 // deployed sets up a fake server with a live deployment (API enabled) and returns it.
-func deployed(t *testing.T, users ...User) (*Server, *fakeServer) {
+func deployed(t *testing.T, users ...state.User) (*remote.Server, *fakeServer) {
 	t.Helper()
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := testState()
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "ss2022", Kind: "ss2022", Port: 30001}}
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "ss2022", Kind: "ss2022", Port: 30001}}
 	st.Users = users
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
@@ -507,7 +492,7 @@ func deployed(t *testing.T, users ...User) (*Server, *fakeServer) {
 }
 
 func TestUserChangesAreLiveWithoutRestart(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
+	r, fs := deployed(t, state.NewUser("ann"))
 	before := fs.restarts
 	if _, _, err := AddUser(r, "bob", Limits{}); err != nil {
 		t.Fatal(err)
@@ -515,7 +500,7 @@ func TestUserChangesAreLiveWithoutRestart(t *testing.T) {
 	if fs.live["r-tcp"]["bob"] == "" || fs.live["ss2022"]["bob"] == "" || fs.live["r-tcp"]["ann"] == "" {
 		t.Fatalf("bob not added live next to ann: %v", fs.live)
 	}
-	st, _ := LoadState(r)
+	st, _ := state.Load(r)
 	_, bob := st.User("bob")
 	if fs.live["ss2022"]["bob"] != bob.SSKey {
 		t.Error("shadowsocks inbound should carry the user's key")
@@ -542,7 +527,7 @@ func TestUserChangesAreLiveWithoutRestart(t *testing.T) {
 	if fs.restarts != before {
 		t.Errorf("user changes restarted Xray %d times", fs.restarts-before)
 	}
-	if strings.Contains(fs.files[remoteDir+"/config.json"], `"ann"`) {
+	if strings.Contains(fs.files[remote.Dir+"/config.json"], `"ann"`) {
 		t.Error("config.json not rewritten, a restart would bring ann back")
 	}
 }
@@ -559,7 +544,7 @@ func TestCommitFallsBackToRestart(t *testing.T) {
 }
 
 func TestEnforceQuotaExpiryAndDevices(t *testing.T) {
-	ann, bob, cy := NewUser("ann"), NewUser("bob"), NewUser("cy")
+	ann, bob, cy := state.NewUser("ann"), state.NewUser("bob"), state.NewUser("cy")
 	ann.Quota = 1000
 	cy.Devices = 1
 	r, fs := deployed(t, ann, bob, cy)
@@ -569,7 +554,7 @@ func TestEnforceQuotaExpiryAndDevices(t *testing.T) {
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
-	us, _ := LoadUsage(r)
+	us, _ := state.LoadUsage(r)
 	if u := us.Users["ann"]; u == nil || u.Up != 400 || u.Down != 700 {
 		t.Fatalf("traffic not accumulated: %+v", us.Users["ann"])
 	}
@@ -588,7 +573,7 @@ func TestEnforceQuotaExpiryAndDevices(t *testing.T) {
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
-	us, _ = LoadUsage(r)
+	us, _ = state.LoadUsage(r)
 	if us.Users["bob"].Down != 10 || len(us.Blocks) != 1 {
 		t.Errorf("bob=%d blocks=%v", us.Users["bob"].Down, us.Blocks)
 	}
@@ -603,10 +588,10 @@ func TestEnforceQuotaExpiryAndDevices(t *testing.T) {
 	if _, err := SetLimits(r, "bob", Limits{Days: &days}); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := LoadState(r)
+	st, _ := state.Load(r)
 	_, b := st.User("bob")
 	b.Expires = time.Now().Add(-time.Minute).Unix()
-	saveState(r, st)
+	state.Save(r, st)
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
@@ -617,21 +602,21 @@ func TestEnforceQuotaExpiryAndDevices(t *testing.T) {
 
 func TestUserStatus(t *testing.T) {
 	now := time.Unix(1000, 0)
-	u := User{Enabled: true}
+	u := state.User{Enabled: true}
 	cases := []struct {
-		u    User
-		uu   *UserUsage
+		u    state.User
+		uu   *state.UserUsage
 		want string
 	}{
 		{u, nil, "active"},
-		{User{Enabled: false}, nil, "disabled"},
-		{User{Enabled: true, Expires: 999}, nil, "expired"},
-		{User{Enabled: true, Expires: 1001}, nil, "active"},
-		{User{Enabled: true, Quota: 10}, &UserUsage{Up: 4, Down: 6}, "over quota"},
-		{User{Enabled: true, Quota: 10}, &UserUsage{Up: 4, Down: 5}, "active"},
+		{state.User{Enabled: false}, nil, "disabled"},
+		{state.User{Enabled: true, Expires: 999}, nil, "expired"},
+		{state.User{Enabled: true, Expires: 1001}, nil, "active"},
+		{state.User{Enabled: true, Quota: 10}, &state.UserUsage{Up: 4, Down: 6}, "over quota"},
+		{state.User{Enabled: true, Quota: 10}, &state.UserUsage{Up: 4, Down: 5}, "active"},
 	}
 	for i, c := range cases {
-		if got := userStatus(c.u, c.uu, now); got != c.want {
+		if got := state.UserStatus(c.u, c.uu, now); got != c.want {
 			t.Errorf("%d: %s, want %s", i, got, c.want)
 		}
 	}
@@ -640,13 +625,13 @@ func TestUserStatus(t *testing.T) {
 func TestSubServer(t *testing.T) {
 	st := testState()
 	st.CDNDomain = "cdn.example.com"
-	st.Sub = SubConfig{Mode: "cdn", Port: 2096, Path: "p4th"}
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
-	ann := NewUser("ann")
+	st.Sub = state.SubConfig{Mode: "cdn", Port: 2096, Path: "p4th"}
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
+	ann := state.NewUser("ann")
 	ann.Quota, ann.Expires = 50<<30, 2000000000
-	st.Users = []User{ann}
-	us := &Usage{Users: map[string]*UserUsage{"ann": {Up: 1 << 30, Down: 2 << 30}}}
-	h := subHandler{load: func() (*State, *Usage, error) { return st, us, nil }}
+	st.Users = []state.User{ann}
+	us := &state.Usage{Users: map[string]*state.UserUsage{"ann": {Up: 1 << 30, Down: 2 << 30}}}
+	h := subHandler{load: func() (*state.State, *state.Usage, error) { return st, us, nil }}
 	get := func(path, accept string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", path, nil)
 		if accept != "" {
@@ -657,8 +642,8 @@ func TestSubServer(t *testing.T) {
 		return w
 	}
 	base := "/p4th/" + ann.SubToken
-	if want := "https://cdn.example.com:2096" + base; st.SubURL(ann) != want {
-		t.Errorf("SubURL %s, want %s", st.SubURL(ann), want)
+	if want := "https://cdn.example.com:2096" + base; SubURL(st, ann) != want {
+		t.Errorf("SubURL %s, want %s", SubURL(st, ann), want)
 	}
 	for _, p := range []string{"/", "/p4th", "/p4th/nope", "/wrong/" + ann.SubToken, base + "/x", base + "/json/x"} {
 		if w := get(p, ""); w.Code != 404 {
@@ -697,8 +682,8 @@ func TestSubServer(t *testing.T) {
 func TestFailoverConfig(t *testing.T) {
 	st := testState()
 	st.Country, st.CDNDomain = "ir", "cdn.example.com"
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p", Mode: "packet-up"}}
-	cfg := st.FailoverConfig(NewUser("ann"))
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p", Mode: "packet-up"}}
+	cfg := protocols.FailoverConfig(st, state.NewUser("ann"))
 	b, _ := json.Marshal(cfg)
 	s := string(b)
 	for _, want := range []string{`"proxy-r-tcp"`, `"proxy-cdn-xhttp"`, `"balancerTag":"auto"`, `"leastPing"`, `geosite:category-ir`, `geoip:ir`, `"fallbackTag":"proxy-r-tcp"`} {
@@ -707,7 +692,7 @@ func TestFailoverConfig(t *testing.T) {
 		}
 	}
 	st.Country = ""
-	if b, _ = json.Marshal(st.FailoverConfig(NewUser("ann"))); strings.Contains(string(b), "geoip:ir") {
+	if b, _ = json.Marshal(protocols.FailoverConfig(st, state.NewUser("ann"))); strings.Contains(string(b), "geoip:ir") {
 		t.Error("country rules without a country")
 	}
 }

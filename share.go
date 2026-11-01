@@ -8,6 +8,10 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/netinfo"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Several networks, one deployment. `xtune tune --share bundle.json` leaves the test matrix
@@ -20,23 +24,23 @@ const testLifetime = 2 * time.Hour // RuntimeMaxSec of the test instance, see he
 // Bundle is what a tester needs to measure the test matrix. It holds no server secrets: the
 // test user only exists on the temporary test instance.
 type Bundle struct {
-	ID      string  `json:"id"`
-	Created int64   `json:"created"`
-	Expires int64   `json:"expires"`
-	Depth   string  `json:"depth"`
-	State   *State  `json:"state"` // public parts only
-	User    User    `json:"user"`
-	Entries []Entry `json:"entries"`
+	ID      string        `json:"id"`
+	Created int64         `json:"created"`
+	Expires int64         `json:"expires"`
+	Depth   string        `json:"depth"`
+	State   *state.State  `json:"state"` // public parts only
+	User    state.User    `json:"user"`
+	Entries []state.Entry `json:"entries"`
 }
 
 // Pending is a finished tune waiting on the server (pending.json) to be deployed.
 type Pending struct {
-	ID       string     `json:"id"`
-	Created  int64      `json:"created"`
-	Network  string     `json:"network,omitempty"`
-	ASN      string     `json:"asn,omitempty"` // the tuning network's, for the per-network rankings
-	State    *State     `json:"state"`
-	Variants []*Variant `json:"variants"`
+	ID       string       `json:"id"`
+	Created  int64        `json:"created"`
+	Network  string       `json:"network,omitempty"`
+	ASN      string       `json:"asn,omitempty"` // the tuning network's, for the per-network rankings
+	State    *state.State `json:"state"`
+	Variants []*Variant   `json:"variants"`
 }
 
 // NetReport is one network's measurements of a bundle.
@@ -49,17 +53,17 @@ type NetReport struct {
 	Results []CheckResult `json:"results"`
 }
 
-const pendingFile = remoteDir + "/pending.json"
+const pendingFile = remote.Dir + "/pending.json"
 
 // publicState is what clients need to connect: no private keys.
-func publicState(st *State) *State {
-	p := st.public()
+func publicState(st *state.State) *state.State {
+	p := peerState(st)
 	p.Entries = nil
 	return p
 }
 
 // Share stores the tune on the server for a later deploy and returns the bundle for testers.
-func Share(r *Server, res *TuneResult, depth, network string) (*Bundle, error) {
+func Share(r *remote.Server, res *TuneResult, depth, network string) (*Bundle, error) {
 	now := time.Now()
 	p := Pending{ID: randHex(8), Created: now.Unix(), Network: orStr(network, res.NetName), ASN: res.Network.ASN,
 		State: res.State, Variants: res.All}
@@ -71,7 +75,7 @@ func Share(r *Server, res *TuneResult, depth, network string) (*Bundle, error) {
 		State: publicState(res.State), User: res.User, Entries: res.Entries}, nil
 }
 
-func loadPending(r *Server) (*Pending, error) {
+func loadPending(r *remote.Server) (*Pending, error) {
 	out, err := r.Root("cat " + pendingFile + " 2>/dev/null || true")
 	if err != nil {
 		return nil, err
@@ -107,7 +111,7 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
 		return nil, err
 	}
-	netw := detectNetwork(&o.Network, o.Log)
+	netw := netinfo.Detect(&o.Network, o.Log)
 	entries := supported(o.XrayBin, b.State, b.Entries, o.Log)
 	vs := supportedKnobs(o.XrayBin, b.State, ExpandVariants(entries, b.Depth, o.Resolvers...), o.Log)
 	vs = addCleanIPVariants(b.State, entries, vs, o.CleanIPs, o.Log) // this network's own clean IPs
@@ -244,7 +248,7 @@ func mergeChoice(vs []*Variant, nets []netScores, n int) (chosen []*Variant, unc
 }
 
 // DeployPending deploys the tune waiting on the server, merged with other networks' reports.
-func DeployPending(r *Server, reports []*NetReport, n int, w io.Writer) (*State, error) {
+func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (*state.State, error) {
 	p, err := loadPending(r)
 	if err != nil {
 		return nil, err
@@ -293,16 +297,16 @@ func DeployPending(r *Server, reports []*NetReport, n int, w io.Writer) (*State,
 		labels[v.Entry.ID] = v.Label
 	}
 	scores, addrs := variantRank(st.Entries, p.Variants)
-	if err := RecordNetwork(r, Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
+	if err := RecordNetwork(r, netinfo.Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
 		fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
 	}
 	for _, rep := range reports {
 		scores, addrs := labelRank(st.Entries, labels, rep.Results)
-		if err := RecordNetwork(r, Network{ASN: rep.ASN, Name: orStr(rep.ASName, rep.Network)}, scores, addrs); err != nil {
+		if err := RecordNetwork(r, netinfo.Network{ASN: rep.ASN, Name: orStr(rep.ASName, rep.Network)}, scores, addrs); err != nil {
 			fmt.Fprintln(w, "[!] ranking the configs for "+rep.Network+":", err)
 		}
 	}
-	r.Root("rm -f " + shq(pendingFile))
+	r.Root("rm -f " + remote.Quote(pendingFile))
 	if _, err := r.Helper("stop-test"); err != nil {
 		fmt.Fprintln(w, "[!] stopping the test instance failed (it expires by itself):", err)
 	}

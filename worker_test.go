@@ -20,22 +20,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 	"golang.org/x/net/websocket"
 )
 
 func TestWorkerConfigs(t *testing.T) {
 	st := testState()
-	u := User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555"}
-	e := Entry{ID: "worker", Kind: "worker-ws", Port: 31000, Path: "/abc123", SNI: "x7.sub.workers.dev"}
-	if e.Proto() != "tcp" || !e.Xray() || e.family() != "worker" || e.CDN() {
+	u := state.User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555"}
+	e := state.Entry{ID: "worker", Kind: "worker-ws", Port: 31000, Path: "/abc123", SNI: "x7.sub.workers.dev"}
+	if e.Proto() != "tcp" || !e.Xray() || e.Family() != "worker" || e.CDN() {
 		t.Fatalf("kind: %+v", e)
 	}
-	ib := st.inbound(e, []User{u})
+	ib := protocols.Inbound(st, e, []state.User{u})
 	ss := ib["streamSettings"].(J)
 	if ib["settings"].(J)["decryption"] != st.VencDec || ss["network"] != "tcp" || ss["sockopt"].(J)["acceptProxyProtocol"] != true {
 		t.Errorf("inbound: VLESS Encryption over plain TCP with the PROXY header: %v", ib)
 	}
-	ob := st.Outbound(e, u, Knobs{FP: "firefox", Frag: "frag-mild"}, "proxy")
+	ob := protocols.Outbound(st, e, u, state.Knobs{FP: "firefox", Frag: "frag-mild"}, "proxy")
 	vn := ob["settings"].(J)["vnext"].([]J)[0]
 	oss := ob["streamSettings"].(J)
 	if vn["address"] != e.SNI || vn["port"] != 443 || vn["users"].([]J)[0]["encryption"] != st.VencEnc {
@@ -46,7 +50,7 @@ func TestWorkerConfigs(t *testing.T) {
 		oss["sockopt"].(J)["dialerProxy"] != "frag-mild" {
 		t.Errorf("outbound stream: %v", oss)
 	}
-	l, err := url.Parse(st.Link(e, u, Knobs{FP: "chrome"}))
+	l, err := url.Parse(protocols.Link(st, e, u, state.Knobs{FP: "chrome"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +59,7 @@ func TestWorkerConfigs(t *testing.T) {
 		q.Get("host") != e.SNI || q.Get("path") != "/abc123?ed=2560" || q.Get("encryption") != st.VencEnc || q.Get("alpn") != "http/1.1" {
 		t.Errorf("link: %s", l)
 	}
-	if r := workerRoutes([]Entry{e, {ID: "r", Kind: "reality-tcp", Port: 443}}, "203.0.113.7"); len(r) != 1 || r["/abc123"] != "203.0.113.7:31000" {
+	if r := workerRoutes([]state.Entry{e, {ID: "r", Kind: "reality-tcp", Port: 443}}, "203.0.113.7"); len(r) != 1 || r["/abc123"] != "203.0.113.7:31000" {
 		t.Errorf("routes: %v", r)
 	}
 }
@@ -67,14 +71,14 @@ type fakeWorkers struct {
 	scripts   map[string]map[string]string // name -> routes
 	enabled   map[string]bool
 	domains   map[string]string // hostname -> script
-	records   map[string]cfRecord
+	records   map[string]cloudflare.Record
 	ssl       string
 	calls     []string
 }
 
 func newFakeWorkers() *fakeWorkers {
 	return &fakeWorkers{scripts: map[string]map[string]string{}, enabled: map[string]bool{}, domains: map[string]string{},
-		records: map[string]cfRecord{}, ssl: "flexible"}
+		records: map[string]cloudflare.Record{}, ssl: "flexible"}
 }
 
 func (f *fakeWorkers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -158,9 +162,9 @@ func (f *fakeWorkers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.domains[b["hostname"].(string)] = b["service"].(string)
 	case p == "/zones/z1/dns_records":
-		recs := []cfRecord{}
+		recs := []cloudflare.Record{}
 		if r.Method == "POST" {
-			var rec cfRecord
+			var rec cloudflare.Record
 			json.NewDecoder(r.Body).Decode(&rec)
 			rec.ID = "r" + rec.Name
 			f.records[rec.ID] = rec
@@ -186,9 +190,9 @@ func (f *fakeWorkers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func withFakeCF(t *testing.T, h http.Handler) {
 	srv := httptest.NewServer(h)
-	old := cloudflareAPI
-	cloudflareAPI = srv.URL
-	t.Cleanup(func() { cloudflareAPI = old; srv.Close() })
+	old := cloudflare.API
+	cloudflare.API = srv.URL
+	t.Cleanup(func() { cloudflare.API = old; srv.Close() })
 }
 
 func TestWorkerLifecycle(t *testing.T) {
@@ -211,7 +215,7 @@ func TestWorkerLifecycle(t *testing.T) {
 	st.Host = "198.51.100.9"
 	st.Cloudflare.Token = "t"
 	st.Worker = w
-	st.Entries = []Entry{{ID: "worker", Kind: "worker-ws", Port: 31000, Path: "/p1", SNI: w.Host}}
+	st.Entries = []state.Entry{{ID: "worker", Kind: "worker-ws", Port: 31000, Path: "/p1", SNI: w.Host}}
 	if err := syncWorker(st); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +265,7 @@ func TestTuneCloudflare(t *testing.T) {
 	// a re-tune of a deployment with these domains changes nothing
 	n := len(f.calls)
 	o2 := TuneOpts{Domain: o.Domain, CDNDomain: o.CDNDomain, DNSDomain: o.DNSDomain, Log: func(string) {},
-		deployed: &State{Domain: o.Domain, CDNDomain: o.CDNDomain, DNSDomain: o.DNSDomain, Cloudflare: Cloudflare{Token: "t"}}}
+		deployed: &state.State{Domain: o.Domain, CDNDomain: o.CDNDomain, DNSDomain: o.DNSDomain, Cloudflare: state.Cloudflare{Token: "t"}}}
 	if made, err := o2.tuneCloudflare("203.0.113.7"); err != nil || made != nil || len(f.calls) != n || o2.Cloudflare != "t" {
 		t.Errorf("re-tune: %v %v %v", made, err, f.calls[n:])
 	}
@@ -271,7 +275,7 @@ func TestTuneCloudflare(t *testing.T) {
 
 	// the Worker: workers.dev and a hostname in the zone, with routes for the test entries
 	es, _ := planEntries("SNI www.a.com 2 0.20", PlanOpts{Protocols: []string{"worker"}, Worker: true})
-	o.deployed = &State{Worker: &Worker{Account: "acc1", Name: "old1", Routes: map[string]string{"/live": "203.0.113.7:9"}}}
+	o.deployed = &state.State{Worker: &state.Worker{Account: "acc1", Name: "old1", Routes: map[string]string{"/live": "203.0.113.7:9"}}}
 	es = o.prepareWorker("203.0.113.7", es)
 	var hosts []string
 	for _, e := range es {
@@ -301,7 +305,7 @@ func TestTuneCloudflare(t *testing.T) {
 	}
 }
 
-func hasWorker(es []Entry) bool {
+func hasWorker(es []state.Entry) bool {
 	for _, e := range es {
 		if e.Worker() {
 			return true
@@ -312,18 +316,18 @@ func hasWorker(es []Entry) bool {
 
 func TestDeployKeepsKnobsAndCloudflare(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	old := testStateWithCert(t)
-	old.Users = []User{NewUser("ann")}
+	old.Users = []state.User{state.NewUser("ann")}
 	old.Cloudflare.Token = "old-token"
-	old.Worker = &Worker{Account: "acc1", Name: "w", Host: "w.s.workers.dev"}
-	if err := saveState(r, old); err != nil {
+	old.Worker = &state.Worker{Account: "acc1", Name: "w", Host: "w.s.workers.dev"}
+	if err := state.Save(r, old); err != nil {
 		t.Fatal(err)
 	}
 	st := testStateWithCert(t)
 	vs := []*Variant{
-		{Entry: Entry{ID: "wg", Kind: "wireguard", Port: 51000}, K: Knobs{Frag: "none", MTU: 1280}},
-		{Entry: Entry{ID: "awg-std", Kind: "amneziawg", Port: 8443, Subnet: awgSubnet(1, true)}, K: Knobs{Frag: "none", MTU: 1280, Mode: "quic"}},
+		{Entry: state.Entry{ID: "wg", Kind: "wireguard", Port: 51000}, K: state.Knobs{Frag: "none", MTU: 1280}},
+		{Entry: state.Entry{ID: "awg-std", Kind: "amneziawg", Port: 8443, Subnet: awgSubnet(1, true)}, K: state.Knobs{Frag: "none", MTU: 1280, Mode: "quic"}},
 	}
 	got, err := DeployVariants(r, st, vs)
 	if err != nil {
@@ -335,8 +339,8 @@ func TestDeployKeepsKnobsAndCloudflare(t *testing.T) {
 	if got.Cloudflare.Token != "old-token" || got.Worker == nil || got.Worker.Name != "w" || got.AWG == nil {
 		t.Errorf("kept: %+v %+v", got.Cloudflare, got.Worker)
 	}
-	var ac AWGConf
-	if err := json.Unmarshal([]byte(fs.files[remoteDir+"/awg.json"]), &ac); err != nil || len(ac.Peers) != 1 ||
+	var ac protocols.AWGConf
+	if err := json.Unmarshal([]byte(fs.files[remote.Dir+"/awg.json"]), &ac); err != nil || len(ac.Peers) != 1 ||
 		ac.Params.Priv == "" || ac.Stats != awgStatsFile {
 		t.Errorf("awg.json: %v %+v", err, ac)
 	}
@@ -357,24 +361,24 @@ func TestWorkerRelayXray(t *testing.T) {
 	}
 	ports, _ := freePorts(4)
 	inPort, relayPort, socksPort, webPort := ports[0], ports[1], ports[2], ports[3]
-	e := Entry{ID: "worker", Kind: "worker-ws", Port: inPort, Path: "/" + randHex(6), SNI: "w.example.workers.dev"}
-	u := NewUser("ann")
+	e := state.Entry{ID: "worker", Kind: "worker-ws", Port: inPort, Path: "/" + randHex(6), SNI: "w.example.workers.dev"}
+	u := state.NewUser("ann")
 
-	srvCfg := st.ServerConfig([]Entry{e}, []User{u})
+	srvCfg := protocols.ServerConfig(st, []state.Entry{e}, []state.User{u})
 	delete(srvCfg, "routing") // the target below is on localhost, which freedom refuses by default
 	srvCfg["outbounds"].([]J)[0]["settings"] = J{"finalRules": []J{{"action": "allow", "ip": []string{"127.0.0.0/8"}}}}
 	srvCfg["log"] = J{"loglevel": "warning", "access": filepath.Join(dir, "access.log")}
 	runXray(t, bin, filepath.Join(dir, "server.json"), srvCfg)
 
 	early := make(chan string, 1)
-	relay := &http.Server{Addr: hostPort("127.0.0.1", relayPort), Handler: websocket.Server{
+	relay := &http.Server{Addr: protocols.HostPort("127.0.0.1", relayPort), Handler: websocket.Server{
 		Handshake: func(c *websocket.Config, r *http.Request) error {
 			early <- r.Header.Get("Sec-WebSocket-Protocol")
 			return nil
 		},
 		Handler: func(ws *websocket.Conn) {
 			ws.PayloadType = websocket.BinaryFrame
-			c, err := net.Dial("tcp", hostPort("127.0.0.1", inPort))
+			c, err := net.Dial("tcp", protocols.HostPort("127.0.0.1", inPort))
 			if err != nil {
 				return
 			}
@@ -394,7 +398,7 @@ func TestWorkerRelayXray(t *testing.T) {
 	go relay.ListenAndServe()
 	defer relay.Close()
 
-	ob := st.Outbound(e, u, Knobs{FP: "chrome", Frag: "none"}, "proxy")
+	ob := protocols.Outbound(st, e, u, state.Knobs{FP: "chrome", Frag: "none"}, "proxy")
 	vn := ob["settings"].(J)["vnext"].([]J)[0]
 	vn["address"], vn["port"] = "127.0.0.1", relayPort
 	ss := ob["streamSettings"].(J)
@@ -407,13 +411,13 @@ func TestWorkerRelayXray(t *testing.T) {
 		"inbounds": []J{{"listen": "127.0.0.1", "port": socksPort, "protocol": "socks"}}}
 	runXray(t, bin, filepath.Join(dir, "client.json"), cliCfg)
 
-	web := &http.Server{Addr: hostPort("127.0.0.1", webPort), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	web := &http.Server{Addr: protocols.HostPort("127.0.0.1", webPort), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	})}
 	go web.ListenAndServe()
 	defer web.Close()
 	time.Sleep(time.Second)
-	resp, err := socksClient(socksPort, 10*time.Second).Get("http://" + hostPort("127.0.0.1", webPort) + "/")
+	resp, err := socksClient(socksPort, 10*time.Second).Get("http://" + protocols.HostPort("127.0.0.1", webPort) + "/")
 	if err != nil || resp.StatusCode != 204 {
 		sl, _ := os.ReadFile(filepath.Join(dir, "server.json.log"))
 		cl, _ := os.ReadFile(filepath.Join(dir, "client.json.log"))
@@ -447,8 +451,8 @@ func runXray(t *testing.T, bin, path string, cfg J) {
 // The bot shows members the guides for the protocols a pool lists.
 func TestProtocolNamesNewKinds(t *testing.T) {
 	st := keyedState(t)
-	st.Entries = []Entry{{ID: "r", Kind: "reality-tcp"}, {ID: "awg", Kind: "amneziawg"}, {ID: "worker", Kind: "worker-ws"}, {ID: "t", Kind: "trojan-reality"}}
-	if got := strings.Join(st.protocolNames(), ","); got != "VLESS REALITY,AmneziaWG,CF Worker,Trojan" {
+	st.Entries = []state.Entry{{ID: "r", Kind: "reality-tcp"}, {ID: "awg", Kind: "amneziawg"}, {ID: "worker", Kind: "worker-ws"}, {ID: "t", Kind: "trojan-reality"}}
+	if got := strings.Join(protocolNames(st), ","); got != "VLESS REALITY,AmneziaWG,CF Worker,Trojan" {
 		t.Errorf("protocol names %s", got)
 	}
 }

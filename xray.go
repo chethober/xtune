@@ -19,71 +19,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
-
-//go:embed helper.sh
-var helperScript string
-
-const remoteDir = "/opt/xray-autotune"
-
-// ---------------------------------------------------------------- remote helper
-
-func (r *Server) Helper(args ...string) (string, error) {
-	if err := r.Upload(remoteDir+"/helper.sh", []byte(helperScript), "700"); err != nil {
-		return "", fmt.Errorf("upload helper: %w", err)
-	}
-	q := make([]string, len(args))
-	for i, a := range args {
-		q[i] = shq(a)
-	}
-	out, err := r.Root("bash " + remoteDir + "/helper.sh " + strings.Join(q, " "))
-	return strings.TrimSpace(out), err
-}
-
-type ServerStatus struct {
-	Arch, Xray, Unit string // isolated xtune Xray
-	HasState         bool   // a deployment exists
-	Xtune, XtuneSHA  string // server copy of xtune ("none" when missing)
-	Sub, Timer, Bot  string // subscription server, enforce timer and Telegram bot (systemctl is-active)
-	Tunnels          string // SSH and DNS tunnel server
-	AWG              string // AmneziaWG server
-	FW               string // active host firewall: ufw | firewalld | none
-}
-
-func (r *Server) Status() (ServerStatus, error) {
-	out, err := r.Helper("status")
-	var s ServerStatus
-	for _, line := range strings.Split(out, "\n") {
-		k, v, _ := strings.Cut(strings.TrimSpace(line), " ")
-		switch k {
-		case "ARCH":
-			s.Arch = v
-		case "XRAY":
-			s.Xray = v
-		case "UNIT":
-			s.Unit = v
-		case "STATE":
-			s.HasState = v == "yes"
-		case "XTUNE":
-			s.Xtune = v
-		case "XTUNE_SHA":
-			s.XtuneSHA = v
-		case "SUB":
-			s.Sub = v
-		case "TIMER":
-			s.Timer = v
-		case "BOT":
-			s.Bot = v
-		case "TUNNELS":
-			s.Tunnels = v
-		case "AWG":
-			s.AWG = v
-		case "FW":
-			s.FW = v
-		}
-	}
-	return s, err
-}
 
 // ---------------------------------------------------------------- versions
 
@@ -142,7 +80,7 @@ func httpGet(url string, timeout time.Duration) ([]byte, error) {
 
 // LatestXray returns the newest Xray tag. Pre-releases count unless stable is set, because
 // Xray ships most releases as pre-releases. Falls back to asking the server.
-func LatestXray(stable bool, r *Server) (string, error) {
+func LatestXray(stable bool, r *remote.Server) (string, error) {
 	url := "https://api.github.com/repos/XTLS/Xray-core/releases?per_page=5"
 	if stable {
 		url = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -303,7 +241,7 @@ func InstallLocalXray(tag string, log func(string)) (string, error) {
 }
 
 // EnsureLocalXray returns a usable local binary, downloading one if none exists.
-func EnsureLocalXray(flagPath string, r *Server, log func(string)) (string, error) {
+func EnsureLocalXray(flagPath string, r *remote.Server, log func(string)) (string, error) {
 	if b := FindLocalXray(flagPath); b != "" && XrayVersion(b) != "broken" {
 		return b, nil
 	}
@@ -315,7 +253,7 @@ func EnsureLocalXray(flagPath string, r *Server, log func(string)) (string, erro
 }
 
 // EnsureServerXray installs the isolated server binary when missing (or a specific tag).
-func EnsureServerXray(r *Server, tag string, log func(string)) (string, error) {
+func EnsureServerXray(r *remote.Server, tag string, log func(string)) (string, error) {
 	st, err := r.Status()
 	if err != nil {
 		return "", err
@@ -328,7 +266,7 @@ func EnsureServerXray(r *Server, tag string, log func(string)) (string, error) {
 			return "", err
 		}
 	}
-	log("installing Xray " + tag + " on the server (" + remoteDir + ")")
+	log("installing Xray " + tag + " on the server (" + remote.Dir + ")")
 	out, err := r.Helper("install", normTag(tag))
 	return out, err
 }
@@ -338,7 +276,7 @@ func EnsureServerXray(r *Server, tag string, log func(string)) (string, error) {
 // EnsureServerXtune installs this version of xtune on the server, where users and addresses are
 // managed. A Linux client with the server's architecture uploads itself (so development builds
 // work too); other clients have the server download the matching release.
-func EnsureServerXtune(r *Server, log func(string)) error {
+func EnsureServerXtune(r *remote.Server, log func(string)) error {
 	st, err := r.Status()
 	if err != nil {
 		return err
@@ -361,7 +299,7 @@ func EnsureServerXtune(r *Server, log func(string)) error {
 			return nil
 		}
 		log("installing xtune " + version + " on the server")
-		if err := r.Upload(remoteDir+"/xtune", self, "755"); err != nil {
+		if err := r.Upload(remote.Dir+"/xtune", self, "755"); err != nil {
 			return err
 		}
 		_, err = r.Helper("xtune-link")
@@ -372,7 +310,7 @@ func EnsureServerXtune(r *Server, log func(string)) error {
 	}
 	if version == "dev" {
 		return fmt.Errorf("this development build cannot install itself on a linux/%s server: build xtune for "+
-			"linux/%s and copy it to %s/xtune there", arch, arch, remoteDir)
+			"linux/%s and copy it to %s/xtune there", arch, arch, remote.Dir)
 	}
 	log("installing xtune v" + version + " on the server")
 	_, err = r.Helper("xtune-install", "v"+version, arch)

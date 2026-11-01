@@ -10,11 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/netinfo"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // ---------------------------------------------------------------- several networks
 
-func shareTune(r *Server, res *TuneResult, o TuneOpts, path string) error {
+func shareTune(r *remote.Server, res *TuneResult, o TuneOpts, path string) error {
 	b, err := Share(r, res, o.Depth, o.Network)
 	if err != nil {
 		return err
@@ -143,7 +148,7 @@ func cmdCheck(args []string) error {
 	out := fs.String("out", "xtune-results", "working directory")
 	every := fs.Duration("every", 0, "keep checking at this interval (e.g. 6h), reporting each check to the server")
 	parse(fs, args)
-	if *c.host == "" && *c.profile == "" && serverMode() {
+	if *c.host == "" && *c.profile == "" && remote.Installed() {
 		return errors.New("check measures from where it runs: run it on your computer, on your users' network (xtune check --host H)")
 	}
 	if *every > 0 && *every < 10*time.Minute {
@@ -176,9 +181,9 @@ func checkOnce(c connFlags, network string, probes, secs int, out string) error 
 	if err != nil {
 		return err
 	}
-	netw := detectNetwork(&network, logf)
+	netw := netinfo.Detect(&network, logf)
 	var res []CheckResult
-	var st *State
+	var st *state.State
 	if err := guarded(nil, func() error { // nil: a shared test running on the server must survive Ctrl+C here
 		var e error
 		res, st, e = Check(r, bin, probes, secs, out, logf)
@@ -294,7 +299,7 @@ func cmdRestore(args []string) error {
 	return nil
 }
 
-func printNotes(r *Server, st *State, oldAddr string) {
+func printNotes(r *remote.Server, st *state.State, oldAddr string) {
 	if oldAddr == st.Host {
 		oldAddr = ""
 	}
@@ -357,7 +362,7 @@ func cmdMigrate(args []string) error {
 	if tc.Host == oldAddr {
 		return errors.New("the new server is the old one")
 	}
-	r, err := Dial(tc, cliPrompt)
+	r, err := remote.Dial(tc, cliPrompt)
 	if err != nil {
 		return err
 	}
@@ -376,7 +381,7 @@ func cmdMigrate(args []string) error {
 // MoveTo rebuilds a backup on r, a server without a deployment. With tune, the new server is
 // tuned from here first and the best n configs deployed; without, the configs are kept as they
 // were (their ports must be free).
-func MoveTo(r *Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string) (*State, error) {
+func MoveTo(r *remote.Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string) (*state.State, error) {
 	log := func(s string) { o.Log("[*] " + s) }
 	if !tune {
 		return Restore(r, b, log)
@@ -428,16 +433,16 @@ func cmdSelfUpdate(args []string) error {
 		return nil
 	}
 	fmt.Println("xtune updated to", tag)
-	if exe, err := os.Executable(); err == nil && serverMode() && os.Geteuid() == 0 {
-		if p, _ := filepath.EvalSymlinks(exe); p == remoteDir+"/xtune" {
-			r, err := OpenLocal()
+	if exe, err := os.Executable(); err == nil && remote.Installed() && os.Geteuid() == 0 {
+		if p, _ := filepath.EvalSymlinks(exe); p == remote.Dir+"/xtune" {
+			r, err := remote.OpenLocal()
 			if err == nil {
 				_, err = r.Helper("xtune-link") // restarts the subscription server on the new binary
 			}
 			return err
 		}
 	}
-	if !serverMode() {
+	if !remote.Installed() {
 		fmt.Println("the server's copy is updated the next time you open the console or deploy")
 	}
 	return nil
@@ -452,7 +457,7 @@ func cmdNotify(args []string) error {
 	fs := flag.NewFlagSet("notify", flag.ExitOnError)
 	chat := fs.String("chat", "", "Telegram chat ID that receives the alerts")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -467,7 +472,7 @@ func cmdNotify(args []string) error {
 	}
 	switch action {
 	case "status":
-		fmt.Println("alerts:", n.describe())
+		fmt.Println("alerts:", describeNotify(n))
 		return nil
 	case "telegram":
 		if *chat == "" {
@@ -492,7 +497,7 @@ func cmdNotify(args []string) error {
 		}
 		n.Webhook = u
 	case "off":
-		n = Notify{}
+		n = state.Notify{}
 	case "test":
 		if !n.On() {
 			return errors.New("alerts are off: set up telegram or a webhook first")
@@ -504,7 +509,7 @@ func cmdNotify(args []string) error {
 	if err := SetNotify(r, n); err != nil {
 		return err
 	}
-	fmt.Println("alerts:", n.describe())
+	fmt.Println("alerts:", describeNotify(n))
 	return nil
 }
 
@@ -513,10 +518,10 @@ func cmdWarp(args []string) error {
 		return err
 	}
 	fs := flag.NewFlagSet("warp", flag.ExitOnError)
-	domains := fs.String("domains", "", "routing domains that use WARP, comma-separated (default: "+strings.Join(defaultWarpDomains, ",")+")")
+	domains := fs.String("domains", "", "routing domains that use WARP, comma-separated (default: "+strings.Join(protocols.DefaultWarpDomains, ",")+")")
 	all := fs.Bool("all", false, "send all traffic through WARP")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -524,7 +529,7 @@ func cmdWarp(args []string) error {
 	if len(pos) > 0 {
 		action = pos[0]
 	}
-	var st *State
+	var st *state.State
 	switch action {
 	case "status":
 		if st, err = requireState(r); err != nil {
@@ -548,7 +553,7 @@ func cmdWarp(args []string) error {
 	default:
 		return fmt.Errorf("unknown warp action %q", action)
 	}
-	fmt.Println("WARP:", st.Warp.describe())
+	fmt.Println("WARP:", describeWarp(st.Warp))
 	return nil
 }
 
@@ -570,30 +575,30 @@ type userJSON struct {
 	Sub      string   `json:"subscription,omitempty"`
 }
 
-func printUsersJSON(w io.Writer, st *State, us *Usage) error {
+func printUsersJSON(w io.Writer, st *state.State, us *state.Usage) error {
 	out := []userJSON{}
 	now := time.Now()
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		if uu == nil {
-			uu = &UserUsage{}
+			uu = &state.UserUsage{}
 		}
-		out = append(out, userJSON{Name: u.Name, Status: userStatus(u, uu, now), Enabled: u.Enabled, Up: uu.Up, Down: uu.Down,
+		out = append(out, userJSON{Name: u.Name, Status: state.UserStatus(u, uu, now), Enabled: u.Enabled, Up: uu.Up, Down: uu.Down,
 			Quota: u.Quota, Reset: u.Reset, ResetAt: u.ResetAt, Expires: u.Expires, Devices: u.Devices,
-			Online: append([]string{}, uu.Online...), LastSeen: uu.LastSeen, Sub: st.SubURL(u)})
+			Online: append([]string{}, uu.Online...), LastSeen: uu.LastSeen, Sub: SubURL(st, u)})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
 
-func printLinksJSON(w io.Writer, st *State, name string) error {
+func printLinksJSON(w io.Writer, st *state.State, name string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	out := J{"name": u.Name, "enabled": u.Enabled, "links": st.Links(*u)}
-	if sub := st.SubURL(*u); sub != "" {
+	out := J{"name": u.Name, "enabled": u.Enabled, "links": protocols.Links(st, *u)}
+	if sub := SubURL(st, *u); sub != "" {
 		out["subscription"], out["failover"] = sub, sub+"/json"
 	}
 	enc := json.NewEncoder(w)
@@ -602,16 +607,16 @@ func printLinksJSON(w io.Writer, st *State, name string) error {
 }
 
 // printLinksQR shows the subscription link as a QR code, or every link when there is none.
-func printLinksQR(w io.Writer, st *State, name string) error {
+func printLinksQR(w io.Writer, st *state.State, name string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	if sub := st.SubURL(*u); sub != "" {
+	if sub := SubURL(st, *u); sub != "" {
 		fmt.Fprintf(w, "%s: subscription\n", u.Name)
 		return printQR(w, sub)
 	}
-	for _, l := range st.NamedLinks(*u) {
+	for _, l := range protocols.NamedLinks(st, *u) {
 		fmt.Fprintf(w, "\n%s: %s\n", u.Name, l.Name)
 		if err := printQR(w, l.URL); err != nil {
 			return err
@@ -620,7 +625,7 @@ func printLinksQR(w io.Writer, st *State, name string) error {
 	return nil
 }
 
-func fmtReset(u User) string {
+func fmtReset(u state.User) string {
 	if u.Reset == "" || u.ResetAt == 0 {
 		return "-"
 	}

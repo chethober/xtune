@@ -1,4 +1,7 @@
-package main
+// Package remote runs commands on the server xtune manages: over SSH from a client, or directly
+// when xtune runs on the server itself. Everything that changes the server goes through Helper,
+// which runs the embedded helper.sh as root.
+package remote
 
 import (
 	"bufio"
@@ -13,19 +16,22 @@ import (
 	"strings"
 )
 
-// transport runs shell commands on the managed server: over SSH from a client, or directly
+// Dir is where xtune keeps everything on the server.
+const Dir = "/opt/xray-autotune"
+
+// Transport runs shell commands on the managed server: over SSH from a client, or directly
 // when xtune runs on the server itself.
-type transport interface {
-	exec(cmd, stdin string, sudo bool) (string, string, error)
-	stream(ctx context.Context, cmd string, fn func(string)) error
-	close()
+type Transport interface {
+	Exec(cmd, stdin string, sudo bool) (string, string, error)
+	Stream(ctx context.Context, cmd string, fn func(string)) error
+	Close()
 }
 
 // Server is the machine xtune manages. Commands that need root go through Root/Upload/Helper.
 type Server struct {
-	sh    transport
-	Conn  Conn
-	Local bool // xtune is running on the server itself
+	Transport Transport
+	Conn      Conn
+	Local     bool // xtune is running on the server itself
 }
 
 // Name is how the server is shown in titles.
@@ -38,40 +44,40 @@ func (r *Server) Name() string {
 
 // Exec runs cmd and returns stdout/stderr; stdin is fed to the command.
 func (r *Server) Exec(cmd, stdin string, sudo bool) (string, string, error) {
-	return r.sh.exec(cmd, stdin, sudo)
+	return r.Transport.Exec(cmd, stdin, sudo)
 }
 
 // Root runs cmd as root and returns stdout.
 func (r *Server) Root(cmd string) (string, error) {
-	out, _, err := r.sh.exec(cmd, "", true)
+	out, _, err := r.Transport.Exec(cmd, "", true)
 	return out, err
 }
 
 // Upload writes content to path as root, atomically, with the given octal mode.
 func (r *Server) Upload(dst string, content []byte, mode string) error {
 	cmd := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.tmp && chmod %s %s.tmp && mv -f %s.tmp %s",
-		shq(path.Dir(dst)), shq(dst), mode, shq(dst), shq(dst), shq(dst))
-	_, _, err := r.sh.exec(cmd, string(content), true)
+		Quote(path.Dir(dst)), Quote(dst), mode, Quote(dst), Quote(dst), Quote(dst))
+	_, _, err := r.Transport.Exec(cmd, string(content), true)
 	return err
 }
 
 // Stream runs cmd as root and sends each output line to fn until ctx is cancelled or the command exits.
 func (r *Server) Stream(ctx context.Context, cmd string, fn func(string)) error {
-	return r.sh.stream(ctx, cmd, fn)
+	return r.Transport.Stream(ctx, cmd, fn)
 }
 
-func (r *Server) Close() { r.sh.close() }
+func (r *Server) Close() { r.Transport.Close() }
 
-// lock serializes state changes between local xtune processes on the server (TUI, CLI and the
+// Lock serializes state changes between local xtune processes on the server (TUI, CLI and the
 // enforce timer). Changes a client makes over SSH are not locked; the next enforce run heals them.
-func (r *Server) lock() func() {
+func (r *Server) Lock() func() {
 	if !r.Local {
 		return func() {}
 	}
-	return flock(remoteDir + "/.lock")
+	return flock(Dir + "/.lock")
 }
 
-func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+func Quote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 func cmdErr(err error, stdout, stderr string) error {
 	msg := strings.TrimSpace(stderr)
@@ -97,19 +103,19 @@ func OpenLocal() (*Server, error) {
 		return nil, errors.New("server mode needs root: run sudo xtune")
 	}
 	host, _ := os.Hostname()
-	return &Server{sh: localTransport{}, Conn: Conn{Name: host, Host: host, User: "root"}, Local: true}, nil
+	return &Server{Transport: localTransport{}, Conn: Conn{Name: host, Host: host, User: "root"}, Local: true}, nil
 }
 
-// serverMode reports whether this machine is an xtune-managed server.
-func serverMode() bool {
+// Installed reports whether this machine is an xtune-managed server.
+func Installed() bool {
 	if runtime.GOOS != "linux" {
 		return false
 	}
-	_, err := os.Stat(remoteDir)
+	_, err := os.Stat(Dir)
 	return err == nil
 }
 
-func (localTransport) exec(cmd, stdin string, _ bool) (string, string, error) {
+func (localTransport) Exec(cmd, stdin string, _ bool) (string, string, error) {
 	c := exec.Command("bash", "-c", cmd)
 	var out, errb strings.Builder
 	c.Stdin, c.Stdout, c.Stderr = strings.NewReader(stdin), &out, &errb
@@ -120,7 +126,7 @@ func (localTransport) exec(cmd, stdin string, _ bool) (string, string, error) {
 	return out.String(), errb.String(), err
 }
 
-func (localTransport) stream(ctx context.Context, cmd string, fn func(string)) error {
+func (localTransport) Stream(ctx context.Context, cmd string, fn func(string)) error {
 	c := exec.CommandContext(ctx, "bash", "-c", cmd)
 	pr, pw := io.Pipe()
 	c.Stdout, c.Stderr = pw, pw
@@ -136,4 +142,4 @@ func (localTransport) stream(ctx context.Context, cmd string, fn func(string)) e
 	return nil
 }
 
-func (localTransport) close() {}
+func (localTransport) Close() {}

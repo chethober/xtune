@@ -7,12 +7,14 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/chethober/xtune/internal/cloudflare"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // ---------------------------------------------------------------- plans (server)
 
 // pickPlan asks for one of the plans; "" is the other choice. With no plans it returns "".
-func (t *tui) pickPlan(st *State, title, other string) (string, error) {
+func (t *tui) pickPlan(st *state.State, title, other string) (string, error) {
 	if len(st.Plans) == 0 {
 		return "", nil
 	}
@@ -63,15 +65,15 @@ func (t *tui) plans() error {
 			return err
 		}
 		name = strings.TrimSpace(name)
-		var cur User
+		var cur state.User
 		if p, ok := st.Plans[name]; ok {
-			cur = User{Quota: int64(p.QuotaGB * (1 << 30)), Devices: p.Devices, Reset: p.Reset}
+			cur = state.User{Quota: int64(p.QuotaGB * (1 << 30)), Devices: p.Devices, Reset: p.Reset}
 		}
 		l, err := t.limitsForm(cur, nil)
 		if err != nil {
 			return err
 		}
-		p := Plan{QuotaGB: *l.QuotaGB, Days: *l.Days, Devices: *l.Devices, Reset: cur.Reset}
+		p := state.Plan{QuotaGB: *l.QuotaGB, Days: *l.Days, Devices: *l.Devices, Reset: cur.Reset}
 		if l.Reset != nil {
 			p.Reset = *l.Reset
 		}
@@ -166,11 +168,11 @@ func (t *tui) cloudflare() error {
 	if err != nil {
 		return err
 	}
-	state := "no token"
+	cfState := "no token"
 	if st.Cloudflare.Token != "" {
-		state = "token set"
+		cfState = "token set"
 	}
-	fmt.Println(titleStyle.Render("\nCloudflare") + "  " + state)
+	fmt.Println(titleStyle.Render("\nCloudflare") + "  " + cfState)
 	fmt.Println(dimStyle.Render("With an API token (Zone:Read, DNS:Edit, Zone Settings:Edit), migrations and domain changes\n" +
 		"update the DNS records themselves, and the CDN's SSL/TLS mode can be set to Full from here."))
 	opts := []huh.Option[string]{huh.NewOption("Set the API token", "token")}
@@ -193,12 +195,12 @@ func (t *tui) cloudflare() error {
 		if err := huh.NewInput().Title("API token").EchoMode(huh.EchoModePassword).Value(&tok).WithTheme(t.theme).Run(); err != nil {
 			return err
 		}
-		if err := SetCloudflare(t.r, Cloudflare{Token: strings.TrimSpace(tok)}); err != nil {
+		if err := SetCloudflare(t.r, state.Cloudflare{Token: strings.TrimSpace(tok)}); err != nil {
 			return err
 		}
 		log("token saved")
 	case "off":
-		return SetCloudflare(t.r, Cloudflare{})
+		return SetCloudflare(t.r, state.Cloudflare{})
 	case "dns":
 		ip, err := serverIP(st.Host)
 		if err != nil {
@@ -208,7 +210,7 @@ func (t *tui) cloudflare() error {
 			return err
 		}
 	case "ssl":
-		mode, err := cfSSL(st.Cloudflare.Token, st.CDNDomain, true)
+		mode, err := cloudflare.SSL(st.Cloudflare.Token, st.CDNDomain, true)
 		if err != nil {
 			return err
 		}
@@ -224,7 +226,7 @@ func (t *tui) snis() error {
 	fmt.Println(titleStyle.Render("\nREALITY targets"))
 	fmt.Println(dimStyle.Render("Checked from the server weekly; failing or slow ones are replaced by themselves when users\n" +
 		"get configs through subscriptions. Checking now..."))
-	defer t.r.lock()()
+	defer t.r.Lock()()
 	st, err := requireState(t.r)
 	if err != nil {
 		return err

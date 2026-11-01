@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 func manageCall(t *testing.T, srv *httptest.Server, token string, q J) (int, map[string]any) {
@@ -24,13 +27,13 @@ func manageCall(t *testing.T, srv *httptest.Server, token string, q J) (int, map
 
 func TestManageAdmin(t *testing.T) {
 	r, srv := publicServer(t)
-	st, err := changeManage(r, func(*State, *Manage) error { return nil })
+	st, err := changeManage(r, func(*state.State, *state.Manage) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	tok := st.Manage.Token
-	if !strings.HasSuffix(st.manageURL(tok), "/subs/adm/"+tok) {
-		t.Fatalf("link: %s", st.manageURL(tok))
+	if !strings.HasSuffix(manageURL(st, tok), "/subs/adm/"+tok) {
+		t.Fatalf("link: %s", manageURL(st, tok))
 	}
 	if code, _ := manageCall(t, srv, "wrong", J{"op": "users"}); code != http.StatusNotFound {
 		t.Errorf("wrong token: %d", code)
@@ -74,7 +77,7 @@ func TestManageAdmin(t *testing.T) {
 	}
 
 	// a new link: the old one stops working
-	st, _ = changeManage(r, func(_ *State, m *Manage) error { m.Token = randHex(16); return nil })
+	st, _ = changeManage(r, func(_ *state.State, m *state.Manage) error { m.Token = randHex(16); return nil })
 	if code, _ := manageCall(t, srv, tok, J{"op": "status"}); code != http.StatusNotFound {
 		t.Error("the old management link still works")
 	}
@@ -85,8 +88,8 @@ func TestManageAdmin(t *testing.T) {
 
 func TestManageReseller(t *testing.T) {
 	r, srv := publicServer(t)
-	st, _ := changeManage(r, func(_ *State, m *Manage) error {
-		m.Resellers = map[string]*Reseller{"rex": {Token: randHex(16), MaxUsers: 2, QuotaGB: 30}}
+	st, _ := changeManage(r, func(_ *state.State, m *state.Manage) error {
+		m.Resellers = map[string]*state.Reseller{"rex": {Token: randHex(16), MaxUsers: 2, QuotaGB: 30}}
 		return nil
 	})
 	tok := st.Manage.Resellers["rex"].Token
@@ -119,29 +122,29 @@ func TestManageReseller(t *testing.T) {
 	if code, _ := manageCall(t, srv, tok, J{"op": "setPlan", "name": "x"}); code != http.StatusNotFound {
 		t.Errorf("a reseller changed plans: %d", code)
 	}
-	st, _ = LoadState(r)
+	st, _ = state.Load(r)
 	if _, u := st.User("r1"); u == nil || u.Reseller != "rex" {
 		t.Errorf("r1: %+v", u)
 	}
 }
 
 func TestLegacyBotRemoved(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
-	st, _ := LoadState(r)
+	r, fs := deployed(t, state.NewUser("ann"))
+	st, _ := state.Load(r)
 	raw, _ := json.Marshal(st)
 	var m map[string]any
 	json.Unmarshal(raw, &m)
 	m["bot"] = map[string]any{"token": "1:x", "admins": []int{42}}
 	m["users"].([]any)[0].(map[string]any)["telegram"] = 42
 	raw, _ = json.Marshal(m)
-	fs.files[remoteDir+"/state.json"] = string(raw)
+	fs.files[remote.Dir+"/state.json"] = string(raw)
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(strings.Join(fs.calls, "\n"), "bot-remove") {
 		t.Error("the old bot's unit was not removed")
 	}
-	if s := fs.files[remoteDir+"/state.json"]; strings.Contains(s, `"bot"`) || strings.Contains(s, `"telegram"`) {
+	if s := fs.files[remote.Dir+"/state.json"]; strings.Contains(s, `"bot"`) || strings.Contains(s, `"telegram"`) {
 		t.Error("the old bot's settings are still in state.json")
 	}
 	if err := cmdBot(nil); err == nil || !strings.Contains(err.Error(), "@chthvpnbot") {
@@ -151,14 +154,14 @@ func TestLegacyBotRemoved(t *testing.T) {
 
 func TestRedeployKeepsPoolsAndManage(t *testing.T) {
 	r, _ := publicServer(t)
-	SetPublic(r, "community", PublicPool{Members: 5})
-	changeManage(r, func(*State, *Manage) error { return nil })
-	st, _ := LoadState(r)
-	res := &TuneResult{State: testState(), Best: []*Variant{{Entry: Entry{ID: "hy2", Kind: "hysteria2", Port: 8443}}}}
+	SetPublic(r, "community", state.PublicPool{Members: 5})
+	changeManage(r, func(*state.State, *state.Manage) error { return nil })
+	st, _ := state.Load(r)
+	res := &TuneResult{State: testState(), Best: []*Variant{{Entry: state.Entry{ID: "hy2", Kind: "hysteria2", Port: 8443}}}}
 	if _, err := Deploy(r, res, 1); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := LoadState(r)
+	after, _ := state.Load(r)
 	if after.Public["community"] == nil || after.Public["community"].Token != st.Public["community"].Token ||
 		after.Manage == nil || after.Manage.Token != st.Manage.Token {
 		t.Error("a re-tune dropped the public profiles or the management link")

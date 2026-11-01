@@ -23,6 +23,9 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	awgtun "github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
@@ -38,21 +41,6 @@ import (
 // must use the same S1/S2/H1-H4: they are the deployment's (State.AWG). Variants only change
 // what a client alone decides: junk packets, the I1 signature packet and the MTU.
 
-// AWGParams are the obfuscation settings server and clients share.
-type AWGParams struct {
-	Jc     int    `json:"jc"`
-	Jmin   int    `json:"jmin"`
-	Jmax   int    `json:"jmax"`
-	S1     int    `json:"s1"`
-	S2     int    `json:"s2"`
-	H1     uint32 `json:"h1"`
-	H2     uint32 `json:"h2"`
-	H3     uint32 `json:"h3"`
-	H4     uint32 `json:"h4"`
-	Priv   string `json:"privateKey"` // server key (base64)
-	Public string `json:"publicKey"`
-}
-
 func randInt(lo, hi int) int {
 	n, _ := rand.Int(rand.Reader, big.NewInt(int64(hi-lo+1)))
 	return lo + int(n.Int64())
@@ -61,12 +49,12 @@ func randInt(lo, hi int) int {
 // newAWGParams picks the deployment's settings. S1+56 must not equal S2, or the padded
 // handshake initiation and response have the same size; the H values must differ from each
 // other and from WireGuard's 1-4.
-func newAWGParams() (*AWGParams, error) {
+func newAWGParams() (*state.AWGParams, error) {
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	p := &AWGParams{Jc: randInt(3, 6), Jmin: 40, Jmax: 70, S1: randInt(15, 150), S2: randInt(15, 150),
+	p := &state.AWGParams{Jc: randInt(3, 6), Jmin: 40, Jmax: 70, S1: randInt(15, 150), S2: randInt(15, 150),
 		Priv: base64.StdEncoding.EncodeToString(k.Bytes()), Public: base64.StdEncoding.EncodeToString(k.PublicKey().Bytes())}
 	for p.S1+56 == p.S2 {
 		p.S2 = randInt(15, 150)
@@ -92,7 +80,7 @@ func awgSubnet(i int, test bool) string {
 }
 
 // renumberAWG gives the AWG entries the deployed subnets, in order.
-func renumberAWG(es []Entry) {
+func renumberAWG(es []state.Entry) {
 	i := 0
 	for j := range es {
 		if es[j].Kind == "amneziawg" {
@@ -103,33 +91,13 @@ func renumberAWG(es []Entry) {
 }
 
 // awgIface is the TUN interface name of an entry: xtawg80 for 10.80.0.0/16.
-func awgIface(e Entry) string {
+func awgIface(e state.Entry) string {
 	return "xtawg" + strings.Split(e.Subnet, ".")[1]
 }
 
-// awgAddr is the user's tunnel address in the entry's subnet: the last two bytes of their
-// WireGuard address. The server is .0.1, which WireGuard addresses never use.
-func awgAddr(e Entry, u User) netip.Addr {
-	p := netip.MustParsePrefix(e.Subnet).Addr().As4()
-	w, err := netip.ParseAddr(u.WGIP)
-	if err != nil {
-		w = wgSubnet.Addr().Next().Next()
-	}
-	b := w.As4()
-	return netip.AddrFrom4([4]byte{p[0], p[1], b[2], b[3]})
-}
-
-func awgServerAddr(e Entry) netip.Prefix {
+func awgServerAddr(e state.Entry) netip.Prefix {
 	p := netip.MustParsePrefix(e.Subnet)
 	return netip.PrefixFrom(p.Addr().Next(), p.Bits())
-}
-
-func awgUserKey(u User) (priv, pub string) {
-	k, err := ecdh.X25519().NewPrivateKey(secret(u, "amneziawg"))
-	if err != nil {
-		panic(err) // any 32 bytes are an X25519 key
-	}
-	return base64.StdEncoding.EncodeToString(k.Bytes()), base64.StdEncoding.EncodeToString(k.PublicKey().Bytes())
 }
 
 // awgModes are the client-side variants: the deployment's junk packets, more and larger junk
@@ -137,34 +105,9 @@ func awgUserKey(u User) (priv, pub string) {
 // 1.5; older apps do not know the I1 line).
 var awgModes = []string{"", "junk", "quic"}
 
-// awgQUIC is the I1 signature: a QUIC v1 long header (Initial, 8-byte random connection ID) and
-// a random body, 1250 bytes in all, under a 1280-byte path MTU.
-const awgQUIC = "<b 0xc30000000108><r 8><b 0x000044d0><r 616><r 616>" // random blocks are under 1000 bytes
-
-// awgClientParams are p as a client in mode sends them.
-func awgClientParams(p AWGParams, mode string) (jc, jmin, jmax int, i1 string) {
-	jc, jmin, jmax = p.Jc, p.Jmin, p.Jmax
-	switch mode {
-	case "junk":
-		jc, jmin, jmax = 10, 64, 1000
-	case "quic":
-		i1 = awgQUIC
-	}
-	return
-}
-
-func b64hex(s string) string {
-	b, _ := base64.StdEncoding.DecodeString(s)
-	return hex.EncodeToString(b)
-}
-
-func (p AWGParams) uapiShared(b *strings.Builder) {
-	fmt.Fprintf(b, "s1=%d\ns2=%d\nh1=%d\nh2=%d\nh3=%d\nh4=%d\n", p.S1, p.S2, p.H1, p.H2, p.H3, p.H4)
-}
-
 // awgVariantUser is who a tuning variant connects as: like WireGuard (wgVariantUser), variants
 // measured at once on one device need keys and addresses of their own. Variant 0 is u.
-func awgVariantUser(u User, k Knobs) User {
+func awgVariantUser(u state.User, k state.Knobs) state.User {
 	i := awgVariantIndex(k)
 	if i == 0 {
 		return u
@@ -182,17 +125,17 @@ func awgVariantUser(u User, k Knobs) User {
 }
 
 // awgVariants are the knobs ExpandVariants measures for an AWG entry.
-func awgVariants() []Knobs {
-	ks := []Knobs{{Frag: "none", MTU: 1420}, {Frag: "none", MTU: 1280}}
+func awgVariants() []state.Knobs {
+	ks := []state.Knobs{{Frag: "none", MTU: 1420}, {Frag: "none", MTU: 1280}}
 	for _, m := range awgModes[1:] {
-		ks = append(ks, Knobs{Frag: "none", MTU: 1420, Mode: m})
+		ks = append(ks, state.Knobs{Frag: "none", MTU: 1420, Mode: m})
 	}
 	return ks
 }
 
-func awgVariantIndex(k Knobs) int {
+func awgVariantIndex(k state.Knobs) int {
 	for i, v := range awgVariants() {
-		if v.MTU == wgMTU(k) && v.Mode == k.Mode {
+		if v.MTU == protocols.WGMTU(k) && v.Mode == k.Mode {
 			return i
 		}
 	}
@@ -200,8 +143,8 @@ func awgVariantIndex(k Knobs) int {
 }
 
 // awgTestPeers are the test instance's peers: u as every variant.
-func awgTestPeers(u User) []User {
-	var out []User
+func awgTestPeers(u state.User) []state.User {
+	var out []state.User
 	for _, k := range awgVariants() {
 		out = append(out, awgVariantUser(u, k))
 	}
@@ -209,56 +152,6 @@ func awgTestPeers(u User) []User {
 }
 
 // ---------------------------------------------------------------- server
-
-// AWGConf is what `xtune awg run` serves.
-type AWGConf struct {
-	Params  AWGParams `json:"params"`
-	Entries []Entry   `json:"entries"`
-	Peers   []AWGPeer `json:"peers"`
-	Stats   string    `json:"stats"` // where the server writes its counters (tunnelStats)
-}
-
-type AWGPeer struct {
-	Name string `json:"name"`
-	Pub  string `json:"pub"`
-	WGIP string `json:"wgIp"`
-}
-
-// AWGConf builds the AmneziaWG server's config for these users (enabled ones only).
-func (st *State) AWGConf(entries []Entry, users []User, statsPath string) AWGConf {
-	c := AWGConf{Entries: filterEntries(entries, func(e Entry) bool { return e.Kind == "amneziawg" }), Stats: statsPath,
-		Peers: []AWGPeer{}}
-	if st.AWG != nil {
-		c.Params = *st.AWG
-	}
-	for _, u := range users {
-		if u.Enabled {
-			_, pub := awgUserKey(u)
-			c.Peers = append(c.Peers, AWGPeer{Name: u.Name, Pub: pub, WGIP: u.WGIP})
-		}
-	}
-	return c
-}
-
-// uapiServer is the device config of entry e. The server sends junk packets too when it starts
-// a handshake, so it gets the deployment's Jc/Jmin/Jmax.
-func (c AWGConf) uapiServer(e Entry) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "private_key=%s\nlisten_port=%d\njc=%d\njmin=%d\njmax=%d\n", b64hex(c.Params.Priv), e.Port,
-		c.Params.Jc, c.Params.Jmin, c.Params.Jmax)
-	c.Params.uapiShared(&b)
-	b.WriteString(c.uapiPeers(e))
-	return b.String()
-}
-
-func (c AWGConf) uapiPeers(e Entry) string {
-	var b strings.Builder
-	b.WriteString("replace_peers=true\n")
-	for _, p := range c.Peers {
-		fmt.Fprintf(&b, "public_key=%s\nallowed_ip=%s/32\n", b64hex(p.Pub), awgAddr(e, User{WGIP: p.WGIP}))
-	}
-	return b.String()
-}
 
 func cmdAWG(args []string) error {
 	if len(args) != 2 || args[0] != "run" {
@@ -272,7 +165,7 @@ var awgStatsEvery = 15 * time.Second
 // runAWG serves conf until a device fails or the entries in the file change (the service
 // manager starts it again with the new ones). Peer changes are applied in place.
 func runAWG(path string) error {
-	var c AWGConf
+	var c protocols.AWGConf
 	if err := readJSONFile(path, &c); err != nil {
 		return err
 	}
@@ -286,7 +179,7 @@ func runAWG(path string) error {
 		}
 	}()
 	for _, e := range c.Entries {
-		d, err := awgServerDevice(e, c.uapiServer(e))
+		d, err := awgServerDevice(e, c.UAPIServer(e))
 		if err != nil {
 			return fmt.Errorf("%s: %w", e.ID, err)
 		}
@@ -311,7 +204,7 @@ func runAWG(path string) error {
 				continue
 			}
 			last = fi.ModTime()
-			var nc AWGConf
+			var nc protocols.AWGConf
 			if readJSONFile(path, &nc) != nil {
 				continue
 			}
@@ -322,7 +215,7 @@ func runAWG(path string) error {
 			if !reflect.DeepEqual(nc.Peers, c.Peers) {
 				c = nc
 				for _, e := range c.Entries {
-					if err := devs[e.ID].IpcSet(c.uapiPeers(e)); err != nil {
+					if err := devs[e.ID].IpcSet(c.UAPIPeers(e)); err != nil {
 						return fmt.Errorf("%s: peers: %w", e.ID, err)
 					}
 				}
@@ -372,7 +265,7 @@ func parseAWGStats(s string) []awgPeerStat {
 // awgStats turns the devices' peer counters into the tunnel server's stats format: the server
 // receives what clients upload. A peer is online while its last handshake is recent (clients
 // redo it every 2 minutes while in use).
-func awgStats(c AWGConf, peers map[string][]awgPeerStat, boot string, now time.Time) tunnelStats {
+func awgStats(c protocols.AWGConf, peers map[string][]awgPeerStat, boot string, now time.Time) tunnelStats {
 	names := map[string]string{}
 	for _, p := range c.Peers {
 		names[p.Pub] = p.Name
@@ -397,7 +290,7 @@ func awgStats(c AWGConf, peers map[string][]awgPeerStat, boot string, now time.T
 	return s
 }
 
-func writeAWGStats(c AWGConf, devs map[string]*device.Device, boot string) {
+func writeAWGStats(c protocols.AWGConf, devs map[string]*device.Device, boot string) {
 	peers := map[string][]awgPeerStat{}
 	for id, d := range devs {
 		if out, err := d.IpcGet(); err == nil {
@@ -417,35 +310,35 @@ func writeAWGStats(c AWGConf, devs map[string]*device.Device, boot string) {
 // ---------------------------------------------------------------- client
 
 // uapiClient is a client's device config for entry e, connecting to endpoint (an IP:port).
-func (st *State) uapiClient(e Entry, u User, k Knobs, endpoint string) string {
+func uapiClient(st *state.State, e state.Entry, u state.User, k state.Knobs, endpoint string) string {
 	p := *st.AWG
-	priv, _ := awgUserKey(u)
-	jc, jmin, jmax, i1 := awgClientParams(p, k.Mode)
+	priv, _ := protocols.AWGUserKey(u)
+	jc, jmin, jmax, i1 := protocols.AWGClientParams(p, k.Mode)
 	var b strings.Builder
-	fmt.Fprintf(&b, "private_key=%s\njc=%d\njmin=%d\njmax=%d\n", b64hex(priv), jc, jmin, jmax)
-	p.uapiShared(&b)
+	fmt.Fprintf(&b, "private_key=%s\njc=%d\njmin=%d\njmax=%d\n", protocols.B64hex(priv), jc, jmin, jmax)
+	protocols.UAPIShared(p, &b)
 	if i1 != "" {
 		fmt.Fprintf(&b, "i1=%s\n", i1)
 	}
 	fmt.Fprintf(&b, "public_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n",
-		b64hex(p.Public), endpoint)
+		protocols.B64hex(p.Public), endpoint)
 	return b.String()
 }
 
 // awgDialer connects as u through an in-process AmneziaWG client on a userspace network stack.
 // The tunnel comes up on the first dial; names resolve through it (1.1.1.1), as in the apps.
 type awgDialer struct {
-	st   *State
-	e    Entry
-	u    User
-	k    Knobs
+	st   *state.State
+	e    state.Entry
+	u    state.User
+	k    state.Knobs
 	once sync.Once
 	dev  *device.Device
 	tnet *netstack.Net
 	err  error
 }
 
-func (st *State) awgDial(e Entry, u User, k Knobs) *awgDialer {
+func awgDial(st *state.State, e state.Entry, u state.User, k state.Knobs) *awgDialer {
 	return &awgDialer{st: st, e: e, u: u, k: k}
 }
 
@@ -464,13 +357,13 @@ func (a *awgDialer) start() {
 		}
 		ip, _ = netip.ParseAddr(ips[0])
 	}
-	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{awgAddr(a.e, a.u)}, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, wgMTU(a.k))
+	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{protocols.AWGAddr(a.e, a.u)}, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, protocols.WGMTU(a.k))
 	if err != nil {
 		a.err = err
 		return
 	}
 	d := device.NewDevice(newNetTUN(tdev), conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
-	if err := d.IpcSet(a.st.uapiClient(a.e, a.u, a.k, netip.AddrPortFrom(ip, uint16(a.e.Port)).String())); err != nil {
+	if err := d.IpcSet(uapiClient(a.st, a.e, a.u, a.k, netip.AddrPortFrom(ip, uint16(a.e.Port)).String())); err != nil {
 		d.Close()
 		a.err = err
 		return
@@ -521,43 +414,9 @@ func (a *awgDialer) Close() {
 
 // ---------------------------------------------------------------- profiles
 
-// AWGConfFile is the config file the AmneziaVPN and AmneziaWG apps import.
-func (st *State) AWGConfFile(e Entry, u User) string {
-	p := *st.AWG
-	priv, _ := awgUserKey(u)
-	jc, jmin, jmax, i1 := awgClientParams(p, e.Mode)
-	var b strings.Builder
-	fmt.Fprintf(&b, `[Interface]
-PrivateKey = %s
-Address = %s/32
-DNS = 1.1.1.1, 8.8.8.8
-MTU = %d
-Jc = %d
-Jmin = %d
-Jmax = %d
-S1 = %d
-S2 = %d
-H1 = %d
-H2 = %d
-H3 = %d
-H4 = %d
-`, priv, awgAddr(e, u), wgMTU(e.Knobs()), jc, jmin, jmax, p.S1, p.S2, p.H1, p.H2, p.H3, p.H4)
-	if i1 != "" {
-		fmt.Fprintf(&b, "I1 = %s\n", i1)
-	}
-	fmt.Fprintf(&b, `
-[Peer]
-PublicKey = %s
-AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = %s
-PersistentKeepalive = 25
-`, p.Public, hostPort(st.Addr(), e.Port))
-	return b.String()
-}
-
 // awgSpecs are the helper's arguments for the AWG entries: "awg" and "net:SUBNET" for each
 // client range to NAT.
-func awgSpecs(entries []Entry) []string {
+func awgSpecs(entries []state.Entry) []string {
 	var out []string
 	for _, e := range entries {
 		if e.Kind == "amneziawg" {
@@ -570,4 +429,4 @@ func awgSpecs(entries []Entry) []string {
 	return out
 }
 
-const awgStatsFile = remoteDir + "/awg-stats.json"
+const awgStatsFile = remote.Dir + "/awg-stats.json"
