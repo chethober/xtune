@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // ---------------------------------------------------------------- quiet configs, daily usage
@@ -31,7 +33,7 @@ func TestInboundStatsAndDailyUsage(t *testing.T) {
 	if eu := us.Entries["ss2022/30001"]; eu == nil || eu.Active != 0 {
 		t.Errorf("ss2022 carried nothing: %+v", eu)
 	}
-	if !strings.Contains(fs.files[remoteDir+"/config.json"], "statsInboundDownlink") {
+	if !strings.Contains(fs.files[remote.Dir+"/config.json"], "statsInboundDownlink") {
 		t.Error("the server config should count traffic per inbound")
 	}
 	st, _ := LoadState(r)
@@ -335,7 +337,7 @@ func TestSNIRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, _ = LoadState(r)
-	if st.Entries[0].SNI != "www.nvidia.com" || !strings.Contains(fs.files[remoteDir+"/config.json"], "www.nvidia.com:443") {
+	if st.Entries[0].SNI != "www.nvidia.com" || !strings.Contains(fs.files[remote.Dir+"/config.json"], "www.nvidia.com:443") {
 		t.Errorf("not refreshed: %+v", st.Entries[0])
 	}
 	if len(*got) != 1 || !strings.Contains((*got)[0], "changed REALITY targets") {

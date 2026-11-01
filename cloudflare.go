@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // With a Cloudflare API token, xtune keeps the domains' DNS records pointed at the server itself
@@ -269,13 +271,13 @@ func serverIP(host string) (string, error) {
 	return ips[0].String(), nil
 }
 
-func SetCloudflare(r *Server, cf Cloudflare) error {
+func SetCloudflare(r *remote.Server, cf Cloudflare) error {
 	if cf.Token != "" {
 		if err := cfVerify(cf.Token); err != nil {
 			return err
 		}
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -298,7 +300,7 @@ func cmdCloudflare(args []string) error {
 			pos = append(pos, args[i])
 		}
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -400,7 +402,7 @@ func cfTokenAsk() (string, error) {
 }
 
 // cfWorkerCmd is `xtune cloudflare worker [status | sync | off]`.
-func cfWorkerCmd(r *Server, st *State, args []string) error {
+func cfWorkerCmd(r *remote.Server, st *State, args []string) error {
 	action := "status"
 	if len(args) > 0 {
 		action = args[0]
@@ -465,7 +467,7 @@ func cfWorkerCmd(r *Server, st *State, args []string) error {
 		}
 		return setWorkerLimit(r, n)
 	case "sync": // upload it again, routes and script, even when nothing seems to have changed
-		defer r.lock()()
+		defer r.Lock()()
 		w.Routes = nil
 		if err := syncWorker(st); err != nil {
 			return err
@@ -473,7 +475,7 @@ func cfWorkerCmd(r *Server, st *State, args []string) error {
 		fmt.Printf("Worker %s: %d routes\n", w.Name, len(w.Routes))
 		return saveState(r, st)
 	case "off": // the Worker configs go with it, so subscriptions stop offering them
-		defer r.lock()()
+		defer r.Lock()()
 		rest := filterEntries(st.Entries, func(e Entry) bool { return !e.Worker() })
 		if len(rest) == 0 {
 			return errors.New("the Worker configs are the only ones deployed: tune and deploy others first")
@@ -498,7 +500,7 @@ func cfWorkerCmd(r *Server, st *State, args []string) error {
 
 // pointAfterMove updates the DNS records, from the new server, after a migrate. It reports
 // whether it did, so the admin is not told to do it by hand.
-func pointAfterMove(r *Server, st *State, log func(string)) bool {
+func pointAfterMove(r *remote.Server, st *State, log func(string)) bool {
 	if st.Cloudflare.Token == "" || st.Domain == "" && st.CDNDomain == "" && st.DNSDomain == "" {
 		return false
 	}
@@ -507,7 +509,7 @@ func pointAfterMove(r *Server, st *State, log func(string)) bool {
 		log("[!] " + err.Error())
 		return false
 	}
-	out, err := r.Root(remoteDir + "/xtune cloudflare dns --ip " + shq(ip))
+	out, err := r.Root(remote.Dir + "/xtune cloudflare dns --ip " + remote.Quote(ip))
 	if err != nil {
 		log("[!] the Cloudflare DNS update failed, update the records by hand: " + err.Error())
 		return false

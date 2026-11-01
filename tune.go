@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/net/proxy"
 )
 
@@ -963,7 +964,7 @@ type TuneResult struct {
 }
 
 // Tune installs/uses the isolated server Xray, starts the test matrix and measures it from here.
-func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
+func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 	o.defaults()
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
 		return nil, err
@@ -1063,11 +1064,11 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 	}
 	tuneUser := NewUser("tune")
 	tuneUser.WGIP = wgSubnet.Addr().Next().Next().String()
-	testDir := remoteDir + "/test"
+	testDir := remote.Dir + "/test"
 	cfg := st.ServerConfig(entries, wgTestPeers(tuneUser, entries))
 	testCerts(cfg, testDir)
 	cfgJSON, _ := json.MarshalIndent(cfg, "", " ")
-	files := map[string]string{testDir + "/hy.crt": st.CertPEM, testDir + "/hy.key": st.KeyPEM, remoteDir + "/test.json": string(cfgJSON)}
+	files := map[string]string{testDir + "/hy.crt": st.CertPEM, testDir + "/hy.key": st.KeyPEM, remote.Dir + "/test.json": string(cfgJSON)}
 	var extras []string
 	if hasEngine(entries, "tunnel") {
 		tc, _ := json.MarshalIndent(st.TunnelConf(entries, []User{tuneUser}, ""), "", " ")
@@ -1138,7 +1139,7 @@ func Tune(r *Server, o TuneOpts) (*TuneResult, error) {
 // tunnels and AmneziaWG, OpenVPN and strongSwan come from the distribution, and the Worker relay
 // is created or updated on Cloudflare. Protocols the server cannot run are dropped with a warning;
 // the rest of the tune goes on.
-func (o *TuneOpts) prepareExtras(r *Server, entries []Entry) ([]Entry, error) {
+func (o *TuneOpts) prepareExtras(r *remote.Server, entries []Entry) ([]Entry, error) {
 	if hasEngine(entries, "tunnel") || hasEngine(entries, "awg") {
 		if err := EnsureServerXtune(r, o.Log); err != nil {
 			o.Log("[!] the SSH and DNS tunnels and AmneziaWG need xtune on the server, which failed: " + err.Error() + "; skipping them")

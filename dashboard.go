@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // The dashboard is a full-screen overview of a deployment: the server's configs with their
@@ -233,7 +234,7 @@ func trunc(s string, n int) string {
 
 // dashModel is the live dashboard: it reloads the snapshot on r and on a timer.
 type dashModel struct {
-	r      *Server
+	r      *remote.Server
 	data   dashData
 	err    error
 	width  int
@@ -242,7 +243,7 @@ type dashModel struct {
 
 type dashTick time.Time
 
-func dashReload(r *Server) tea.Cmd {
+func dashReload(r *remote.Server) tea.Cmd {
 	return func() tea.Msg {
 		st, err := LoadState(r)
 		if err != nil {

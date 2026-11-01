@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // keyedState is testState with the keys of the newer protocols.
@@ -182,7 +184,7 @@ func mustJSON(t *testing.T, v any) string {
 // WireGuard users cannot be added through Xray's API: a change restarts Xray, no change does not.
 func TestWireGuardUserChangesRestart(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := keyedState(t)
 	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "wg", Kind: "wireguard", Port: 51820}}
 	st.Users = []User{NewUser("ann")}
@@ -352,7 +354,7 @@ func TestVPNSessionParsing(t *testing.T) {
 
 func TestCollectExtraAndKick(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := keyedState(t)
 	st.Entries = []Entry{{ID: "ssh", Kind: "ssh", Port: 2222}, {ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, {ID: "ikev2", Kind: "ikev2", Port: 500}}
 	stats := func(boot string, up, down int64) {

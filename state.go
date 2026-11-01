@@ -9,13 +9,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // The deployment (systemd unit "xray-autotune") and its users live in state.json on the server.
 // Users are managed only there: in the server TUI (sudo xtune) or with `xtune users` on the server.
 
-func LoadState(r *Server) (*State, error) {
-	out, err := r.Root("cat " + remoteDir + "/state.json 2>/dev/null || true")
+func LoadState(r *remote.Server) (*State, error) {
+	out, err := r.Root("cat " + remote.Dir + "/state.json 2>/dev/null || true")
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +33,7 @@ func LoadState(r *Server) (*State, error) {
 
 // saveState writes state.json and the certificate. Users get a subscription token and a
 // WireGuard address if they lack one.
-func saveState(r *Server, st *State) error {
+func saveState(r *remote.Server, st *State) error {
 	for i := range st.Users {
 		if st.Users[i].SubToken == "" {
 			st.Users[i].SubToken = randHex(16)
@@ -40,9 +42,9 @@ func saveState(r *Server, st *State) error {
 	st.assignWGIPs()
 	stJSON, _ := json.MarshalIndent(st, "", " ")
 	for _, f := range []struct{ path, body string }{
-		{remoteDir + "/state.json", string(stJSON)},
-		{remoteDir + "/hy.crt", st.CertPEM},
-		{remoteDir + "/hy.key", st.KeyPEM},
+		{remote.Dir + "/state.json", string(stJSON)},
+		{remote.Dir + "/hy.crt", st.CertPEM},
+		{remote.Dir + "/hy.key", st.KeyPEM},
 	} {
 		if err := r.Upload(f.path, []byte(f.body), "600"); err != nil {
 			return err
@@ -53,9 +55,9 @@ func saveState(r *Server, st *State) error {
 
 // writeConfig writes config.json for the active users and checks it with Xray, without a restart,
 // and the active users of the SSH tunnels and VPNs, which pick them up by themselves.
-func writeConfig(r *Server, st *State, active []User) error {
+func writeConfig(r *remote.Server, st *State, active []User) error {
 	cfgJSON, _ := json.MarshalIndent(st.ServerConfig(st.Entries, active), "", " ")
-	if err := r.Upload(remoteDir+"/config.json", cfgJSON, "600"); err != nil {
+	if err := r.Upload(remote.Dir+"/config.json", cfgJSON, "600"); err != nil {
 		return err
 	}
 	if _, err := r.Helper("check"); err != nil {
@@ -63,13 +65,13 @@ func writeConfig(r *Server, st *State, active []User) error {
 	}
 	if hasEngine(st.Entries, "tunnel") {
 		tc, _ := json.MarshalIndent(st.TunnelConf(st.Entries, active, tunnelStatsFile), "", " ")
-		if err := r.Upload(remoteDir+"/tunnels.json", tc, "600"); err != nil {
+		if err := r.Upload(remote.Dir+"/tunnels.json", tc, "600"); err != nil {
 			return err
 		}
 	}
 	if hasEngine(st.Entries, "awg") {
 		ac, _ := json.MarshalIndent(st.AWGConf(st.Entries, active, awgStatsFile), "", " ")
-		if err := r.Upload(remoteDir+"/awg.json", ac, "600"); err != nil {
+		if err := r.Upload(remote.Dir+"/awg.json", ac, "600"); err != nil {
 			return err
 		}
 	}
@@ -88,11 +90,11 @@ func writeConfig(r *Server, st *State, active []User) error {
 	return nil
 }
 
-const tunnelStatsFile = remoteDir + "/tunnels-stats.json"
+const tunnelStatsFile = remote.Dir + "/tunnels-stats.json"
 
 // Apply saves everything and restarts the service; used when entries or ports change. The
 // Cloudflare Worker, if any, is pointed at the deployed worker-ws inbounds first.
-func Apply(r *Server, st *State) error {
+func Apply(r *remote.Server, st *State) error {
 	if st.APIPort == 0 {
 		st.APIPort = pickAPIPort(st)
 	}
@@ -128,7 +130,7 @@ func Apply(r *Server, st *State) error {
 // commit saves a user change and applies it to the running Xray through its API, so nobody else is
 // disconnected. It falls back to a restart when the API cannot do it (older deployments, or the
 // first user on an inbound).
-func commit(r *Server, st *State) error {
+func commit(r *remote.Server, st *State) error {
 	if st.APIPort == 0 {
 		return Apply(r, st)
 	}
@@ -168,7 +170,7 @@ func pickAPIPort(st *State) int {
 
 // restart (re)starts xray-autotune with the saved config and opens the entries' firewall ports,
 // then the tunnel server and VPNs the entries need (stopping those they no longer need).
-func restart(r *Server, st *State) error {
+func restart(r *remote.Server, st *State) error {
 	out, err := r.Helper(append([]string{"apply"}, portSpecs(st.Entries)...)...)
 	if err != nil {
 		return err
@@ -202,7 +204,7 @@ func restart(r *Server, st *State) error {
 // fallback for when the server's IP gets blocked, so it is kept even when slower. On a server that
 // already has a deployment, the server keys, certificate and users are kept: only ports, SNIs and
 // client settings change, so subscriptions keep working.
-func Deploy(r *Server, res *TuneResult, n int) (*State, error) {
+func Deploy(r *remote.Server, res *TuneResult, n int) (*State, error) {
 	var chosen []*Variant
 	for _, v := range deployChoice(res.Best, n) {
 		chosen = append(chosen, domainVariant(v, res.All))
@@ -220,7 +222,7 @@ func Deploy(r *Server, res *TuneResult, n int) (*State, error) {
 
 // DeployVariants deploys the chosen variants with their tuned client settings, keeping an
 // existing deployment's identity and users (see Deploy).
-func DeployVariants(r *Server, st *State, chosen []*Variant) (*State, error) {
+func DeployVariants(r *remote.Server, st *State, chosen []*Variant) (*State, error) {
 	if len(chosen) == 0 {
 		return nil, fmt.Errorf("nothing to deploy")
 	}
@@ -317,7 +319,7 @@ func deployChoice(best []*Variant, n int) []*Variant {
 	return chosen
 }
 
-func requireState(r *Server) (*State, error) {
+func requireState(r *remote.Server) (*State, error) {
 	st, err := LoadState(r)
 	if err != nil {
 		return nil, err
@@ -400,8 +402,8 @@ func (l Limits) apply(u *User) {
 }
 
 // changeUser loads the state under the server lock, lets fn change it and commits the result.
-func changeUser(r *Server, name string, fn func(st *State, u *User) error) (*State, error) {
-	defer r.lock()()
+func changeUser(r *remote.Server, name string, fn func(st *State, u *User) error) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -419,7 +421,7 @@ func changeUser(r *Server, name string, fn func(st *State, u *User) error) (*Sta
 	return st, commit(r, st)
 }
 
-func AddUser(r *Server, name string, l Limits) (*State, User, error) {
+func AddUser(r *remote.Server, name string, l Limits) (*State, User, error) {
 	if err := validUserName(name); err != nil {
 		return nil, User{}, err
 	}
@@ -428,7 +430,7 @@ func AddUser(r *Server, name string, l Limits) (*State, User, error) {
 			return nil, User{}, err
 		}
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, User{}, err
@@ -451,8 +453,8 @@ func AddUser(r *Server, name string, l Limits) (*State, User, error) {
 	return st, u, commit(r, st)
 }
 
-func DeleteUser(r *Server, name string) error {
-	defer r.lock()()
+func DeleteUser(r *remote.Server, name string) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -468,12 +470,12 @@ func DeleteUser(r *Server, name string) error {
 	return commit(r, st)
 }
 
-func SetUserEnabled(r *Server, name string, on bool) error {
+func SetUserEnabled(r *remote.Server, name string, on bool) error {
 	_, err := changeUser(r, name, func(_ *State, u *User) error { u.Enabled = on; return nil })
 	return err
 }
 
-func SetLimits(r *Server, name string, l Limits) (*State, error) {
+func SetLimits(r *remote.Server, name string, l Limits) (*State, error) {
 	if l.Reset != nil {
 		if err := validReset(*l.Reset); err != nil {
 			return nil, err
@@ -490,7 +492,7 @@ func SetLimits(r *Server, name string, l Limits) (*State, error) {
 }
 
 // RotateUser issues new credentials, invalidating the user's old links.
-func RotateUser(r *Server, name string) (*State, User, error) {
+func RotateUser(r *remote.Server, name string) (*State, User, error) {
 	var nu User
 	st, err := changeUser(r, name, func(_ *State, u *User) error {
 		u.UUID, u.SSKey = newUUID(), ssKey()
@@ -501,17 +503,17 @@ func RotateUser(r *Server, name string) (*State, User, error) {
 }
 
 // ResetSubLink gives the user a new subscription URL; the old one stops working.
-func ResetSubLink(r *Server, name string) (*State, error) {
+func ResetSubLink(r *remote.Server, name string) (*State, error) {
 	return changeUser(r, name, func(_ *State, u *User) error { u.SubToken = randHex(16); return nil })
 }
 
 // ResetUsage sets the user's traffic back to zero, re-enabling them if they were over quota.
-func ResetUsage(r *Server, name string) error {
+func ResetUsage(r *remote.Server, name string) error {
 	_, err := changeUser(r, name, func(*State, *User) error { return resetUsage(r, name) })
 	return err
 }
 
-func resetUsage(r *Server, name string) error {
+func resetUsage(r *remote.Server, name string) error {
 	us, err := LoadUsage(r)
 	if err != nil {
 		return err
@@ -521,11 +523,11 @@ func resetUsage(r *Server, name string) error {
 }
 
 // SetCountry chooses which country's sites client configs send direct ("" = none).
-func SetCountry(r *Server, code string) error {
+func SetCountry(r *remote.Server, code string) error {
 	if _, ok := countries[code]; code != "" && !ok {
 		return fmt.Errorf("unknown country %q (supported: %s)", code, countryList())
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -547,12 +549,12 @@ func countryList() string {
 
 // SetDNSDomain changes the DNS tunnel's zone ("" removes the DNS tunnel). With a Cloudflare
 // token, the zone is delegated to the server.
-func SetDNSDomain(r *Server, zone string, log func(string)) (*State, error) {
+func SetDNSDomain(r *remote.Server, zone string, log func(string)) (*State, error) {
 	zone = strings.TrimSuffix(strings.ToLower(zone), ".")
 	if zone != "" && (strings.ContainsAny(zone, "/: ") || strings.Count(zone, ".") < 2) {
 		return nil, fmt.Errorf("%q: use a subdomain such as t.example.com", zone)
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -583,8 +585,8 @@ func SetDNSDomain(r *Server, zone string, log func(string)) (*State, error) {
 // SetDomains changes the direct and CDN domains used in links. Setting a CDN domain on a deployment
 // without a CDN entry adds one with default settings (re-tune to measure it); clearing it removes
 // the CDN entries. added reports whether a CDN entry was added.
-func SetDomains(r *Server, direct, cdn string, log func(string)) (st *State, added bool, err error) {
-	defer r.lock()()
+func SetDomains(r *remote.Server, direct, cdn string, log func(string)) (st *State, added bool, err error) {
+	defer r.Lock()()
 	if st, err = requireState(r); err != nil {
 		return nil, false, err
 	}

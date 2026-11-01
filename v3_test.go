@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // localXray is a local Xray to validate generated configs with; tests that need it skip without.
@@ -297,7 +299,7 @@ func TestAlerts(t *testing.T) {
 	st.APIPort = 1
 	saveState(r, st)
 	failing := &failAPI{fakeServer: fs}
-	r.sh = failing
+	r.Transport = failing
 	Enforce(r)
 	Enforce(r)
 	if len(*got) != 0 {
@@ -305,7 +307,7 @@ func TestAlerts(t *testing.T) {
 	}
 	Enforce(r)
 	Enforce(r)
-	r.sh = fs
+	r.Transport = fs
 	fs.live = saved
 	Enforce(r)
 	if s := strings.Join(*got, "\n"); strings.Count(s, "xray-down") != 1 || !strings.Contains(s, "xray-up") {
@@ -316,11 +318,11 @@ func TestAlerts(t *testing.T) {
 // failAPI makes every Xray API call fail.
 type failAPI struct{ *fakeServer }
 
-func (f *failAPI) exec(cmd, stdin string, sudo bool) (string, string, error) {
+func (f *failAPI) Exec(cmd, stdin string, sudo bool) (string, string, error) {
 	if strings.Contains(cmd, "/xray api ") {
 		return "", "", fmt.Errorf("connection refused")
 	}
-	return f.fakeServer.exec(cmd, stdin, sudo)
+	return f.fakeServer.Exec(cmd, stdin, sudo)
 }
 
 func TestTelegramAlertFormat(t *testing.T) {
@@ -468,7 +470,7 @@ func TestBackupRestoreKeepsIdentity(t *testing.T) {
 	// a port the backup needs is taken on the new server
 	nfs := newFake()
 	nfs.helper = map[string]string{"status": "ARCH x86_64\nXRAY v26.10.10\nXTUNE dev"}
-	nr := &Server{sh: nfs, Conn: Conn{Host: "198.51.100.9"}}
+	nr := &remote.Server{Transport: nfs, Conn: remote.Conn{Host: "198.51.100.9"}}
 	nfs.used = "USED tcp 0.0.0.0:443"
 	if _, err := Restore(nr, b, func(s string) { t.Log(s) }); err == nil || !strings.Contains(err.Error(), "r-tcp 443/tcp") {
 		t.Errorf("want a port conflict, got %v", err)
@@ -499,7 +501,7 @@ func TestBackupRestoreKeepsIdentity(t *testing.T) {
 }
 
 func TestParseTarget(t *testing.T) {
-	for in, want := range map[string]Conn{
+	for in, want := range map[string]remote.Conn{
 		"1.2.3.4":          {Host: "1.2.3.4"},
 		"bob@1.2.3.4:2222": {User: "bob", Host: "1.2.3.4", Port: 2222},
 		"[2001:db8::1]:22": {Host: "2001:db8::1", Port: 22},
@@ -544,7 +546,7 @@ func TestMergeChoiceCoversEveryNetwork(t *testing.T) {
 
 func TestShareAndDeployPending(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := testState()
 	st.Users = []User{NewUser("ann")}
 	tu := NewUser("tune")
@@ -655,7 +657,7 @@ func TestWarpRegistrationAndConfig(t *testing.T) {
 	if st.Warp.Address4 != "172.16.0.2" || fmt.Sprint(st.Warp.Reserved) != "[1 2 3]" || st.Warp.PrivateKey == "" {
 		t.Fatalf("warp %+v", st.Warp)
 	}
-	cfg := fs.files[remoteDir+"/config.json"]
+	cfg := fs.files[remote.Dir+"/config.json"]
 	if !strings.Contains(cfg, `"wireguard"`) || !strings.Contains(cfg, `geosite:category-ai-!cn`) {
 		t.Errorf("config lacks the WARP outbound or rule")
 	}
@@ -663,10 +665,10 @@ func TestWarpRegistrationAndConfig(t *testing.T) {
 	if st, _ = SetWarp(r, true, []string{"geosite:netflix"}, true); st.Warp.PrivateKey != key || !st.Warp.All {
 		t.Error("changing WARP routing should keep the account")
 	}
-	if !strings.Contains(fs.files[remoteDir+"/config.json"], `"outboundTag": "warp"`) {
+	if !strings.Contains(fs.files[remote.Dir+"/config.json"], `"outboundTag": "warp"`) {
 		t.Error("all-traffic rule missing")
 	}
-	if st, _ = SetWarp(r, false, nil, false); st.Warp != nil || strings.Contains(fs.files[remoteDir+"/config.json"], "wireguard") {
+	if st, _ = SetWarp(r, false, nil, false); st.Warp != nil || strings.Contains(fs.files[remote.Dir+"/config.json"], "wireguard") {
 		t.Error("WARP not removed")
 	}
 }
@@ -748,10 +750,10 @@ func TestSelfUpdateArchive(t *testing.T) {
 func TestHostUsesSavedProfile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	if err := saveProfile(Conn{Host: "203.0.113.5", User: "chth", Port: 2222}); err != nil {
+	if err := saveProfile(remote.Conn{Host: "203.0.113.5", User: "chth", Port: 2222}); err != nil {
 		t.Fatal(err)
 	}
-	conn := func(args ...string) Conn {
+	conn := func(args ...string) remote.Conn {
 		fs := flag.NewFlagSet("t", flag.ContinueOnError)
 		c := addConnFlags(fs)
 		if err := fs.Parse(args); err != nil {

@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // The autopilot watches for the server's IP being blocked: every config that is reached at the
@@ -107,7 +109,7 @@ func blockConfirmed(st *State, us *Usage, now time.Time) (bool, string) {
 
 // runAutopilot alerts when the IP looks blocked and, with a provider, moves the server to a new
 // IP (the enforce job runs it every minute, under the server lock).
-func runAutopilot(r *Server, st *State, us *Usage, now time.Time) {
+func runAutopilot(r *remote.Server, st *State, us *Usage, now time.Time) {
 	blocked, why := ipBlocked(st, us, now)
 	confirmed, _ := blockConfirmed(st, us, now)
 	ap := st.Autopilot
@@ -139,7 +141,7 @@ func runAutopilot(r *Server, st *State, us *Usage, now time.Time) {
 }
 
 // rotateIP gets the server a new IP from the provider and points clients at it.
-func rotateIP(r *Server, st *State, us *Usage, now time.Time) (string, error) {
+func rotateIP(r *remote.Server, st *State, us *Usage, now time.Time) (string, error) {
 	ap := st.Autopilot
 	if ap == nil || ap.Provider != "digitalocean" {
 		return "", errors.New("no provider to get a new IP from (xtune autopilot digitalocean)")
@@ -310,7 +312,7 @@ func cmdAutopilot(args []string) error {
 	if err := serverOnly("autopilot", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -318,7 +320,7 @@ func cmdAutopilot(args []string) error {
 	if len(args) > 0 {
 		action = args[0]
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err

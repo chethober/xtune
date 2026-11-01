@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // `xtune doctor` checks the things that break a deployment without an obvious error: services,
@@ -55,7 +57,7 @@ var cdnErrors = map[int]string{
 }
 
 // Doctor runs every check against r, from a client over SSH or on the server itself.
-func Doctor(r *Server) *doctor {
+func Doctor(r *remote.Server) *doctor {
 	d := &doctor{}
 	ss, err := r.Status()
 	if err != nil {
@@ -201,7 +203,7 @@ func doctorTunnelDNS(d *doctor, st *State) {
 	d.fail("DNS tunnel: the name server of %s does not resolve to %s", st.DNSDomain, st.Host)
 }
 
-func doctorClock(d *doctor, r *Server, f map[string]string) {
+func doctorClock(d *doctor, r *remote.Server, f map[string]string) {
 	if f["NTP"] == "no" {
 		d.warn("the server's clock is not synchronized (timedatectl set-ntp true)")
 	}

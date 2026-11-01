@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/net/websocket"
 )
 
@@ -312,7 +313,7 @@ func hasWorker(es []Entry) bool {
 
 func TestDeployKeepsKnobsAndCloudflare(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	old := testStateWithCert(t)
 	old.Users = []User{NewUser("ann")}
 	old.Cloudflare.Token = "old-token"
@@ -336,7 +337,7 @@ func TestDeployKeepsKnobsAndCloudflare(t *testing.T) {
 		t.Errorf("kept: %+v %+v", got.Cloudflare, got.Worker)
 	}
 	var ac AWGConf
-	if err := json.Unmarshal([]byte(fs.files[remoteDir+"/awg.json"]), &ac); err != nil || len(ac.Peers) != 1 ||
+	if err := json.Unmarshal([]byte(fs.files[remote.Dir+"/awg.json"]), &ac); err != nil || len(ac.Peers) != 1 ||
 		ac.Params.Priv == "" || ac.Stats != awgStatsFile {
 		t.Errorf("awg.json: %v %+v", err, ac)
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // A plan is a named set of limits ("basic: 50 GB, 30 days, 2 devices, monthly reset"). Users can
@@ -85,7 +87,7 @@ func planNames(st *State) string {
 	return "plans: " + strings.Join(ns, ", ")
 }
 
-func SetPlan(r *Server, name string, p Plan) error {
+func SetPlan(r *remote.Server, name string, p Plan) error {
 	if err := validUserName(name); err != nil {
 		return fmt.Errorf("invalid plan name %q", name)
 	}
@@ -95,7 +97,7 @@ func SetPlan(r *Server, name string, p Plan) error {
 	if p.QuotaGB < 0 || p.Days < 0 || p.Devices < 0 {
 		return errors.New("limits cannot be negative")
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -107,8 +109,8 @@ func SetPlan(r *Server, name string, p Plan) error {
 	return saveState(r, st)
 }
 
-func DeletePlan(r *Server, name string) error {
-	defer r.lock()()
+func DeletePlan(r *remote.Server, name string) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -123,7 +125,7 @@ func DeletePlan(r *Server, name string) error {
 // Renew extends the user's expiry by their plan's days (or days, or renewDays), from today or
 // from their current expiry if later, starts their usage from zero and enables them. A plan
 // given here becomes theirs, with its limits.
-func Renew(r *Server, name, plan string, days int) (*State, User, error) {
+func Renew(r *remote.Server, name, plan string, days int) (*State, User, error) {
 	var nu User
 	st, err := changeUser(r, name, func(st *State, u *User) error {
 		plan = orStr(plan, u.Plan)
@@ -173,7 +175,7 @@ func cmdPlans(args []string) error {
 	devices := fs.Int("devices", 0, "simultaneous devices, 0 = unlimited")
 	reset := fs.String("reset", "", "start usage from zero every period: monthly, weekly or none")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}

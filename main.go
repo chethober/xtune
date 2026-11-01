@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/term"
 )
 
@@ -104,7 +105,7 @@ Connection flags (conn):
 
 func main() {
 	if len(os.Args) < 2 {
-		if serverMode() {
+		if remote.Installed() {
 			runServerTUI()
 		} else {
 			runTUI()
@@ -177,8 +178,8 @@ func main() {
 	case "self-update":
 		err = cmdSelfUpdate(args)
 	case "enforce":
-		var r *Server
-		if r, err = OpenLocal(); err == nil {
+		var r *remote.Server
+		if r, err = remote.OpenLocal(); err == nil {
 			err = Enforce(r)
 		}
 	case "serve":
@@ -225,8 +226,8 @@ func addConnFlags(fs *flag.FlagSet) connFlags {
 	}
 }
 
-func (c connFlags) conn() (Conn, error) {
-	var cn Conn
+func (c connFlags) conn() (remote.Conn, error) {
+	var cn remote.Conn
 	if *c.profile != "" {
 		p, ok := findProfile(*c.profile)
 		if !ok {
@@ -272,18 +273,18 @@ func cliPrompt(label string, secret bool) (string, error) {
 	return strings.TrimSpace(s), err
 }
 
-func connect(c connFlags) (*Server, error) {
+func connect(c connFlags) (*remote.Server, error) {
 	cn, err := c.conn()
 	if err != nil {
 		return nil, err
 	}
-	return Dial(cn, cliPrompt)
+	return remote.Dial(cn, cliPrompt)
 }
 
 // target connects to --host/--profile, or manages this machine when xtune runs on the server.
-func target(c connFlags) (*Server, error) {
-	if *c.host == "" && *c.profile == "" && serverMode() {
-		return OpenLocal()
+func target(c connFlags) (*remote.Server, error) {
+	if *c.host == "" && *c.profile == "" && remote.Installed() {
+		return remote.OpenLocal()
 	}
 	return connect(c)
 }
@@ -330,7 +331,7 @@ func setActiveHarness(h *harness) { activeMu.Lock(); activeHarness = h; activeMu
 
 // guarded runs fn; on Ctrl+C / SIGTERM it stops the local harness and the server test
 // instance (when r is set) before exiting, so an interrupted tune never leaves ports open.
-func guarded(r *Server, fn func() error) error {
+func guarded(r *remote.Server, fn func() error) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
@@ -440,7 +441,7 @@ func cmdTune(args []string) error {
 }
 
 // afterDeploy shows the deployment and installs xtune on the server, where users are managed.
-func afterDeploy(r *Server, st *State) {
+func afterDeploy(r *remote.Server, st *State) {
 	printDeployment(st)
 	if err := EnsureServerXtune(r, func(s string) { fmt.Println("[*] " + s) }); err != nil {
 		fmt.Println("[!] xtune could not be installed on the server, so users cannot be managed there yet:", err)
@@ -483,11 +484,11 @@ func cmdConsole(args []string) error {
 }
 
 // openConsole makes sure the server has this xtune, then runs its server TUI over SSH.
-func openConsole(r *Server) error {
+func openConsole(r *remote.Server) error {
 	if err := EnsureServerXtune(r, func(s string) { fmt.Println(s) }); err != nil {
 		return err
 	}
-	return r.Console(remoteDir + "/xtune server")
+	return r.Console(remote.Dir + "/xtune server")
 }
 
 // ---------------------------------------------------------------- xray
@@ -504,8 +505,8 @@ func cmdXray(args []string) error {
 	if len(pos) > 0 {
 		action = pos[0]
 	}
-	var r *Server
-	if *c.host != "" || *c.profile != "" || serverMode() {
+	var r *remote.Server
+	if *c.host != "" || *c.profile != "" || remote.Installed() {
 		var err error
 		if r, err = target(c); err != nil {
 			return err
@@ -530,7 +531,7 @@ func cmdXray(args []string) error {
 	return fmt.Errorf("unknown xray action %q", action)
 }
 
-func xrayStatus(w io.Writer, r *Server, xrayFlag string, stable, local bool) error {
+func xrayStatus(w io.Writer, r *remote.Server, xrayFlag string, stable, local bool) error {
 	latest, lerr := LatestXray(stable, r)
 	if lerr != nil {
 		latest = "unknown"
@@ -558,7 +559,7 @@ func xrayStatus(w io.Writer, r *Server, xrayFlag string, stable, local bool) err
 	return tw.Flush()
 }
 
-func xrayUpdate(r *Server, xrayFlag, tag string, local, server bool) error {
+func xrayUpdate(r *remote.Server, xrayFlag, tag string, local, server bool) error {
 	logf := func(s string) { fmt.Println(s) }
 	if local {
 		cur := XrayVersion(FindLocalXray(xrayFlag))
@@ -624,7 +625,7 @@ func cmdUsers(args []string) error {
 	if len(pos) == 0 {
 		pos = []string{"list"}
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -820,7 +821,7 @@ func cmdSub(args []string) error {
 	mode := fs.String("mode", "", "cdn (through the CDN domain) or direct (Let's Encrypt on the direct domain)")
 	port := fs.Int("port", 0, "HTTPS port (default: a free CDN-compatible port)")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -912,7 +913,7 @@ func cmdCountry(args []string) error {
 	if err := serverOnly("country", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -940,7 +941,7 @@ func cmdDomains(args []string) error {
 	cdn := fs.String("cdn", "", "CDN-proxied domain; --cdn= clears it and removes the CDN entry")
 	dnsZone := fs.String("dns", "", "zone delegated to the server for the DNS tunnel; --dns= clears it")
 	parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -1008,7 +1009,7 @@ func printAddresses(w io.Writer, st *State) {
 // ---------------------------------------------------------------- logs / uninstall
 
 func logCmd(unit string, n int, follow bool) string {
-	c := fmt.Sprintf("journalctl -u %s -n %d --no-pager -o short-iso", shq(unit), n)
+	c := fmt.Sprintf("journalctl -u %s -n %d --no-pager -o short-iso", remote.Quote(unit), n)
 	if follow {
 		c += " -f"
 	}
@@ -1050,25 +1051,25 @@ func cmdUninstall(args []string) error {
 
 func profilesPath() string { return filepath.Join(dataDir(), "profiles.json") }
 
-func loadProfiles() []Conn {
-	var ps []Conn
+func loadProfiles() []remote.Conn {
+	var ps []remote.Conn
 	if b, err := os.ReadFile(profilesPath()); err == nil {
 		json.Unmarshal(b, &ps)
 	}
 	return ps
 }
 
-func findProfile(name string) (Conn, bool) {
+func findProfile(name string) (remote.Conn, bool) {
 	for _, p := range loadProfiles() {
 		if p.Name == name || p.Host == name {
 			return p, true
 		}
 	}
-	return Conn{}, false
+	return remote.Conn{}, false
 }
 
 // saveProfile stores connection details (never passwords).
-func saveProfile(c Conn) error {
+func saveProfile(c remote.Conn) error {
 	if c.Name == "" {
 		c.Name = c.Host
 	}

@@ -16,6 +16,8 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Configs ranked per network. Every tune, check and measured report knows which network it ran
@@ -194,14 +196,14 @@ func labelRank(entries []Entry, deployed map[string]string, rs []CheckResult) (m
 
 // RecordNetwork stores one network's scores of the deployed configs on the server, over the
 // scores it had. addrs nil keeps the clean IPs it had (a check measures only the deployed knobs).
-func RecordNetwork(r *Server, n Network, scores map[string]float64, addrs map[string]string) error {
+func RecordNetwork(r *remote.Server, n Network, scores map[string]float64, addrs map[string]string) error {
 	if n.ASN == "" || len(scores) == 0 {
 		return nil
 	}
 	if err := serverXtuneCurrent(r); err != nil {
 		return fmt.Errorf("xtune on the server is older than this one, which would drop the ranking, and updating it failed: %w", err)
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -229,7 +231,7 @@ func RecordNetwork(r *Server, n Network, scores map[string]float64, addrs map[st
 }
 
 // recordCheck stores a check's results as its network's ranking.
-func recordCheck(r *Server, n Network, st *State, res []CheckResult) error {
+func recordCheck(r *remote.Server, n Network, st *State, res []CheckResult) error {
 	scores := map[string]float64{}
 	for _, c := range res {
 		for _, e := range st.Entries {
@@ -385,7 +387,7 @@ func cmdNetworks(args []string) error {
 	if err := serverOnly("networks", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -402,7 +404,7 @@ func cmdNetworks(args []string) error {
 		printNetworks(os.Stdout, st, time.Now())
 		return nil
 	case "del", "rm", "clear":
-		defer r.lock()()
+		defer r.Lock()()
 		st, err := requireState(r)
 		if err != nil {
 			return err
@@ -467,7 +469,7 @@ func printNetworks(w io.Writer, st *State, now time.Time) {
 
 // serverXtuneCurrent updates the server's xtune when it is not this version: an older one would
 // drop the fields it does not know (the rankings among them) the next time it saves the state.
-func serverXtuneCurrent(r *Server) error {
+func serverXtuneCurrent(r *remote.Server) error {
 	if r.Local || version == "dev" {
 		return nil
 	}

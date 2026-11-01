@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 func TestNewer(t *testing.T) {
@@ -360,13 +361,13 @@ func (f *fakeServer) api(args []string) (string, error) {
 	return "{}", nil
 }
 
-func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
+func (f *fakeServer) Exec(cmd, stdin string, _ bool) (string, string, error) {
 	if _, args, ok := strings.Cut(cmd, "helper.sh "); ok {
 		f.calls = append(f.calls, strings.ReplaceAll(args, "'", ""))
 	}
 	switch {
-	case strings.HasPrefix(cmd, remoteDir+"/xray api "):
-		out, err := f.api(strings.Fields(strings.TrimPrefix(cmd, remoteDir+"/xray api ")))
+	case strings.HasPrefix(cmd, remote.Dir+"/xray api "):
+		out, err := f.api(strings.Fields(strings.TrimPrefix(cmd, remote.Dir+"/xray api ")))
 		return out, "", err
 	case strings.HasPrefix(cmd, "cat "):
 		return f.files[strings.Fields(cmd)[1]], "", nil
@@ -379,7 +380,7 @@ func (f *fakeServer) exec(cmd, stdin string, _ bool) (string, string, error) {
 		f.restarts++
 		f.live = map[string]map[string]string{} // a restart loads config.json's users
 		var cfg struct{ Inbounds []J }
-		json.Unmarshal([]byte(f.files[remoteDir+"/config.json"]), &cfg)
+		json.Unmarshal([]byte(f.files[remote.Dir+"/config.json"]), &cfg)
 		for _, ib := range cfg.Inbounds {
 			f.live[ib["tag"].(string)] = map[string]string{}
 			if ib["protocol"] == "wireguard" {
@@ -416,12 +417,12 @@ func newFake() *fakeServer {
 	return &fakeServer{files: map[string]string{}, live: map[string]map[string]string{}}
 }
 
-func (f *fakeServer) stream(context.Context, string, func(string)) error { return nil }
-func (f *fakeServer) close()                                             {}
+func (f *fakeServer) Stream(context.Context, string, func(string)) error { return nil }
+func (f *fakeServer) Close()                                             {}
 
 func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	first := testState()
 	first.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
 	first.Users = []User{NewUser("ann")}
@@ -448,7 +449,7 @@ func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 	if len(st.Entries) != 2 || st.Entries[1].Mode != "packet-up" {
 		t.Errorf("want top 1 plus the CDN entry with its tuned knobs: %+v", st.Entries)
 	}
-	if !strings.Contains(fs.files[remoteDir+"/config.json"], `"cdn-xhttp"`) {
+	if !strings.Contains(fs.files[remote.Dir+"/config.json"], `"cdn-xhttp"`) {
 		t.Error("config.json does not contain the CDN inbound")
 	}
 
@@ -471,29 +472,11 @@ func TestRedeployKeepsServerIdentityAndUsers(t *testing.T) {
 	}
 }
 
-func TestLocalTransport(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("no bash")
-	}
-	var l localTransport
-	if out, _, err := l.exec("cat; echo -n done", "in-", false); err != nil || out != "in-done" {
-		t.Errorf("exec: %q %v", out, err)
-	}
-	if _, _, err := l.exec("echo boom >&2; exit 3", "", false); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Errorf("exec error should carry stderr: %v", err)
-	}
-	var lines []string
-	l.stream(context.Background(), "printf 'a\\nb\\n'", func(s string) { lines = append(lines, s) })
-	if strings.Join(lines, ",") != "a,b" {
-		t.Errorf("stream: %v", lines)
-	}
-}
-
 // deployed sets up a fake server with a live deployment (API enabled) and returns it.
-func deployed(t *testing.T, users ...User) (*Server, *fakeServer) {
+func deployed(t *testing.T, users ...User) (*remote.Server, *fakeServer) {
 	t.Helper()
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := testState()
 	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "ss2022", Kind: "ss2022", Port: 30001}}
 	st.Users = users
@@ -542,7 +525,7 @@ func TestUserChangesAreLiveWithoutRestart(t *testing.T) {
 	if fs.restarts != before {
 		t.Errorf("user changes restarted Xray %d times", fs.restarts-before)
 	}
-	if strings.Contains(fs.files[remoteDir+"/config.json"], `"ann"`) {
+	if strings.Contains(fs.files[remote.Dir+"/config.json"], `"ann"`) {
 		t.Error("config.json not rewritten, a restart would bring ann back")
 	}
 }

@@ -11,15 +11,15 @@ gofmt -l .        # must print nothing
 XTUNE_E2E=1 go test -run EndToEnd ./...   # optional: real local Xray, needs a local xray and internet access
 ```
 
-CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs `shellcheck` on `helper.sh` and
+CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs `shellcheck` on `internal/remote/helper.sh` and
 `install.sh`, and cross-builds every release target (Linux, macOS, Windows on amd64/arm64, and Android arm64).
 
 ## Guidelines
 
 - Keep the single static binary: no cgo, no runtime dependencies on the user's machine.
-- Anything that runs on the server goes through `helper.sh` (embedded) and must stay inside `/opt/xray-autotune`,
+- Anything that runs on the server goes through `internal/remote/helper.sh` (embedded) and must stay inside `/opt/xray-autotune`,
   the `xray-autotune*` units (Xray, test, enforce timer, subscription server) and the `/usr/local/bin/xtune` link. Never modify other software on the server.
-- The same binary is the client and the server tool. Code that changes the server takes a `*Server`, so it works
+- The same binary is the client and the server tool. Code that changes the server takes a `*remote.Server` (`internal/remote`), so it works
   over SSH and locally; user management stays server-side only.
 - Secrets are never written to argv or to local files; profiles store connection details only. The one exception
   is a backup the user asks for (`xtune backup`), written readable by the owner only.

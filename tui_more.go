@@ -224,7 +224,7 @@ func (t *tui) snis() error {
 	fmt.Println(titleStyle.Render("\nREALITY targets"))
 	fmt.Println(dimStyle.Render("Checked from the server weekly; failing or slow ones are replaced by themselves when users\n" +
 		"get configs through subscriptions. Checking now..."))
-	defer t.r.lock()()
+	defer t.r.Lock()()
 	st, err := requireState(t.r)
 	if err != nil {
 		return err

@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Traffic per deployed config: Xray counts it per inbound. A config that carries nothing for
@@ -125,7 +127,7 @@ func sparkline(vals []int64) string {
 }
 
 // printUsageHistory shows a user's traffic per day over the last 30 days.
-func printUsageHistory(w io.Writer, r *Server, name string) error {
+func printUsageHistory(w io.Writer, r *remote.Server, name string) error {
 	st, err := requireState(r)
 	if err != nil {
 		return err

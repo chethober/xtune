@@ -31,6 +31,7 @@ import (
 
 	dnsttclient "github.com/chethober/xtune/internal/dnstt/client"
 	dnsttserver "github.com/chethober/xtune/internal/dnstt/server"
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // The SSH tunnel server: `xtune tunnels run CONF` serves the ssh, ssh-tls, cdn-ssh and dnstt
@@ -675,7 +676,7 @@ func localResolvers() []string {
 // collectExtra adds the SSH tunnels', AmneziaWG's and VPNs' traffic since the last run to the users and to
 // byTag, and returns the client IPs online on them and the VPN sessions. Their counters only
 // grow while a server or session lives, so the last values seen are kept in us.Extra.
-func collectExtra(r *Server, st *State, us *Usage, now time.Time, byTag map[string]int64) (map[string][]string, []vpnSession) {
+func collectExtra(r *remote.Server, st *State, us *Usage, now time.Time, byTag map[string]int64) (map[string][]string, []vpnSession) {
 	online := map[string][]string{}
 	seen := map[string][2]int64{}
 	add := func(key, user, entry string, up, down int64) {
@@ -756,7 +757,7 @@ func (s vpnSession) Entry() string {
 
 // kickInactive disconnects VPN sessions of users who may no longer connect (the SSH tunnel server
 // does this itself when its user list changes).
-func kickInactive(r *Server, active []User, sessions []vpnSession) error {
+func kickInactive(r *remote.Server, active []User, sessions []vpnSession) error {
 	ok := map[string]bool{}
 	for _, u := range active {
 		ok[u.Name] = true

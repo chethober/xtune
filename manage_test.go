@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 func manageCall(t *testing.T, srv *httptest.Server, token string, q J) (int, map[string]any) {
@@ -134,14 +136,14 @@ func TestLegacyBotRemoved(t *testing.T) {
 	m["bot"] = map[string]any{"token": "1:x", "admins": []int{42}}
 	m["users"].([]any)[0].(map[string]any)["telegram"] = 42
 	raw, _ = json.Marshal(m)
-	fs.files[remoteDir+"/state.json"] = string(raw)
+	fs.files[remote.Dir+"/state.json"] = string(raw)
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(strings.Join(fs.calls, "\n"), "bot-remove") {
 		t.Error("the old bot's unit was not removed")
 	}
-	if s := fs.files[remoteDir+"/state.json"]; strings.Contains(s, `"bot"`) || strings.Contains(s, `"telegram"`) {
+	if s := fs.files[remote.Dir+"/state.json"]; strings.Contains(s, `"bot"`) || strings.Contains(s, `"telegram"`) {
 		t.Error("the old bot's settings are still in state.json")
 	}
 	if err := cmdBot(nil); err == nil || !strings.Contains(err.Error(), "@chthvpnbot") {

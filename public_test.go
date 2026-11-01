@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
-func publicServer(t *testing.T) (*Server, *httptest.Server) {
+func publicServer(t *testing.T) (*remote.Server, *httptest.Server) {
 	t.Helper()
 	r, _ := deployed(t, NewUser("ann"))
 	st, _ := LoadState(r)

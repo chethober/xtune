@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Several networks, one deployment. `xtune tune --share bundle.json` leaves the test matrix
@@ -49,7 +51,7 @@ type NetReport struct {
 	Results []CheckResult `json:"results"`
 }
 
-const pendingFile = remoteDir + "/pending.json"
+const pendingFile = remote.Dir + "/pending.json"
 
 // publicState is what clients need to connect: no private keys.
 func publicState(st *State) *State {
@@ -59,7 +61,7 @@ func publicState(st *State) *State {
 }
 
 // Share stores the tune on the server for a later deploy and returns the bundle for testers.
-func Share(r *Server, res *TuneResult, depth, network string) (*Bundle, error) {
+func Share(r *remote.Server, res *TuneResult, depth, network string) (*Bundle, error) {
 	now := time.Now()
 	p := Pending{ID: randHex(8), Created: now.Unix(), Network: orStr(network, res.NetName), ASN: res.Network.ASN,
 		State: res.State, Variants: res.All}
@@ -71,7 +73,7 @@ func Share(r *Server, res *TuneResult, depth, network string) (*Bundle, error) {
 		State: publicState(res.State), User: res.User, Entries: res.Entries}, nil
 }
 
-func loadPending(r *Server) (*Pending, error) {
+func loadPending(r *remote.Server) (*Pending, error) {
 	out, err := r.Root("cat " + pendingFile + " 2>/dev/null || true")
 	if err != nil {
 		return nil, err
@@ -244,7 +246,7 @@ func mergeChoice(vs []*Variant, nets []netScores, n int) (chosen []*Variant, unc
 }
 
 // DeployPending deploys the tune waiting on the server, merged with other networks' reports.
-func DeployPending(r *Server, reports []*NetReport, n int, w io.Writer) (*State, error) {
+func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (*State, error) {
 	p, err := loadPending(r)
 	if err != nil {
 		return nil, err
@@ -302,7 +304,7 @@ func DeployPending(r *Server, reports []*NetReport, n int, w io.Writer) (*State,
 			fmt.Fprintln(w, "[!] ranking the configs for "+rep.Network+":", err)
 		}
 	}
-	r.Root("rm -f " + shq(pendingFile))
+	r.Root("rm -f " + remote.Quote(pendingFile))
 	if _, err := r.Helper("stop-test"); err != nil {
 		fmt.Fprintln(w, "[!] stopping the test instance failed (it expires by itself):", err)
 	}

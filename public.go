@@ -16,6 +16,8 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Public profiles: a pool of users for sharing a server with a community, through a bot such as
@@ -88,7 +90,7 @@ func (st *State) members(pool string) []User {
 }
 
 // SetPublic adds a pool, or changes the limits of one (its token and members stay).
-func SetPublic(r *Server, name string, p PublicPool) (*State, error) {
+func SetPublic(r *remote.Server, name string, p PublicPool) (*State, error) {
 	if err := validUserName(name); err != nil || len(name) > 32 {
 		return nil, fmt.Errorf("invalid pool name %q", name)
 	}
@@ -98,7 +100,7 @@ func SetPublic(r *Server, name string, p PublicPool) (*State, error) {
 	if p.QuotaGB < 0 || p.Days < 0 || p.Devices < 0 || p.Members < 0 {
 		return nil, errors.New("limits cannot be negative")
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -133,8 +135,8 @@ func SetPublic(r *Server, name string, p PublicPool) (*State, error) {
 }
 
 // changePublic loads the state under the server lock and lets fn change the pool.
-func changePublic(r *Server, name string, fn func(st *State, p *PublicPool) error) (*State, error) {
-	defer r.lock()()
+func changePublic(r *remote.Server, name string, fn func(st *State, p *PublicPool) error) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -158,17 +160,17 @@ func changePublic(r *Server, name string, fn func(st *State, p *PublicPool) erro
 }
 
 // RotatePublic gives the pool a new connect link; the old one stops working, members stay.
-func RotatePublic(r *Server, name string) (*State, error) {
+func RotatePublic(r *remote.Server, name string) (*State, error) {
 	return changePublic(r, name, func(_ *State, p *PublicPool) error { p.Token = randHex(16); return nil })
 }
 
-func PausePublic(r *Server, name string, paused bool) (*State, error) {
+func PausePublic(r *remote.Server, name string, paused bool) (*State, error) {
 	return changePublic(r, name, func(_ *State, p *PublicPool) error { p.Paused = paused; return nil })
 }
 
 // DeletePublic removes the pool and all its members.
-func DeletePublic(r *Server, name string) error {
-	defer r.lock()()
+func DeletePublic(r *remote.Server, name string) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -281,8 +283,8 @@ func (st *State) pruneMembers(us *Usage, now time.Time) bool {
 }
 
 // PublicInfo is what GET /PATH/pub/TOKEN answers.
-func PublicInfo(r *Server, token string, now time.Time) (*pubInfo, error) {
-	defer r.lock()()
+func PublicInfo(r *remote.Server, token string, now time.Time) (*pubInfo, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -306,11 +308,11 @@ func PublicInfo(r *Server, token string, now time.Time) (*pubInfo, error) {
 
 // JoinPublic adds the member LABEL to the pool the token belongs to. Joining again with the same
 // label returns the same user, so a bot can safely retry.
-func JoinPublic(r *Server, token, label string, now time.Time) (*pubJoined, error) {
+func JoinPublic(r *remote.Server, token, label string, now time.Time) (*pubJoined, error) {
 	if !memberLabel.MatchString(label) {
 		return nil, errors.New("bad label")
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -360,11 +362,11 @@ func JoinPublic(r *Server, token, label string, now time.Time) (*pubJoined, erro
 }
 
 // LeavePublic removes the member LABEL from the pool. A member that is already gone is not an error.
-func LeavePublic(r *Server, token, label string) (bool, error) {
+func LeavePublic(r *remote.Server, token, label string) (bool, error) {
 	if !memberLabel.MatchString(label) {
 		return false, errors.New("bad label")
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return false, err
@@ -494,7 +496,7 @@ func cmdPublic(args []string) error {
 	if len(pos) == 0 {
 		pos = []string{"list"}
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}

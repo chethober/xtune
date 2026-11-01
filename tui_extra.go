@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // ---------------------------------------------------------------- client
@@ -98,7 +99,7 @@ func (t *tui) move() error {
 		return errors.New("the new server is this one")
 	}
 	fmt.Println(dimStyle.Render("connecting to " + c.Host + " ..."))
-	nr, err := Dial(c, tuiPrompt)
+	nr, err := remote.Dial(c, tuiPrompt)
 	if err != nil {
 		return err
 	}
@@ -126,8 +127,8 @@ func (t *tui) move() error {
 }
 
 // askServer asks for another server's SSH details.
-func (t *tui) askServer(title string) (Conn, error) {
-	c := Conn{User: "root"}
+func (t *tui) askServer(title string) (remote.Conn, error) {
+	c := remote.Conn{User: "root"}
 	port, auth := "22", "key"
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title(title+": address").Value(&c.Host).Validate(func(s string) error {

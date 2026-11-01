@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // The Workers free plan allows 100,000 requests a day per account, and every connection through
@@ -184,11 +186,11 @@ func fmtCount(n int64) string {
 
 // addExtraWorker creates a Worker in the account token can see and points it at the deployment's
 // worker-ws inbounds.
-func addExtraWorker(r *Server, token string, log func(string)) (*State, *WorkerExtra, error) {
+func addExtraWorker(r *remote.Server, token string, log func(string)) (*State, *WorkerExtra, error) {
 	if err := cfVerify(token); err != nil {
 		return nil, nil, err
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, nil, err
@@ -219,8 +221,8 @@ func addExtraWorker(r *Server, token string, log func(string)) (*State, *WorkerE
 }
 
 // removeExtraWorker deletes an extra Worker by its hostname.
-func removeExtraWorker(r *Server, host string) error {
-	defer r.lock()()
+func removeExtraWorker(r *remote.Server, host string) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -241,8 +243,8 @@ func removeExtraWorker(r *Server, host string) error {
 }
 
 // setWorkerLimit sets the requests a day the alerts measure against (0 = the free plan's, -1 = none).
-func setWorkerLimit(r *Server, n int64) error {
-	defer r.lock()()
+func setWorkerLimit(r *remote.Server, n int64) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err

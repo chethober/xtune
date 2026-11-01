@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // ---------------------------------------------------------------- several networks
 
-func shareTune(r *Server, res *TuneResult, o TuneOpts, path string) error {
+func shareTune(r *remote.Server, res *TuneResult, o TuneOpts, path string) error {
 	b, err := Share(r, res, o.Depth, o.Network)
 	if err != nil {
 		return err
@@ -143,7 +145,7 @@ func cmdCheck(args []string) error {
 	out := fs.String("out", "xtune-results", "working directory")
 	every := fs.Duration("every", 0, "keep checking at this interval (e.g. 6h), reporting each check to the server")
 	parse(fs, args)
-	if *c.host == "" && *c.profile == "" && serverMode() {
+	if *c.host == "" && *c.profile == "" && remote.Installed() {
 		return errors.New("check measures from where it runs: run it on your computer, on your users' network (xtune check --host H)")
 	}
 	if *every > 0 && *every < 10*time.Minute {
@@ -294,7 +296,7 @@ func cmdRestore(args []string) error {
 	return nil
 }
 
-func printNotes(r *Server, st *State, oldAddr string) {
+func printNotes(r *remote.Server, st *State, oldAddr string) {
 	if oldAddr == st.Host {
 		oldAddr = ""
 	}
@@ -357,7 +359,7 @@ func cmdMigrate(args []string) error {
 	if tc.Host == oldAddr {
 		return errors.New("the new server is the old one")
 	}
-	r, err := Dial(tc, cliPrompt)
+	r, err := remote.Dial(tc, cliPrompt)
 	if err != nil {
 		return err
 	}
@@ -376,7 +378,7 @@ func cmdMigrate(args []string) error {
 // MoveTo rebuilds a backup on r, a server without a deployment. With tune, the new server is
 // tuned from here first and the best n configs deployed; without, the configs are kept as they
 // were (their ports must be free).
-func MoveTo(r *Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string) (*State, error) {
+func MoveTo(r *remote.Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string) (*State, error) {
 	log := func(s string) { o.Log("[*] " + s) }
 	if !tune {
 		return Restore(r, b, log)
@@ -428,16 +430,16 @@ func cmdSelfUpdate(args []string) error {
 		return nil
 	}
 	fmt.Println("xtune updated to", tag)
-	if exe, err := os.Executable(); err == nil && serverMode() && os.Geteuid() == 0 {
-		if p, _ := filepath.EvalSymlinks(exe); p == remoteDir+"/xtune" {
-			r, err := OpenLocal()
+	if exe, err := os.Executable(); err == nil && remote.Installed() && os.Geteuid() == 0 {
+		if p, _ := filepath.EvalSymlinks(exe); p == remote.Dir+"/xtune" {
+			r, err := remote.OpenLocal()
 			if err == nil {
 				_, err = r.Helper("xtune-link") // restarts the subscription server on the new binary
 			}
 			return err
 		}
 	}
-	if !serverMode() {
+	if !remote.Installed() {
 		fmt.Println("the server's copy is updated the next time you open the console or deploy")
 	}
 	return nil
@@ -452,7 +454,7 @@ func cmdNotify(args []string) error {
 	fs := flag.NewFlagSet("notify", flag.ExitOnError)
 	chat := fs.String("chat", "", "Telegram chat ID that receives the alerts")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -516,7 +518,7 @@ func cmdWarp(args []string) error {
 	domains := fs.String("domains", "", "routing domains that use WARP, comma-separated (default: "+strings.Join(defaultWarpDomains, ",")+")")
 	all := fs.Bool("all", false, "send all traffic through WARP")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}

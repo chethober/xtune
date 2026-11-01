@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // OpenVPN and IKEv2 run on the distribution's openvpn and strongSwan (installed with --vpn).
@@ -33,7 +35,7 @@ import (
 // which the profiles carry. Client traffic is NATed out of the server's default interface;
 // clients cannot reach private addresses (as with Xray's geoip:private block).
 
-const vpnDir = remoteDir + "/vpn"
+const vpnDir = remote.Dir + "/vpn"
 
 // vpnSubnet is each VPN entry's client address range.
 func vpnSubnet(e Entry) string {
@@ -168,7 +170,7 @@ status %s/%s.status 10
 status-version 2
 management %s/%s.sock unix
 verb 1
-`, e.Port, proto, n.IP, net.IP(n.Mask), remoteDir, dir, dir, e.ID, dir, e.ID)
+`, e.Port, proto, n.IP, net.IP(n.Mask), remote.Dir, dir, dir, e.ID, dir, e.ID)
 	if proto == "udp" {
 		b.WriteString("explicit-exit-notify 1\n")
 	}

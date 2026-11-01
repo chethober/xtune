@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Several servers under one subscription. One server is the primary: it owns the users, their
@@ -150,8 +152,8 @@ func (st *State) PeerURL() string {
 }
 
 // EnablePeers lets followers join; it needs the subscription server, which they report to.
-func EnablePeers(r *Server) (*State, error) {
-	defer r.lock()()
+func EnablePeers(r *remote.Server) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -169,8 +171,8 @@ func EnablePeers(r *Server) (*State, error) {
 }
 
 // DisablePeers drops the followers from subscriptions and makes their URL stop working.
-func DisablePeers(r *Server) error {
-	defer r.lock()()
+func DisablePeers(r *remote.Server) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -180,8 +182,8 @@ func DisablePeers(r *Server) error {
 }
 
 // RemovePeer drops one follower from subscriptions; it comes back if it reports again.
-func RemovePeer(r *Server, name string) error {
-	defer r.lock()()
+func RemovePeer(r *remote.Server, name string) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -194,8 +196,8 @@ func RemovePeer(r *Server, name string) error {
 }
 
 // acceptPeer records a follower's report and returns the users it should serve.
-func acceptPeer(r *Server, in peerReport, now time.Time) (*peerReply, error) {
-	defer r.lock()()
+func acceptPeer(r *remote.Server, in peerReport, now time.Time) (*peerReply, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -343,8 +345,8 @@ func syncPrimary(st *State, us *Usage) (bool, error) {
 }
 
 // SetFollow makes this server follow a primary (url "" stops following; the users stay).
-func SetFollow(r *Server, peerURL, name string) (*State, error) {
-	defer r.lock()()
+func SetFollow(r *remote.Server, peerURL, name string) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -387,7 +389,7 @@ func cmdPeers(args []string) error {
 	if err := serverOnly("peers", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -468,7 +470,7 @@ func cmdFollow(args []string) error {
 	if err := serverOnly("follow", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}

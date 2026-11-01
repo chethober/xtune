@@ -40,6 +40,12 @@ The first release that promises stability, not just features.
 - [ ] Split the root `main` package into `internal/` packages (server
   transport, state, protocols, tuning, TUI, subscription) so the TUI rewrite
   does not fight the rest of the code.
+  - [x] server transport (`internal/remote`)
+  - [ ] state
+  - [ ] protocols
+  - [ ] tuning
+  - [ ] TUI
+  - [ ] subscription
 
 ### Docs
 

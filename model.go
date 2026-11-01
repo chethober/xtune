@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Entry is one server inbound. FP/Mode/Frag are the client-side knobs tuning picked for it.
@@ -320,7 +322,7 @@ func (st *State) inbound(e Entry, users []User) J {
 		ib["protocol"] = "hysteria"
 		ib["settings"] = J{"version": 2, "clients": cl}
 		ib["streamSettings"] = J{"network": "hysteria", "security": "tls", "tlsSettings": J{"alpn": []string{"h3"},
-			"certificates": certFiles(remoteDir)}}
+			"certificates": certFiles(remote.Dir)}}
 		return ib
 	case "ss2022":
 		var cl []J
@@ -367,7 +369,7 @@ func (st *State) inbound(e Entry, users []User) J {
 	}
 	if e.CDN() { // CDNs in "Full" TLS mode accept the self-signed certificate at the origin
 		ss["security"] = "tls"
-		ss["tlsSettings"] = J{"alpn": []string{"h2", "http/1.1"}, "certificates": certFiles(remoteDir)}
+		ss["tlsSettings"] = J{"alpn": []string{"h2", "http/1.1"}, "certificates": certFiles(remote.Dir)}
 	}
 	switch e.Net() {
 	case "xhttp":

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Management links: users and plans from Telegram, through the community VPN bot @chthvpnbot
@@ -53,7 +55,7 @@ func orUsage(uu *UserUsage) *UserUsage {
 }
 
 // startServices starts the subscription server after a deploy or restore.
-func startServices(r *Server, st *State) error { return restartSub(r, st) }
+func startServices(r *remote.Server, st *State) error { return restartSub(r, st) }
 
 // manageURL is the link for a token, or "" when the subscription server is off.
 func (st *State) manageURL(token string) string {
@@ -224,7 +226,7 @@ func planNamesOf(st *State) []string {
 }
 
 // ManageOp runs one management request for the holder of a management link.
-func ManageOp(r *Server, m *manager, q manageReq, now time.Time) (any, error) {
+func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, error) {
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -359,7 +361,7 @@ func ManageOp(r *Server, m *manager, q manageReq, now time.Time) (any, error) {
 	return nil, errManage
 }
 
-func manageStatus(r *Server, st *State, us *Usage, m *manager, now time.Time) mStatus {
+func manageStatus(r *remote.Server, st *State, us *Usage, m *manager, now time.Time) mStatus {
 	s := mStatus{Role: "admin", Addr: st.Addr(), Version: version, Plans: planNamesOf(st)}
 	for _, u := range st.Users {
 		if !m.manages(u) {
@@ -447,8 +449,8 @@ func (h subHandler) serveManage(w http.ResponseWriter, req *http.Request, st *St
 
 // ---------------------------------------------------------------- settings
 
-func changeManage(r *Server, fn func(st *State, m *Manage) error) (*State, error) {
-	defer r.lock()()
+func changeManage(r *remote.Server, fn func(st *State, m *Manage) error) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -478,7 +480,7 @@ func changeManage(r *Server, fn func(st *State, m *Manage) error) (*State, error
 
 // removeLegacyBot stops and removes the Telegram bot of xtune before v0.7.0. Users it added
 // as a reseller keep working, now managed by the admin.
-func removeLegacyBot(r *Server, st *State) (bool, error) {
+func removeLegacyBot(r *remote.Server, st *State) (bool, error) {
 	if len(st.LegacyBot) == 0 {
 		return false, nil
 	}
@@ -499,7 +501,7 @@ func cmdManage(args []string) error {
 	users := fs.Int("users", 0, "reseller: most users (0 = no limit)")
 	quota := fs.Float64("quota", 0, "reseller: total quota of their users in GB (0 = no limit)")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -527,7 +529,7 @@ func cmdManage(args []string) error {
 	case "token", "rotate":
 		return show(changeManage(r, func(_ *State, m *Manage) error { m.Token = randHex(16); return nil }))
 	case "off", "disable":
-		defer r.lock()()
+		defer r.Lock()()
 		st, err := requireState(r)
 		if err != nil {
 			return err

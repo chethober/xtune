@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Warp sends chosen sites (or all traffic) out through Cloudflare WARP instead of the server's
@@ -128,8 +130,8 @@ func registerWarp() (*Warp, error) {
 // SetWarp turns WARP on with the given routing (registering an account when there is none), or
 // off when on is false. Xray restarts, because outbounds change. Settings Xray rejects (an unknown
 // geosite list, say) are rolled back.
-func SetWarp(r *Server, on bool, domains []string, all bool) (*State, error) {
-	defer r.lock()()
+func SetWarp(r *remote.Server, on bool, domains []string, all bool) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err

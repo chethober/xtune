@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Internal: the server transport (SSH and local command execution, the state lock and the embedded `helper.sh`)
+  moved to `internal/remote`, the first step of splitting the root package before v1.0. No change in behaviour.
+
 ## [0.10.1] - 2026-10-28
 
 ### Fixed

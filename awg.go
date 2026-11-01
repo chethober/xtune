@@ -23,6 +23,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	awgtun "github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/chethober/xtune/internal/remote"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
@@ -570,4 +571,4 @@ func awgSpecs(entries []Entry) []string {
 	return out
 }
 
-const awgStatsFile = remoteDir + "/awg-stats.json"
+const awgStatsFile = remote.Dir + "/awg-stats.json"

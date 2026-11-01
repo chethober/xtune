@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -516,7 +517,7 @@ func TestRanksFromTunesAndReports(t *testing.T) {
 
 func TestRecordNetwork(t *testing.T) {
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := rankedState()
 	if err := saveState(r, st); err != nil {
 		t.Fatal(err)
@@ -688,7 +689,7 @@ func TestExtraWorkers(t *testing.T) {
 	defer func() { cloudflareAPI = old }()
 
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := testState()
 	st.Cloudflare.Token = "tokA"
 	st.Entries = []Entry{{ID: "worker", Kind: "worker-ws", Port: 30000, Path: "/w", SNI: "main.sub-acc1.workers.dev"},
@@ -895,7 +896,7 @@ func TestAutopilotRotates(t *testing.T) {
 	defer func() { sendAlert = oldSend }()
 
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	now := time.Now()
 	st, us := blockedSetup(now)
 	st.Notify = Notify{Webhook: "https://hook"}
@@ -948,7 +949,7 @@ func TestAutopilotRotates(t *testing.T) {
 	b := &Backup{State: st, Usage: &Usage{}}
 	nfs := newFake()
 	nfs.helper = map[string]string{"status": "ARCH x86_64\nXRAY v26.10.10\nXTUNE dev"}
-	nr := &Server{sh: nfs, Conn: Conn{Host: "192.0.2.10"}}
+	nr := &remote.Server{Transport: nfs, Conn: remote.Conn{Host: "192.0.2.10"}}
 	seeded, err := seed(nr, b, "", func(string) {})
 	if err != nil {
 		t.Fatal(err)
@@ -1074,7 +1075,7 @@ func TestRankingUpdatesAnOldServer(t *testing.T) {
 	}{{"0.8.0", true}, {"none", true}, {"0.9.0", false}, {"0.10.1", false}} {
 		fs := newFake()
 		fs.helper = map[string]string{"status": "ARCH x86_64\nXTUNE " + tc.server + "\nXTUNE_SHA 00"}
-		r := &Server{sh: fs, Conn: Conn{Host: "203.0.113.7"}}
+		r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 		saveState(r, rankedState())
 		err := RecordNetwork(r, Network{ASN: "AS1"}, map[string]float64{"r-tcp/443": 3}, nil)
 		if got := installed(fs); got != tc.update {

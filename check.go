@@ -12,6 +12,8 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // `xtune check` measures the deployed configs from this network, quickly: are they reachable,
@@ -34,8 +36,8 @@ type CheckResult struct {
 }
 
 // ensureCheckUser gives the deployment its hidden check user, live, when it has none.
-func ensureCheckUser(r *Server) (*State, error) {
-	defer r.lock()()
+func ensureCheckUser(r *remote.Server) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -137,7 +139,7 @@ func checkStatus(r CheckResult, t throughput) string {
 }
 
 // Check measures every deployed config from this machine.
-func Check(r *Server, xrayBin string, probes, secs int, out string, log func(string)) ([]CheckResult, *State, error) {
+func Check(r *remote.Server, xrayBin string, probes, secs int, out string, log func(string)) ([]CheckResult, *State, error) {
 	st, err := ensureCheckUser(r)
 	if err != nil {
 		return nil, nil, err

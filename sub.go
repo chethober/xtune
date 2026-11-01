@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/crypto/acme/autocert"
 	"rsc.io/qr"
 )
@@ -62,7 +63,7 @@ func (st *State) botBase() string {
 
 // ensurePort443 makes the subscription server also listen on 443 when nothing else uses it, so
 // serverless bots can reach the connect and management links. It reports whether 443 is reachable.
-func ensurePort443(r *Server, st *State) (bool, error) {
+func ensurePort443(r *remote.Server, st *State) (bool, error) {
 	if st.Sub.Port == 443 || st.Sub.Port443 {
 		return true, nil
 	}
@@ -90,8 +91,8 @@ const port443Note = "note: @chthvpnbot can only reach ports 80 and 443, and port
 
 // EnableSub turns the subscription server on, or moves it to another mode or port. Port 0 picks a
 // free CDN-compatible port. Existing links keep working as long as the mode and port stay the same.
-func EnableSub(r *Server, mode string, port int) (*State, error) {
-	defer r.lock()()
+func EnableSub(r *remote.Server, mode string, port int) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -166,8 +167,8 @@ func contains2(xs []int, x int) bool {
 
 // DisableSub stops the subscription server. Its path and port are kept, so turning it back on
 // restores the same links.
-func DisableSub(r *Server) error {
-	defer r.lock()()
+func DisableSub(r *remote.Server) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -181,7 +182,7 @@ func DisableSub(r *Server) error {
 }
 
 // restartSub (re)starts the subscription server so it picks up a new mode, port or domain.
-func restartSub(r *Server, st *State) error {
+func restartSub(r *remote.Server, st *State) error {
 	if st.Sub.Mode == "" {
 		return nil
 	}
@@ -206,7 +207,7 @@ func restartSub(r *Server, st *State) error {
 
 // Serve runs the subscription server; systemd starts it as `xtune serve`.
 func Serve() error {
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -223,14 +224,14 @@ func Serve() error {
 		ErrorLog: log.New(io.Discard, "", 0)} // scanners cause endless TLS handshake noise
 	switch st.Sub.Mode {
 	case "cdn":
-		cert, err := tls.LoadX509KeyPair(remoteDir+"/hy.crt", remoteDir+"/hy.key")
+		cert, err := tls.LoadX509KeyPair(remote.Dir+"/hy.crt", remote.Dir+"/hy.key")
 		if err != nil {
 			return err
 		}
 		srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	case "direct":
 		m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(st.Domain),
-			Cache: autocert.DirCache(remoteDir + "/acme")}
+			Cache: autocert.DirCache(remote.Dir + "/acme")}
 		go func() {
 			err := http.ListenAndServe(":80", m.HTTPHandler(http.NotFoundHandler()))
 			fmt.Fprintln(os.Stderr, "port 80 (Let's Encrypt challenges):", err)
@@ -253,7 +254,7 @@ func Serve() error {
 
 // readLocal reads state and usage straight from disk, so every request sees current users.
 func readLocal() (*State, *Usage, error) {
-	b, err := os.ReadFile(remoteDir + "/state.json")
+	b, err := os.ReadFile(remote.Dir + "/state.json")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -262,7 +263,7 @@ func readLocal() (*State, *Usage, error) {
 		return nil, nil, err
 	}
 	us := &Usage{Users: map[string]*UserUsage{}}
-	if b, err := os.ReadFile(remoteDir + "/usage.json"); err == nil {
+	if b, err := os.ReadFile(remote.Dir + "/usage.json"); err == nil {
 		json.Unmarshal(b, us)
 	}
 	if us.Users == nil {
@@ -273,7 +274,7 @@ func readLocal() (*State, *Usage, error) {
 
 type subHandler struct {
 	load func() (*State, *Usage, error)
-	r    *Server // for followers' reports
+	r    *remote.Server // for followers' reports
 }
 
 func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -570,11 +571,11 @@ if(navigator.clipboard){navigator.clipboard.writeText(t).then(done)}else{var a=d
 </script></body></html>`))
 
 // SetSubLang chooses the language of users' pages ("" = from the browser).
-func SetSubLang(r *Server, lang string) error {
+func SetSubLang(r *remote.Server, lang string) error {
 	if err := validLang(lang); err != nil {
 		return err
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err

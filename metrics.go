@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // The subscription server can serve Prometheus metrics at /PATH/metrics, for admins who run
@@ -156,8 +158,8 @@ func serveMetrics(w http.ResponseWriter, req *http.Request, st *State, us *Usage
 }
 
 // SetMetrics turns the metrics on (with a new token when rotate is set, or none yet) or off.
-func SetMetrics(r *Server, on, rotate bool) (*State, error) {
-	defer r.lock()()
+func SetMetrics(r *remote.Server, on, rotate bool) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err

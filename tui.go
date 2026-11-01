@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/chethober/xtune/internal/remote"
 )
 
 var (
@@ -24,7 +25,7 @@ var (
 )
 
 type tui struct {
-	r     *Server
+	r     *remote.Server
 	xray  string
 	theme *huh.Theme
 }
@@ -124,7 +125,7 @@ func runTUI() {
 // runServerTUI is the TUI on the server itself (sudo xtune): users and addresses are managed here.
 func runServerTUI() {
 	lipgloss.SetHasDarkBackground(os.Getenv("XTUNE_LIGHT") == "")
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, errStyle.Render("error: ")+err.Error())
 		os.Exit(1)
@@ -197,7 +198,7 @@ func runServerTUI() {
 		case "logs":
 			showErr(t.logs())
 		case "uninstall":
-			if err := t.uninstall(); err != nil || !serverMode() {
+			if err := t.uninstall(); err != nil || !remote.Installed() {
 				showErr(err)
 				return
 			}
@@ -220,7 +221,7 @@ func (t *tui) connect() error {
 			return err
 		}
 	}
-	var c Conn
+	var c remote.Conn
 	if choice != "new" {
 		c, _ = findProfile(choice)
 	} else {
@@ -255,7 +256,7 @@ func (t *tui) connect() error {
 		}
 	}
 	fmt.Println(dimStyle.Render("connecting to " + c.Host + " ..."))
-	r, err := Dial(c, tuiPrompt)
+	r, err := remote.Dial(c, tuiPrompt)
 	if err != nil {
 		return err
 	}
@@ -896,7 +897,7 @@ func (m logModel) View() string {
 	return head + "\n" + m.vp.View() + "\n" + foot
 }
 
-func viewLogs(r *Server, unit string) error {
+func viewLogs(r *remote.Server, unit string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := make(chan string, 256)

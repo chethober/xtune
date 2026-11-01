@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // TestCheckEndToEnd runs a real local Xray as the "server" and measures it with xtune check.
@@ -26,7 +28,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	}
 	bin := localXray(t)
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "127.0.0.1"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "127.0.0.1"}}
 	st, err := NewState("127.0.0.1", bin)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +50,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "hy.crt"), []byte(st.CertPEM), 0o600)
 	os.WriteFile(filepath.Join(dir, "hy.key"), []byte(st.KeyPEM), 0o600)
 	var cfg J
-	json.Unmarshal([]byte(fs.files[remoteDir+"/config.json"]), &cfg)
+	json.Unmarshal([]byte(fs.files[remote.Dir+"/config.json"]), &cfg)
 	inbounds := []J{}
 	for _, ib := range cfg["inbounds"].([]any) {
 		inbounds = append(inbounds, ib.(map[string]any))
@@ -68,7 +70,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	defer func() { srv.Process.Kill(); srv.Wait() }()
 	// the SSH tunnels: xtune's own server, in this process, with the config the deploy wrote
 	var tc TunnelConf
-	json.Unmarshal([]byte(fs.files[remoteDir+"/tunnels.json"]), &tc)
+	json.Unmarshal([]byte(fs.files[remote.Dir+"/tunnels.json"]), &tc)
 	tc.Stats = filepath.Join(dir, "tunnels-stats.json")
 	writeJSON(filepath.Join(dir, "tunnels.json"), tc)
 	go runTunnels(filepath.Join(dir, "tunnels.json"), nil)
@@ -97,7 +99,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	}
 	bin := localXray(t)
 	fs := newFake()
-	r := &Server{sh: fs, Conn: Conn{Host: "127.0.0.1"}}
+	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "127.0.0.1"}}
 	st, err := NewState("127.0.0.1", bin)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +119,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "hy.key"), []byte(st.KeyPEM), 0o600)
 	os.WriteFile(filepath.Join(dir, "ca.crt"), caPEM, 0o600)
 	var cfg J
-	json.Unmarshal([]byte(fs.files[remoteDir+"/config.json"]), &cfg)
+	json.Unmarshal([]byte(fs.files[remote.Dir+"/config.json"]), &cfg)
 	inbounds := []J{}
 	for _, ib := range cfg["inbounds"].([]any) {
 		inbounds = append(inbounds, ib.(map[string]any))

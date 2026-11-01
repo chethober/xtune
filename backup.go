@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // A backup is a deployment's identity (server keys, certificate), its users with their usage, and
@@ -21,7 +23,7 @@ type Backup struct {
 	Usage   *Usage `json:"usage"`
 }
 
-func TakeBackup(r *Server) (*Backup, error) {
+func TakeBackup(r *remote.Server) (*Backup, error) {
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -88,7 +90,7 @@ func backupName(st *State, now time.Time) string {
 // seed puts a backup on a server that has no deployment yet: the state (with the new server's
 // address) and the usage. Nothing runs yet; Restore or a tune and deploy follow. probeOut is the
 // helper's probe output for the new server.
-func seed(r *Server, b *Backup, probeOut string, log func(string)) (*State, error) {
+func seed(r *remote.Server, b *Backup, probeOut string, log func(string)) (*State, error) {
 	old, err := LoadState(r)
 	if err != nil {
 		return nil, err
@@ -143,7 +145,7 @@ func portConflicts(st *State, probeOut string) []string {
 
 // Restore rebuilds a backup on r with its configs as they were: same ports, SNIs and client
 // settings. Links change only where they contain the server's IP.
-func Restore(r *Server, b *Backup, log func(string)) (*State, error) {
+func Restore(r *remote.Server, b *Backup, log func(string)) (*State, error) {
 	out, err := r.Helper("probe")
 	if err != nil {
 		return nil, err
@@ -165,7 +167,7 @@ func Restore(r *Server, b *Backup, log func(string)) (*State, error) {
 }
 
 // installXtune puts xtune on the server, where users are managed and limits enforced.
-func installXtune(r *Server, log func(string)) error {
+func installXtune(r *remote.Server, log func(string)) error {
 	if err := EnsureServerXtune(r, log); err != nil {
 		return fmt.Errorf("xtune could not be installed on the server (users, limits and subscriptions need it): %w", err)
 	}
@@ -197,11 +199,11 @@ func moveNotes(st *State, oldAddr string, dnsDone bool) []string {
 }
 
 // parseTarget reads a saved profile name or [user@]host[:port].
-func parseTarget(s string) (Conn, error) {
+func parseTarget(s string) (remote.Conn, error) {
 	if p, ok := findProfile(s); ok {
 		return p, nil
 	}
-	var c Conn
+	var c remote.Conn
 	if u, h, ok := strings.Cut(s, "@"); ok {
 		c.User, s = u, h
 	}

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // REALITY targets (SNIs) are sites the server imitates; tuning picked the fastest ones from the
@@ -65,7 +67,7 @@ type sniChange struct {
 
 // planSNIs probes the deployed targets (several times) and the candidates, and proposes a
 // replacement for each target that failed every probe or is slow next to the best candidate.
-func planSNIs(r *Server, st *State) ([]sniChange, map[string]*sniResult, error) {
+func planSNIs(r *remote.Server, st *State) ([]sniChange, map[string]*sniResult, error) {
 	var current []string
 	for _, e := range st.Entries {
 		if e.Reality() && !slices.Contains(current, e.SNI) {
@@ -125,7 +127,7 @@ func planSNIs(r *Server, st *State) ([]sniChange, map[string]*sniResult, error) 
 }
 
 // applySNIs changes the targets and restarts Xray with them.
-func applySNIs(r *Server, st *State, changes []sniChange) error {
+func applySNIs(r *remote.Server, st *State, changes []sniChange) error {
 	for _, c := range changes {
 		for i := range st.Entries {
 			if st.Entries[i].ID == c.ID {
@@ -148,7 +150,7 @@ func describeSNIs(changes []sniChange) string {
 func autoSNI(st *State) bool { return st.Sub.Mode != "" || st.Follow != nil }
 
 // checkSNIs is the weekly check, run by the enforce job (which holds the server lock).
-func checkSNIs(r *Server) error {
+func checkSNIs(r *remote.Server) error {
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -191,7 +193,7 @@ func cmdSNI(args []string) error {
 	if err := serverOnly("sni", args); err != nil {
 		return err
 	}
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}
@@ -202,7 +204,7 @@ func cmdSNI(args []string) error {
 	if action != "check" && action != "refresh" {
 		return fmt.Errorf("unknown sni action %q (check or refresh)", action)
 	}
-	defer r.lock()()
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Notify sends admin alerts (quota, expiry, Xray down) to Telegram and/or a webhook. The enforce
@@ -137,8 +139,8 @@ func notifyUsers(st *State, us *Usage, now time.Time) {
 // ---------------------------------------------------------------- settings
 
 // SetNotify replaces the alert settings and sends a test alert when any channel is on.
-func SetNotify(r *Server, n Notify) error {
-	defer r.lock()()
+func SetNotify(r *remote.Server, n Notify) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err

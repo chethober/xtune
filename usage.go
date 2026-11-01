@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Usage is what the enforce job measures, stored in usage.json next to state.json. Traffic
@@ -106,8 +108,8 @@ func (us *Usage) of(name string) *UserUsage {
 	return us.Users[name]
 }
 
-func LoadUsage(r *Server) (*Usage, error) {
-	out, err := r.Root("cat " + remoteDir + "/usage.json 2>/dev/null || true")
+func LoadUsage(r *remote.Server) (*Usage, error) {
+	out, err := r.Root("cat " + remote.Dir + "/usage.json 2>/dev/null || true")
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +126,9 @@ func LoadUsage(r *Server) (*Usage, error) {
 	return us, nil
 }
 
-func saveUsage(r *Server, us *Usage) error {
+func saveUsage(r *remote.Server, us *Usage) error {
 	b, _ := json.MarshalIndent(us, "", " ")
-	return r.Upload(remoteDir+"/usage.json", b, "600")
+	return r.Upload(remote.Dir+"/usage.json", b, "600")
 }
 
 // userStatus is why a user can or cannot connect.
@@ -198,13 +200,13 @@ func activeKey(st *State, active []User) string {
 // ---------------------------------------------------------------- Xray API
 
 // xrayAPI runs `xray api CMD` against the deployment's loopback API.
-func (r *Server) xrayAPI(st *State, cmd string, args ...string) (string, error) {
+func xrayAPI(r *remote.Server, st *State, cmd string, args ...string) (string, error) {
 	if st.APIPort == 0 {
 		return "", fmt.Errorf("this deployment has no Xray API yet")
 	}
-	q := []string{remoteDir + "/xray", "api", cmd, fmt.Sprintf("--server=127.0.0.1:%d", st.APIPort)}
+	q := []string{remote.Dir + "/xray", "api", cmd, fmt.Sprintf("--server=127.0.0.1:%d", st.APIPort)}
 	for _, a := range args {
-		q = append(q, shq(a))
+		q = append(q, remote.Quote(a))
 	}
 	return r.Root(strings.Join(q, " "))
 }
@@ -282,11 +284,11 @@ func countIs(re *regexp.Regexp, out string, want int) bool {
 
 // reconcile makes the running Xray's users match active, through the API, so user changes need no
 // restart and other users keep their connections. Users whose credentials changed are re-added.
-func reconcile(r *Server, st *State, active []User) error {
+func reconcile(r *remote.Server, st *State, active []User) error {
 	var add []J
 	adds := 0
 	for _, e := range filterEntries(st.Entries, Entry.Xray) {
-		out, err := r.xrayAPI(st, "inbounduser", "-tag="+e.ID)
+		out, err := xrayAPI(r, st, "inbounduser", "-tag="+e.ID)
 		if err != nil {
 			return err
 		}
@@ -329,7 +331,7 @@ func reconcile(r *Server, st *State, active []User) error {
 		}
 		if len(stale) > 0 {
 			sort.Strings(stale)
-			out, err := r.xrayAPI(st, "rmu", append([]string{"-tag=" + e.ID}, stale...)...)
+			out, err := xrayAPI(r, st, "rmu", append([]string{"-tag=" + e.ID}, stale...)...)
 			if err != nil || !countIs(removedRe, out, len(stale)) {
 				return fmt.Errorf("remove users from %s: %v %s", e.ID, err, tail(out, 300))
 			}
@@ -343,12 +345,12 @@ func reconcile(r *Server, st *State, active []User) error {
 		return nil
 	}
 	b, _ := json.Marshal(J{"inbounds": add})
-	f := remoteDir + "/adu.json"
+	f := remote.Dir + "/adu.json"
 	if err := r.Upload(f, b, "600"); err != nil {
 		return err
 	}
-	out, err := r.xrayAPI(st, "adu", f)
-	r.Root("rm -f " + shq(f))
+	out, err := xrayAPI(r, st, "adu", f)
+	r.Root("rm -f " + remote.Quote(f))
 	if err != nil || !countIs(addedRe, out, adds) {
 		return fmt.Errorf("add users: %v %s", err, tail(out, 300))
 	}
@@ -360,8 +362,8 @@ func reconcile(r *Server, st *State, active []User) error {
 // Enforce accumulates traffic, records who is online, applies device limits and brings the running
 // Xray's users in line with quotas, expiry and the state file. The xray-autotune-enforce timer
 // runs it every minute.
-func Enforce(r *Server) error {
-	defer r.lock()()
+func Enforce(r *remote.Server) error {
+	defer r.Lock()()
 	st, err := LoadState(r)
 	if err != nil || st == nil || st.APIPort == 0 {
 		return err
@@ -449,8 +451,8 @@ func Enforce(r *Server) error {
 
 // collect adds the traffic since the last run and records online IPs. It returns the IPs each user
 // had online at the previous run.
-func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]string, []vpnSession, error) {
-	out, err := r.xrayAPI(st, "statsquery", "-reset") // users and inbounds
+func collect(r *remote.Server, st *State, us *Usage, now time.Time) (map[string][]string, []vpnSession, error) {
+	out, err := xrayAPI(r, st, "statsquery", "-reset") // users and inbounds
 	if err != nil {
 		return nil, nil, err
 	}
@@ -484,7 +486,7 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 	}
 	extraOnline, sessions := collectExtra(r, st, us, now, byTag)
 	countEntries(st, us, byTag, now)
-	out, err = r.xrayAPI(st, "statsonlineiplist", "-all")
+	out, err = xrayAPI(r, st, "statsonlineiplist", "-all")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -532,7 +534,7 @@ func collect(r *Server, st *State, us *Usage, now time.Time) (map[string][]strin
 // that were already connected at the previous check keep their place; newcomers are blocked. On a
 // primary, the limit counts the IPs online on its followers too (their last reports), so a user
 // gets their devices across all servers, not on each; followers block what the primary tells them.
-func applyDeviceLimits(r *Server, st *State, us *Usage, prev map[string][]string, now time.Time) error {
+func applyDeviceLimits(r *remote.Server, st *State, us *Usage, prev map[string][]string, now time.Time) error {
 	remote := st.remoteOnline(now)
 	trackFirstSeen(st, us, remote, now)
 	had := len(us.Blocks) > 0
@@ -594,7 +596,7 @@ func applyDeviceLimits(r *Server, st *State, us *Usage, prev map[string][]string
 	us.Blocks = keep
 	if len(keep) == 0 {
 		if had {
-			_, err := r.xrayAPI(st, "rmrules", deviceRule)
+			_, err := xrayAPI(r, st, "rmrules", deviceRule)
 			return err
 		}
 		return nil
@@ -603,6 +605,6 @@ func applyDeviceLimits(r *Server, st *State, us *Usage, prev map[string][]string
 	for _, b := range keep {
 		args = append(args, b.IP)
 	}
-	_, err := r.xrayAPI(st, "sib", args...)
+	_, err := xrayAPI(r, st, "sib", args...)
 	return err
 }

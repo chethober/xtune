@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/remote"
 )
 
 // Scheduled backups: the enforce job seals a backup with the plan's passphrase and sends it off
@@ -248,8 +250,8 @@ func s3Put(t S3Target, key string, body []byte, now time.Time) error {
 
 // SetBackupPlan replaces the schedule (nil turns it off) and, when on, sends a first backup now so
 // a wrong token or key shows at once.
-func SetBackupPlan(r *Server, p *BackupPlan) (*State, error) {
-	defer r.lock()()
+func SetBackupPlan(r *remote.Server, p *BackupPlan) (*State, error) {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return nil, err
@@ -271,8 +273,8 @@ func SetBackupPlan(r *Server, p *BackupPlan) (*State, error) {
 }
 
 // BackupNow sends a scheduled-style backup at once.
-func BackupNow(r *Server) error {
-	defer r.lock()()
+func BackupNow(r *remote.Server) error {
+	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
@@ -283,7 +285,7 @@ func BackupNow(r *Server) error {
 	return backupNowLocked(r, st)
 }
 
-func backupNowLocked(r *Server, st *State) error {
+func backupNowLocked(r *remote.Server, st *State) error {
 	us, err := LoadUsage(r)
 	if err != nil {
 		return err
@@ -306,7 +308,7 @@ func cmdBackupSchedule(args []string) error {
 	s3 := fs.String("s3", "", "S3-compatible bucket: https://ENDPOINT/BUCKET[/PREFIX] (keys: XTUNE_S3_ACCESS_KEY, XTUNE_S3_SECRET_KEY)")
 	region := fs.String("s3-region", "auto", "the bucket's region (auto for Cloudflare R2)")
 	pos := parse(fs, args)
-	r, err := OpenLocal()
+	r, err := remote.OpenLocal()
 	if err != nil {
 		return err
 	}

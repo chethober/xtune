@@ -35,7 +35,7 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: shellcheck
-        run: shellcheck helper.sh install.sh
+        run: shellcheck internal/remote/helper.sh install.sh
 
   cross-build:
     runs-on: ubuntu-latest
