@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -159,7 +161,7 @@ func rotateIP(r *remote.Server, st *state.State, us *state.Usage, now time.Time)
 	}
 	delete(us.Notified, "ip-blocked")
 	if st.Domain != "" && st.Cloudflare.Token != "" {
-		if msg, err := cfPoint(st.Cloudflare.Token, st.Domain, ip, false); err != nil {
+		if msg, err := cloudflare.Point(st.Cloudflare.Token, st.Domain, ip, false); err != nil {
 			fmt.Println("autopilot: the direct domain's DNS record:", err)
 		} else {
 			fmt.Println("autopilot: DNS", msg)

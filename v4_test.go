@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -158,7 +160,7 @@ func ptr[T any](v T) *T { return &v }
 
 type fakeCF struct {
 	mu      sync.Mutex
-	records map[string]cfRecord
+	records map[string]cloudflare.Record
 	ssl     string
 	calls   []string
 }
@@ -185,7 +187,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		result = J{"value": f.ssl}
 	case p == "/zones/z1/dns_records" && r.Method == "GET":
-		var out []cfRecord
+		var out []cloudflare.Record
 		for _, rec := range f.records {
 			if rec.Name == r.URL.Query().Get("name") {
 				out = append(out, rec)
@@ -193,7 +195,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		result = out
 	case p == "/zones/z1/dns_records" && r.Method == "POST":
-		var rec cfRecord
+		var rec cloudflare.Record
 		json.NewDecoder(r.Body).Decode(&rec)
 		rec.ID = "r" + rec.Name
 		f.records[rec.ID] = rec
@@ -213,28 +215,28 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestCloudflareDNSAndSSL(t *testing.T) {
-	f := &fakeCF{ssl: "flexible", records: map[string]cfRecord{
+	f := &fakeCF{ssl: "flexible", records: map[string]cloudflare.Record{
 		"a1": {ID: "a1", Type: "A", Name: "vpn.example.com", Content: "198.51.100.1"},
 		"a2": {ID: "a2", Type: "AAAA", Name: "vpn.example.com", Content: "2001:db8::1"},
 	}}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	old := cloudflareAPI
-	cloudflareAPI = srv.URL
-	defer func() { cloudflareAPI = old }()
+	old := cloudflare.API
+	cloudflare.API = srv.URL
+	defer func() { cloudflare.API = old }()
 	st := &state.State{Domain: "vpn.example.com", CDNDomain: "cdn.example.com", Cloudflare: state.Cloudflare{Token: "t"}}
 	var log []string
 	if err := CloudflarePoint(st, "203.0.113.9", func(s string) { log = append(log, s) }); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]cfRecord{
+	want := map[string]cloudflare.Record{
 		"a1":               {ID: "a1", Type: "A", Name: "vpn.example.com", Content: "203.0.113.9"},
 		"rcdn.example.com": {ID: "rcdn.example.com", Type: "A", Name: "cdn.example.com", Content: "203.0.113.9", Proxied: true, TTL: 1},
 	}
 	if len(f.records) != 2 || f.records["a1"] != want["a1"] || f.records["rcdn.example.com"] != want["rcdn.example.com"] {
 		t.Errorf("records: %+v", f.records)
 	}
-	if mode, err := cfSSL("t", "cdn.example.com", true); err != nil || mode != "full" || f.ssl != "full" {
+	if mode, err := cloudflare.SSL("t", "cdn.example.com", true); err != nil || mode != "full" || f.ssl != "full" {
 		t.Errorf("ssl: %s %v", mode, err)
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -59,7 +61,7 @@ func cfZoneInfo(token, domain string) (id, name, account string, err error) {
 			Account  struct{ ID string }
 		}
 		n := strings.Join(labels[i:], ".")
-		if err := cfCall(token, "GET", "/zones?name="+url.QueryEscape(n), nil, &zones); err != nil {
+		if err := cloudflare.Call(token, "GET", "/zones?name="+url.QueryEscape(n), nil, &zones); err != nil {
 			return "", "", "", err
 		}
 		if len(zones) > 0 {
@@ -79,7 +81,7 @@ func cfAccount(token, domain string) (string, error) {
 		}
 	}
 	var accs []struct{ ID, Name string }
-	if err := cfCall(token, "GET", "/accounts", nil, &accs); err != nil {
+	if err := cloudflare.Call(token, "GET", "/accounts", nil, &accs); err != nil {
 		return "", err
 	}
 	switch len(accs) {
@@ -109,7 +111,7 @@ func cfWorkerUpload(token string, w *state.Worker, routes map[string]string) err
 	p, _ = mw.CreatePart(h)
 	p.Write([]byte(workerJS))
 	mw.Close()
-	if err := cfDo(token, "PUT", "/accounts/"+w.Account+"/workers/scripts/"+w.Name, mw.FormDataContentType(), &body, nil); err != nil {
+	if err := cloudflare.Do(token, "PUT", "/accounts/"+w.Account+"/workers/scripts/"+w.Name, mw.FormDataContentType(), &body, nil); err != nil {
 		return err
 	}
 	w.Routes = routes
@@ -119,11 +121,11 @@ func cfWorkerUpload(token string, w *state.Worker, routes map[string]string) err
 // cfWorkersSubdomain is the account's workers.dev subdomain, registered first if it has none.
 func cfWorkersSubdomain(token, account string) (string, error) {
 	var s struct{ Subdomain string }
-	if err := cfCall(token, "GET", "/accounts/"+account+"/workers/subdomain", nil, &s); err == nil && s.Subdomain != "" {
+	if err := cloudflare.Call(token, "GET", "/accounts/"+account+"/workers/subdomain", nil, &s); err == nil && s.Subdomain != "" {
 		return s.Subdomain, nil
 	}
 	name := randLabel()
-	if err := cfCall(token, "PUT", "/accounts/"+account+"/workers/subdomain", J{"subdomain": name}, &s); err != nil {
+	if err := cloudflare.Call(token, "PUT", "/accounts/"+account+"/workers/subdomain", J{"subdomain": name}, &s); err != nil {
 		return "", fmt.Errorf("registering a workers.dev subdomain: %w", err)
 	}
 	return orStr(s.Subdomain, name), nil
@@ -150,7 +152,7 @@ func cfWorkerEnsure(token string, w *state.Worker, accountHint, domain string) (
 	if err != nil {
 		return nil, err
 	}
-	if err := cfCall(token, "POST", "/accounts/"+w.Account+"/workers/scripts/"+w.Name+"/subdomain",
+	if err := cloudflare.Call(token, "POST", "/accounts/"+w.Account+"/workers/scripts/"+w.Name+"/subdomain",
 		J{"enabled": true, "previews_enabled": false}, nil); err != nil {
 		return nil, fmt.Errorf("enabling workers.dev: %w", err)
 	}
@@ -160,7 +162,7 @@ func cfWorkerEnsure(token string, w *state.Worker, accountHint, domain string) (
 		if err != nil {
 			return nil, err
 		}
-		if err := cfCall(token, "PUT", "/accounts/"+w.Account+"/workers/domains",
+		if err := cloudflare.Call(token, "PUT", "/accounts/"+w.Account+"/workers/domains",
 			J{"hostname": domain, "service": w.Name, "environment": "production", "zone_id": zone}, nil); err != nil {
 			return nil, fmt.Errorf("serving the Worker on %s: %w", domain, err)
 		}
@@ -171,7 +173,7 @@ func cfWorkerEnsure(token string, w *state.Worker, accountHint, domain string) (
 
 // cfWorkerDelete removes the Worker, with its workers.dev route and custom domain.
 func cfWorkerDelete(token string, w *state.Worker) error {
-	return cfCall(token, "DELETE", "/accounts/"+w.Account+"/workers/scripts/"+w.Name+"?force=true", nil, nil)
+	return cloudflare.Call(token, "DELETE", "/accounts/"+w.Account+"/workers/scripts/"+w.Name+"?force=true", nil, nil)
 }
 
 // syncWorker points the Worker's routes at the deployed worker-ws inbounds, when they changed

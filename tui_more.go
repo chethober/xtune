@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/charmbracelet/huh"
@@ -210,7 +212,7 @@ func (t *tui) cloudflare() error {
 			return err
 		}
 	case "ssl":
-		mode, err := cfSSL(st.Cloudflare.Token, st.CDNDomain, true)
+		mode, err := cloudflare.SSL(st.Cloudflare.Token, st.CDNDomain, true)
 		if err != nil {
 			return err
 		}

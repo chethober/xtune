@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -160,7 +162,7 @@ func fmtCount(n int64) string {
 // addExtraWorker creates a Worker in the account token can see and points it at the deployment's
 // worker-ws inbounds.
 func addExtraWorker(r *remote.Server, token string, log func(string)) (*state.State, *state.WorkerExtra, error) {
-	if err := cfVerify(token); err != nil {
+	if err := cloudflare.Verify(token); err != nil {
 		return nil, nil, err
 	}
 	defer r.Lock()()

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -294,7 +296,7 @@ var cdnGet = func(url string) (*http.Response, error) {
 // With a Cloudflare token, the SSL/TLS mode is also read from the API.
 func doctorCDN(d *doctor, st *state.State) {
 	if st.Cloudflare.Token != "" && st.CDNDomain != "" && hasCDN(st.Entries) {
-		switch mode, err := cfSSL(st.Cloudflare.Token, st.CDNDomain, false); {
+		switch mode, err := cloudflare.SSL(st.Cloudflare.Token, st.CDNDomain, false); {
 		case err != nil:
 			d.warn("could not read the SSL/TLS mode from Cloudflare: %v", err)
 		case mode == "full":

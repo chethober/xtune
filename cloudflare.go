@@ -1,20 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/cloudflare"
 
 	"github.com/chethober/xtune/internal/state"
 
@@ -26,143 +23,6 @@ import (
 // can read and fix the SSL/TLS mode the CDN entry needs, and runs the Worker relay (worker.go).
 // The token needs Zone:Read, DNS:Edit and Zone Settings:Edit on the zones, and for the Worker
 // Account: Workers Scripts:Edit.
-
-// cloudflareAPI is a variable so tests can point it at a local server.
-var cloudflareAPI = "https://api.cloudflare.com/client/v4"
-
-func cfCall(token, method, path string, body, out any) error {
-	var rd io.Reader
-	if body != nil {
-		b, _ := json.Marshal(body)
-		rd = bytes.NewReader(b)
-	}
-	return cfDo(token, method, path, "application/json", rd, out)
-}
-
-// cfDo sends a request with a body of any type (the Worker upload is multipart).
-func cfDo(token, method, path, contentType string, rd io.Reader, out any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, method, cloudflareAPI+path, rd)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", contentType)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	var res struct {
-		Success bool `json:"success"`
-		Errors  []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-		Result json.RawMessage `json:"result"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&res); err != nil {
-		return fmt.Errorf("cloudflare: HTTP %d", resp.StatusCode)
-	}
-	if !res.Success {
-		var msgs []string
-		for _, e := range res.Errors {
-			msgs = append(msgs, e.Message)
-		}
-		return fmt.Errorf("cloudflare: %s", orStr(strings.Join(msgs, "; "), fmt.Sprintf("HTTP %d", resp.StatusCode)))
-	}
-	if out != nil {
-		return json.Unmarshal(res.Result, out)
-	}
-	return nil
-}
-
-func cfVerify(token string) error {
-	var r struct{ Status string }
-	if err := cfCall(token, "GET", "/user/tokens/verify", nil, &r); err != nil {
-		return err
-	}
-	if r.Status != "active" {
-		return fmt.Errorf("cloudflare: the token is %s", r.Status)
-	}
-	return nil
-}
-
-// cfZone finds the zone a domain belongs to.
-func cfZone(token, domain string) (string, error) {
-	labels := strings.Split(strings.TrimSuffix(domain, "."), ".")
-	for i := 0; i+2 <= len(labels); i++ {
-		var zones []struct{ ID, Name string }
-		name := strings.Join(labels[i:], ".")
-		if err := cfCall(token, "GET", "/zones?name="+url.QueryEscape(name), nil, &zones); err != nil {
-			return "", err
-		}
-		if len(zones) > 0 {
-			return zones[0].ID, nil
-		}
-	}
-	return "", fmt.Errorf("cloudflare: no zone for %s that this token can see", domain)
-}
-
-type cfRecord struct {
-	ID      string `json:"id,omitempty"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Proxied bool   `json:"proxied"`
-	TTL     int    `json:"ttl,omitempty"`
-}
-
-// cfPoint makes name's address record point at ip with the given proxying, replacing an A record
-// with an AAAA one (or back) when the server's address family changes.
-func cfPoint(token, name, ip string, proxied bool) (string, error) {
-	zone, err := cfZone(token, name)
-	if err != nil {
-		return "", err
-	}
-	want := "A"
-	if strings.Contains(ip, ":") {
-		want = "AAAA"
-	}
-	var recs []cfRecord
-	if err := cfCall(token, "GET", "/zones/"+zone+"/dns_records?name="+url.QueryEscape(name), nil, &recs); err != nil {
-		return "", err
-	}
-	done := false
-	for _, rec := range recs {
-		switch rec.Type {
-		case want:
-			if done { // a second record would send some clients elsewhere
-				if err := cfCall(token, "DELETE", "/zones/"+zone+"/dns_records/"+rec.ID, nil, nil); err != nil {
-					return "", err
-				}
-				continue
-			}
-			done = true
-			if rec.Content == ip && rec.Proxied == proxied {
-				continue
-			}
-			if err := cfCall(token, "PATCH", "/zones/"+zone+"/dns_records/"+rec.ID,
-				J{"content": ip, "proxied": proxied}, nil); err != nil {
-				return "", err
-			}
-		case "A", "AAAA":
-			if err := cfCall(token, "DELETE", "/zones/"+zone+"/dns_records/"+rec.ID, nil, nil); err != nil {
-				return "", err
-			}
-		case "CNAME":
-			return "", fmt.Errorf("%s is a CNAME record: change it in Cloudflare yourself", name)
-		}
-	}
-	if !done {
-		if err := cfCall(token, "POST", "/zones/"+zone+"/dns_records",
-			cfRecord{Type: want, Name: name, Content: ip, Proxied: proxied, TTL: 1}, nil); err != nil {
-			return "", err
-		}
-	}
-	mode := "DNS only"
-	if proxied {
-		mode = "proxied"
-	}
-	return fmt.Sprintf("%s -> %s (%s)", name, ip, mode), nil
-}
 
 // CloudflarePoint points the direct domain (DNS only) and the CDN domain (proxied) at ip, and
 // delegates the DNS tunnel's zone to the server.
@@ -178,12 +38,12 @@ func CloudflarePoint(st *state.State, ip string, log func(string)) error {
 	}
 	if st.DNSDomain != "" {
 		ns := nsHost(st.DNSDomain)
-		msg, err := cfPoint(st.Cloudflare.Token, ns, ip, false)
+		msg, err := cloudflare.Point(st.Cloudflare.Token, ns, ip, false)
 		if err != nil {
 			return err
 		}
 		log(msg)
-		msg, err = cfNS(st.Cloudflare.Token, st.DNSDomain, ns)
+		msg, err = cloudflare.NS(st.Cloudflare.Token, st.DNSDomain, ns)
 		if err != nil {
 			return err
 		}
@@ -196,7 +56,7 @@ func CloudflarePoint(st *state.State, ip string, log func(string)) error {
 		if d.name == "" {
 			continue
 		}
-		msg, err := cfPoint(st.Cloudflare.Token, d.name, ip, d.proxied)
+		msg, err := cloudflare.Point(st.Cloudflare.Token, d.name, ip, d.proxied)
 		if err != nil {
 			return err
 		}
@@ -208,54 +68,6 @@ func CloudflarePoint(st *state.State, ip string, log func(string)) error {
 // nsHost is the name server name xtune uses for a DNS tunnel zone: t.example.com is served by
 // ns-t.example.com.
 func nsHost(zone string) string { return "ns-" + zone }
-
-// cfNS delegates zone to the name server ns with an NS record.
-func cfNS(token, zone, ns string) (string, error) {
-	z, err := cfZone(token, zone)
-	if err != nil {
-		return "", err
-	}
-	var recs []cfRecord
-	if err := cfCall(token, "GET", "/zones/"+z+"/dns_records?name="+url.QueryEscape(zone), nil, &recs); err != nil {
-		return "", err
-	}
-	done := false
-	for _, rec := range recs {
-		switch {
-		case rec.Type == "NS" && strings.EqualFold(rec.Content, ns) && !done:
-			done = true
-		default: // a delegated name can have no other records
-			if err := cfCall(token, "DELETE", "/zones/"+z+"/dns_records/"+rec.ID, nil, nil); err != nil {
-				return "", err
-			}
-		}
-	}
-	if !done {
-		if err := cfCall(token, "POST", "/zones/"+z+"/dns_records", cfRecord{Type: "NS", Name: zone, Content: ns, TTL: 1}, nil); err != nil {
-			return "", err
-		}
-	}
-	return fmt.Sprintf("%s NS %s (DNS tunnel)", zone, ns), nil
-}
-
-// cfSSL reads the SSL/TLS mode of domain's zone, and sets it to Full when fix is set and it is not.
-func cfSSL(token, domain string, fix bool) (string, error) {
-	zone, err := cfZone(token, domain)
-	if err != nil {
-		return "", err
-	}
-	var s struct{ Value string }
-	if err := cfCall(token, "GET", "/zones/"+zone+"/settings/ssl", nil, &s); err != nil {
-		return "", err
-	}
-	if fix && s.Value != "full" {
-		if err := cfCall(token, "PATCH", "/zones/"+zone+"/settings/ssl", J{"value": "full"}, nil); err != nil {
-			return s.Value, err
-		}
-		return "full", nil
-	}
-	return s.Value, nil
-}
 
 // serverIP is the address records should point at: the server's address, resolved if a name.
 func serverIP(host string) (string, error) {
@@ -271,7 +83,7 @@ func serverIP(host string) (string, error) {
 
 func SetCloudflare(r *remote.Server, cf state.Cloudflare) error {
 	if cf.Token != "" {
-		if err := cfVerify(cf.Token); err != nil {
+		if err := cloudflare.Verify(cf.Token); err != nil {
 			return err
 		}
 	}
@@ -325,10 +137,10 @@ func cmdCloudflare(args []string) error {
 			if d == "" {
 				continue
 			}
-			var recs []cfRecord
-			zone, err := cfZone(st.Cloudflare.Token, d)
+			var recs []cloudflare.Record
+			zone, err := cloudflare.Zone(st.Cloudflare.Token, d)
 			if err == nil {
-				err = cfCall(st.Cloudflare.Token, "GET", "/zones/"+zone+"/dns_records?name="+url.QueryEscape(d), nil, &recs)
+				err = cloudflare.Call(st.Cloudflare.Token, "GET", "/zones/"+zone+"/dns_records?name="+url.QueryEscape(d), nil, &recs)
 			}
 			if err != nil {
 				fmt.Printf("  %s: %v\n", d, err)
@@ -339,7 +151,7 @@ func cmdCloudflare(args []string) error {
 			}
 		}
 		if st.CDNDomain != "" {
-			mode, err := cfSSL(st.Cloudflare.Token, st.CDNDomain, false)
+			mode, err := cloudflare.SSL(st.Cloudflare.Token, st.CDNDomain, false)
 			if err != nil {
 				return err
 			}
@@ -376,7 +188,7 @@ func cmdCloudflare(args []string) error {
 		if st.CDNDomain == "" {
 			return errors.New("no CDN domain set")
 		}
-		mode, err := cfSSL(st.Cloudflare.Token, st.CDNDomain, true)
+		mode, err := cloudflare.SSL(st.Cloudflare.Token, st.CDNDomain, true)
 		if err != nil {
 			return err
 		}
@@ -537,7 +349,7 @@ func (o *TuneOpts) tuneCloudflare(host string) ([]string, error) {
 		return nil, nil
 	}
 	if o.Cloudflare != dep.Cloudflare.Token {
-		if err := cfVerify(o.Cloudflare); err != nil {
+		if err := cloudflare.Verify(o.Cloudflare); err != nil {
 			return nil, err
 		}
 	}
@@ -563,16 +375,16 @@ func (o *TuneOpts) tuneCloudflare(host string) ([]string, error) {
 		return err
 	}
 	if o.Domain != "" && o.Domain != dep.Domain {
-		if err := logged(cfPoint(o.Cloudflare, o.Domain, ip, false)); err != nil {
+		if err := logged(cloudflare.Point(o.Cloudflare, o.Domain, ip, false)); err != nil {
 			return nil, err
 		}
 		made = append(made, o.Domain)
 	}
 	if o.CDNDomain != "" && o.CDNDomain != dep.CDNDomain {
-		if err := logged(cfPoint(o.Cloudflare, o.CDNDomain, ip, true)); err != nil {
+		if err := logged(cloudflare.Point(o.Cloudflare, o.CDNDomain, ip, true)); err != nil {
 			return nil, err
 		}
-		mode, err := cfSSL(o.Cloudflare, o.CDNDomain, true)
+		mode, err := cloudflare.SSL(o.Cloudflare, o.CDNDomain, true)
 		if err != nil {
 			return nil, err
 		}
@@ -581,10 +393,10 @@ func (o *TuneOpts) tuneCloudflare(host string) ([]string, error) {
 	}
 	if o.DNSDomain != "" && o.DNSDomain != dep.DNSDomain {
 		ns := nsHost(o.DNSDomain)
-		if err := logged(cfPoint(o.Cloudflare, ns, ip, false)); err != nil {
+		if err := logged(cloudflare.Point(o.Cloudflare, ns, ip, false)); err != nil {
 			return nil, err
 		}
-		if err := logged(cfNS(o.Cloudflare, o.DNSDomain, ns)); err != nil {
+		if err := logged(cloudflare.NS(o.Cloudflare, o.DNSDomain, ns)); err != nil {
 			return nil, err
 		}
 	}

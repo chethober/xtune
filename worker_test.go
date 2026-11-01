@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -72,14 +74,14 @@ type fakeWorkers struct {
 	scripts   map[string]map[string]string // name -> routes
 	enabled   map[string]bool
 	domains   map[string]string // hostname -> script
-	records   map[string]cfRecord
+	records   map[string]cloudflare.Record
 	ssl       string
 	calls     []string
 }
 
 func newFakeWorkers() *fakeWorkers {
 	return &fakeWorkers{scripts: map[string]map[string]string{}, enabled: map[string]bool{}, domains: map[string]string{},
-		records: map[string]cfRecord{}, ssl: "flexible"}
+		records: map[string]cloudflare.Record{}, ssl: "flexible"}
 }
 
 func (f *fakeWorkers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -163,9 +165,9 @@ func (f *fakeWorkers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.domains[b["hostname"].(string)] = b["service"].(string)
 	case p == "/zones/z1/dns_records":
-		recs := []cfRecord{}
+		recs := []cloudflare.Record{}
 		if r.Method == "POST" {
-			var rec cfRecord
+			var rec cloudflare.Record
 			json.NewDecoder(r.Body).Decode(&rec)
 			rec.ID = "r" + rec.Name
 			f.records[rec.ID] = rec
@@ -191,9 +193,9 @@ func (f *fakeWorkers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func withFakeCF(t *testing.T, h http.Handler) {
 	srv := httptest.NewServer(h)
-	old := cloudflareAPI
-	cloudflareAPI = srv.URL
-	t.Cleanup(func() { cloudflareAPI = old; srv.Close() })
+	old := cloudflare.API
+	cloudflare.API = srv.URL
+	t.Cleanup(func() { cloudflare.API = old; srv.Close() })
 }
 
 func TestWorkerLifecycle(t *testing.T) {

@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/cloudflare"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -693,9 +695,9 @@ func TestExtraWorkers(t *testing.T) {
 	cf := &multiAccountCF{accounts: map[string]string{"tokA": "acc1", "tokB": "acc2"}, scripts: map[string]map[string]string{}}
 	srv := httptest.NewServer(cf)
 	defer srv.Close()
-	old := cloudflareAPI
-	cloudflareAPI = srv.URL
-	defer func() { cloudflareAPI = old }()
+	old := cloudflare.API
+	cloudflare.API = srv.URL
+	defer func() { cloudflare.API = old }()
 
 	fs := newFake()
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
