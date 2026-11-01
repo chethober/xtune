@@ -397,6 +397,9 @@ func TestForNetwork(t *testing.T) {
 }
 
 func TestSubServesRankedConfigs(t *testing.T) {
+	asnCache.Lock()
+	asnCache.m = map[string]asnCached{} // a cached answer from an earlier run would skip the lookup
+	asnCache.Unlock()
 	old := asnLookup
 	defer func() { asnLookup = old }()
 	asked := ""

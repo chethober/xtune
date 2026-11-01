@@ -178,6 +178,9 @@ func TestPublicNeedsSubServer(t *testing.T) {
 }
 
 func TestJoinLimiter(t *testing.T) {
+	joinLimiter.Lock()
+	joinLimiter.seen = map[string][]time.Time{} // runs with -count>1 share the limiter
+	joinLimiter.Unlock()
 	now := time.Now()
 	for i := 0; i < joinsPerMinute; i++ {
 		if !allowJoin("lim", now) {

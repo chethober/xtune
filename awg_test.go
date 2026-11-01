@@ -150,7 +150,8 @@ func TestAWGEndToEnd(t *testing.T) {
 
 	for _, k := range awgVariants() {
 		d := awgDial(st, e, awgVariantUser(tu, k), k)
-		hc := &http.Client{Transport: &http.Transport{DialContext: d.DialContext}, Timeout: 10 * time.Second}
+		// handshakes retry every 5s: allow a couple of lost packets on a busy machine
+		hc := &http.Client{Transport: &http.Transport{DialContext: d.DialContext}, Timeout: 30 * time.Second}
 		resp, err := hc.Post("http://"+awgServerAddr(e).Addr().String()+"/", "text/plain", strings.NewReader(strings.Repeat("x", 100000)))
 		if err != nil || resp.StatusCode != 204 {
 			t.Fatalf("variant %+v: %v %v", k, resp, err)
