@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/chethober/xtune/internal/netinfo"
 )
 
 type networkRoundTrip func(*http.Request) (*http.Response, error)
@@ -29,7 +31,7 @@ func TestClientNetworkRateLimitFallback(t *testing.T) {
 			return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body))}, nil
 		})}
 		calls := 0
-		n, err := lookupClientNetwork(c, func(ip net.IP) (string, error) {
+		n, err := netinfo.LookupClient(c, func(ip net.IP) (string, error) {
 			calls++
 			if !ip.Equal(net.ParseIP("8.8.8.8")) {
 				return "", errors.New("wrong IP")

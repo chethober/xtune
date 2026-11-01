@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -364,7 +366,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	now := time.Now()
 	view, netName := st, ""
 	if len(st.Networks) > 0 { // the requester's network's best configs first
-		view, netName = forNetwork(st, asnOf(requesterIP(req, st), now), now)
+		view, netName = forNetwork(st, netinfo.ASNOf(requesterIP(req, st), now), now)
 	}
 	switch {
 	case len(parts) == 4: // a profile file

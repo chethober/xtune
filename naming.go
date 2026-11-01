@@ -1,13 +1,14 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/netinfo"
 
 	"github.com/chethober/xtune/internal/protocols"
 
@@ -53,15 +54,6 @@ func checkTemplate(tmpl string, allowed []string) error {
 
 // ---------------------------------------------------------------- the server's country
 
-// countryLookup finds the country an IP is registered in. A variable so tests can stand in for DNS.
-var countryLookup = func(ip net.IP) (string, error) {
-	_, cc, err := cymruOrigin(net.DefaultResolver, ip)
-	if err == nil && !protocols.ValidCountryCode(cc) {
-		err = errors.New("no country for " + ip.String())
-	}
-	return cc, err
-}
-
 // detectFlag looks up the server's country when it is not known yet, at most once a day after a
 // failure. It reports whether the naming changed.
 func detectFlag(st *state.State, now time.Time) bool {
@@ -79,7 +71,7 @@ func detectFlag(st *state.State, now time.Time) bool {
 		n.Checked = now.Unix()
 		return true
 	}
-	cc, err := countryLookup(ip)
+	cc, err := netinfo.CountryLookup(ip)
 	if err != nil {
 		n.Checked = now.Unix()
 		return true

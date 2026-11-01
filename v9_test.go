@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/cloudflare"
 
 	"github.com/chethober/xtune/internal/protocols"
@@ -401,13 +403,11 @@ func TestForNetwork(t *testing.T) {
 }
 
 func TestSubServesRankedConfigs(t *testing.T) {
-	asnCache.Lock()
-	asnCache.m = map[string]asnCached{} // a cached answer from an earlier run would skip the lookup
-	asnCache.Unlock()
-	old := asnLookup
-	defer func() { asnLookup = old }()
+	netinfo.ResetASNCache() // a cached answer from an earlier run would skip the lookup
+	old := netinfo.ASNLookup
+	defer func() { netinfo.ASNLookup = old }()
 	asked := ""
-	asnLookup = func(ip net.IP) (string, error) {
+	netinfo.ASNLookup = func(ip net.IP) (string, error) {
 		asked = ip.String()
 		if ip.String() == "5.200.1.2" {
 			return "AS12880", nil
@@ -496,11 +496,11 @@ func TestCymruQuery(t *testing.T) {
 		var d net.Dialer
 		return d.DialContext(ctx, "udp", pc.LocalAddr().String())
 	}}
-	asn, err := cymruASN(res, net.ParseIP("5.200.1.2"))
+	asn, err := netinfo.CymruASN(res, net.ParseIP("5.200.1.2"))
 	if err != nil || asn != "AS12880" || asked() != "2.1.200.5.origin.asn.cymru.com." {
 		t.Errorf("%q %v (asked %s)", asn, err, asked())
 	}
-	cymruASN(res, net.ParseIP("2001:db8::1"))
+	netinfo.CymruASN(res, net.ParseIP("2001:db8::1"))
 	if !strings.HasSuffix(asked(), ".8.b.d.0.1.0.0.2.origin6.asn.cymru.com.") {
 		t.Errorf("IPv6 query %s", asked())
 	}
@@ -533,7 +533,7 @@ func TestRecordNetwork(t *testing.T) {
 	if err := state.Save(r, st); err != nil {
 		t.Fatal(err)
 	}
-	n := Network{ASN: "AS44244", Name: "Irancell"}
+	n := netinfo.Network{ASN: "AS44244", Name: "Irancell"}
 	if err := RecordNetwork(r, n, map[string]float64{"r-tcp/443": 9, "gone/1": 4}, map[string]string{"cdn-xhttp/2096": "104.1.1.1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func TestRecordNetwork(t *testing.T) {
 	if _, ok := nr.Scores["gone/1"]; ok {
 		t.Error("a config that is not deployed was ranked")
 	}
-	if RecordNetwork(r, Network{}, map[string]float64{"r-tcp/443": 1}, nil) != nil {
+	if RecordNetwork(r, netinfo.Network{}, map[string]float64{"r-tcp/443": 1}, nil) != nil {
 		t.Error("an unknown network is skipped, not an error")
 	}
 	var b strings.Builder
@@ -1091,7 +1091,7 @@ func TestRankingUpdatesAnOldServer(t *testing.T) {
 		fs.helper = map[string]string{"status": "ARCH x86_64\nXTUNE " + tc.server + "\nXTUNE_SHA 00"}
 		r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 		state.Save(r, rankedState())
-		err := RecordNetwork(r, Network{ASN: "AS1"}, map[string]float64{"r-tcp/443": 3}, nil)
+		err := RecordNetwork(r, netinfo.Network{ASN: "AS1"}, map[string]float64{"r-tcp/443": 3}, nil)
 		if got := installed(fs); got != tc.update {
 			t.Errorf("server xtune %s: updated=%v (err %v, calls %v)", tc.server, got, err, fs.calls)
 		}

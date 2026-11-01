@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -182,7 +184,7 @@ func checkOnce(c connFlags, network string, probes, secs int, out string) error 
 	if err != nil {
 		return err
 	}
-	netw := detectNetwork(&network, logf)
+	netw := netinfo.Detect(&network, logf)
 	var res []CheckResult
 	var st *state.State
 	if err := guarded(nil, func() error { // nil: a shared test running on the server must survive Ctrl+C here

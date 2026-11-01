@@ -19,6 +19,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -112,6 +114,7 @@ Connection flags (conn):
 `
 
 func main() {
+	netinfo.UserAgent = "xtune/" + version
 	if len(os.Args) < 2 {
 		if remote.Installed() {
 			runServerTUI()

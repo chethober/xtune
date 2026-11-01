@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -961,8 +963,8 @@ type TuneResult struct {
 	Entries []state.Entry
 	All     []*Variant
 	Best    []*Variant
-	Network Network // the network it was measured from ("" ASN when unknown)
-	NetName string  // its name: --network, else the ASN registry's
+	Network netinfo.Network // the network it was measured from ("" ASN when unknown)
+	NetName string          // its name: --network, else the ASN registry's
 }
 
 // Tune installs/uses the isolated server Xray, starts the test matrix and measures it from here.
@@ -972,7 +974,7 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 		return nil, err
 	}
 	o.deployed, _ = state.Load(r)
-	netw := detectNetwork(&o.Network, o.Log)
+	netw := netinfo.Detect(&o.Network, o.Log)
 	made, err := o.tuneCloudflare(r.Conn.Host)
 	if err != nil {
 		return nil, err

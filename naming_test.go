@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -19,16 +21,16 @@ import (
 
 // Tests never look anything up on the internet: lookups that a test does not stand in for fail.
 func TestMain(m *testing.M) {
-	countryLookup = func(net.IP) (string, error) { return "", errors.New("no lookups in tests") }
+	netinfo.CountryLookup = func(net.IP) (string, error) { return "", errors.New("no lookups in tests") }
 	os.Exit(m.Run())
 }
 
 func stubCountry(t *testing.T, cc string) *int {
 	t.Helper()
-	old := countryLookup
-	t.Cleanup(func() { countryLookup = old })
+	old := netinfo.CountryLookup
+	t.Cleanup(func() { netinfo.CountryLookup = old })
 	calls := 0
-	countryLookup = func(net.IP) (string, error) {
+	netinfo.CountryLookup = func(net.IP) (string, error) {
 		calls++
 		if cc == "" {
 			return "", errors.New("lookup failed")
@@ -163,11 +165,11 @@ func TestDetectFlag(t *testing.T) {
 }
 
 func TestParseCymru(t *testing.T) {
-	asn, cc, err := parseCymru([]string{"24940 | 95.216.0.0/16 | fi | ripencc | 2010-06-10"}, net.ParseIP("95.216.1.1"))
+	asn, cc, err := netinfo.ParseCymru([]string{"24940 | 95.216.0.0/16 | fi | ripencc | 2010-06-10"}, net.ParseIP("95.216.1.1"))
 	if err != nil || asn != "AS24940" || cc != "FI" {
 		t.Errorf("got %q %q %v", asn, cc, err)
 	}
-	if _, _, err := parseCymru([]string{"NA | x"}, net.ParseIP("192.0.2.1")); err == nil {
+	if _, _, err := netinfo.ParseCymru([]string{"NA | x"}, net.ParseIP("192.0.2.1")); err == nil {
 		t.Error("no ASN accepted")
 	}
 }

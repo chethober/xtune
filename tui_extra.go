@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
@@ -28,7 +30,7 @@ func (t *tui) check() error {
 		return err
 	}
 	network = strings.TrimSpace(network)
-	netw := detectNetwork(&network, func(s string) { fmt.Println(s) })
+	netw := netinfo.Detect(&network, func(s string) { fmt.Println(s) })
 	var res []CheckResult
 	var st *state.State
 	if err := guarded(nil, func() error {

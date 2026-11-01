@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -111,7 +113,7 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
 		return nil, err
 	}
-	netw := detectNetwork(&o.Network, o.Log)
+	netw := netinfo.Detect(&o.Network, o.Log)
 	entries := supported(o.XrayBin, b.State, b.Entries, o.Log)
 	vs := supportedKnobs(o.XrayBin, b.State, ExpandVariants(entries, b.Depth, o.Resolvers...), o.Log)
 	vs = addCleanIPVariants(b.State, entries, vs, o.CleanIPs, o.Log) // this network's own clean IPs
@@ -297,12 +299,12 @@ func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (
 		labels[v.Entry.ID] = v.Label
 	}
 	scores, addrs := variantRank(st.Entries, p.Variants)
-	if err := RecordNetwork(r, Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
+	if err := RecordNetwork(r, netinfo.Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
 		fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
 	}
 	for _, rep := range reports {
 		scores, addrs := labelRank(st.Entries, labels, rep.Results)
-		if err := RecordNetwork(r, Network{ASN: rep.ASN, Name: orStr(rep.ASName, rep.Network)}, scores, addrs); err != nil {
+		if err := RecordNetwork(r, netinfo.Network{ASN: rep.ASN, Name: orStr(rep.ASName, rep.Network)}, scores, addrs); err != nil {
 			fmt.Fprintln(w, "[!] ranking the configs for "+rep.Network+":", err)
 		}
 	}
