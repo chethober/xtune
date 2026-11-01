@@ -218,7 +218,8 @@ func DeployVariants(r *remote.Server, st *state.State, chosen []*Variant) (*stat
 			st.Worker = old.Worker
 		}
 	}
-	detectFlag(st, time.Now())
+	// the country flag is looked up by the server's enforce job, within a minute: its DNS is not
+	// filtered like the client's network may be
 	if err := Apply(r, st); err != nil {
 		return st, err
 	}

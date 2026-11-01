@@ -260,3 +260,20 @@ func TestPageImportLinks(t *testing.T) {
 		t.Error("an import link was defanged or the name not escaped")
 	}
 }
+
+// The server's enforce job looks the flag up (the client's network may filter the lookup).
+func TestEnforceDetectsFlag(t *testing.T) {
+	r, _ := deployed(t, state.NewUser("ann"))
+	calls := stubCountry(t, "SE")
+	if err := Enforce(r); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := state.Load(r)
+	if st.Naming.Flag != "SE" || !st.Naming.Detected || *calls != 1 {
+		t.Fatalf("after enforce: %+v (%d lookups)", st.Naming, *calls)
+	}
+	Enforce(r)
+	if *calls != 1 {
+		t.Error("looked up again although known")
+	}
+}
