@@ -11,6 +11,9 @@ gofmt -l .        # must print nothing
 XTUNE_E2E=1 go test -run EndToEnd ./...   # optional: real local Xray, needs a local xray and internet access
 ```
 
+Golden files: `go test -run Compat . -args -update` after a deliberate change to `xtune help`, and
+`go test ./internal/state -run TestCurrentFixture -args -update` after adding fields to `state.json` or `usage.json`.
+
 CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs `shellcheck` on `internal/remote/helper.sh` and
 `install.sh`, and cross-builds every release target (Linux, macOS, Windows on amd64/arm64, and Android arm64).
 
@@ -26,6 +29,10 @@ CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs 
   in-memory-only fields).
 - Secrets are never written to argv or to local files; profiles store connection details only. The one exception
   is a backup the user asks for (`xtune backup`), written readable by the owner only.
+- Commands, flags, `--json` keys, the state files and users' links are stable within 1.x
+  ([docs/compatibility.md](docs/compatibility.md)): add, do not rename or remove. Renaming a state field needs a
+  migration in `internal/state/schema.go` and a `Schema` bump.
+- Document user-facing changes in `docs/` (the README only summarizes).
 - When you add a protocol or knob, add it to the test matrix *and* the share-link generator, with a unit test for the link.
 - Test changes against a real server before opening a PR, and say in the PR what you tested.
 
