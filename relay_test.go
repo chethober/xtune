@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/remote"
 	"github.com/chethober/xtune/internal/state"
 )
@@ -24,17 +26,17 @@ func relayEntries() []state.Entry {
 func TestRelayable(t *testing.T) {
 	want := map[string]bool{"r-tcp": true, "hy2": true, "ss2022": true, "wg": true, "cdn-xhttp": false, "dnstt": false, "ovpn": false}
 	for _, e := range relayEntries() {
-		if relayable(e) != want[e.ID] {
-			t.Errorf("%s relayable = %v", e.ID, relayable(e))
+		if protocols.Relayable(e) != want[e.ID] {
+			t.Errorf("%s relayable = %v", e.ID, protocols.Relayable(e))
 		}
 	}
 	for _, k := range []string{"vlessenc-xhttp", "trojan-reality", "reality-grpc", "ssh", "ssh-tls", "mtproto"} {
-		if !relayable(state.Entry{Kind: k}) {
+		if !protocols.Relayable(state.Entry{Kind: k}) {
 			t.Errorf("%s should be relayable", k)
 		}
 	}
 	for _, k := range []string{"worker-ws", "cdn-ssh", "amneziawg", "ikev2"} {
-		if relayable(state.Entry{Kind: k}) {
+		if protocols.Relayable(state.Entry{Kind: k}) {
 			t.Errorf("%s should not be relayable", k)
 		}
 	}
@@ -101,7 +103,7 @@ func TestRelayLinks(t *testing.T) {
 	st := relayedState()
 	u := state.User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555", SSKey: "dXNlcmtleXVzZXJrZXk="}
 	links := map[string]string{}
-	for _, l := range NamedLinks(st, u) {
+	for _, l := range protocols.NamedLinks(st, u) {
 		links[l.Name] = l.URL
 	}
 	r := links["teh1-r-tcp"]
@@ -119,14 +121,14 @@ func TestRelayLinks(t *testing.T) {
 	}
 	// {via} names the relay in custom templates
 	st.Naming.Config = "{flag} {proto} {via}"
-	if n := configName(relayStates(st)[0], relayStates(st)[0].Entries[0], u); n != "🇩🇪 REALITY via teh1" {
+	if n := protocols.ConfigName(protocols.RelayStates(st)[0], protocols.RelayStates(st)[0].Entries[0], u); n != "🇩🇪 REALITY via teh1" {
 		t.Errorf("via name %q", n)
 	}
-	if n := configName(st, st.Entries[0], u); n != "🇩🇪 REALITY" {
+	if n := protocols.ConfigName(st, st.Entries[0], u); n != "🇩🇪 REALITY" {
 		t.Errorf("direct name %q", n)
 	}
 	// the failover config tries the relay too
-	b, _ := json.Marshal(FailoverConfig(st, u))
+	b, _ := json.Marshal(protocols.FailoverConfig(st, u))
 	if !strings.Contains(string(b), `"proxy-teh1-r-tcp"`) || !strings.Contains(string(b), "198.51.100.20") {
 		t.Error("the failover config does not use the relay")
 	}
@@ -135,7 +137,7 @@ func TestRelayLinks(t *testing.T) {
 func TestStaleRelaysLeftOut(t *testing.T) {
 	st := relayedState()
 	st.Entries[0].Port = 8444 // redeployed: the relay still forwards to 443
-	rs := relayStates(st)
+	rs := protocols.RelayStates(st)
 	if len(rs) != 1 || len(rs[0].Entries) != 1 || rs[0].Entries[0].ID != "teh1-hy2" {
 		t.Errorf("a changed config should be left out: %+v", rs)
 	}
@@ -144,7 +146,7 @@ func TestStaleRelaysLeftOut(t *testing.T) {
 	}
 	st = relayedState()
 	st.Host = "192.0.2.50" // migrated
-	if len(relayStates(st)) != 0 || !strings.Contains(relayProblem(st, st.Relays[0], ""), "relay sync teh1") {
+	if len(protocols.RelayStates(st)) != 0 || !strings.Contains(relayProblem(st, st.Relays[0], ""), "relay sync teh1") {
 		t.Error("a relay forwarding to the old address should be left out")
 	}
 }

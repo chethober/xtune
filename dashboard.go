@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -58,7 +60,7 @@ func snapshotDash(st *state.State, us *state.Usage, now time.Time) dashData {
 		d.IPBlocked = why
 	}
 	quiet := quietEntries(st, us, now)
-	for _, srv := range peerServers(st) {
+	for _, srv := range protocols.PeerServers(st) {
 		for _, e := range srv.Entries {
 			c := dashConfig{ID: e.ID, Kind: e.Kind, Port: e.Port, Proto: e.Proto(), State: "idle"}
 			eu := us.Entries[state.EntryKey(e)]

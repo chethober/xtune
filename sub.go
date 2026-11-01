@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -45,7 +47,7 @@ func SubURL(st *state.State, u state.User) string {
 	if h == "" || u.SubToken == "" {
 		return ""
 	}
-	return "https://" + hostPort(h, st.Sub.Port) + "/" + st.Sub.Path + "/" + u.SubToken
+	return "https://" + protocols.HostPort(h, st.Sub.Port) + "/" + st.Sub.Path + "/" + u.SubToken
 }
 
 // botBase is where the connect and management links point: port 443 when the server listens there.
@@ -60,7 +62,7 @@ func botBase(st *state.State) string {
 		}
 		return "https://" + h + "/" + st.Sub.Path
 	}
-	return "https://" + hostPort(h, st.Sub.Port) + "/" + st.Sub.Path
+	return "https://" + protocols.HostPort(h, st.Sub.Port) + "/" + st.Sub.Path
 }
 
 // ensurePort443 makes the subscription server also listen on 443 when nothing else uses it, so
@@ -356,7 +358,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	// the de-facto standard headers clients use to show usage and expiry
 	hd.Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", uu.Up, uu.Down, u.Quota, u.Expires))
-	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(subName(st, *u))))
+	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(protocols.SubName(st, *u))))
 	hd.Set("Profile-Update-Interval", "6")
 	hd.Set("Profile-Web-Page-Url", SubURL(st, *u))
 	now := time.Now()
@@ -366,7 +368,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	switch {
 	case len(parts) == 4: // a profile file
-		for _, p := range Profiles(st, *u) {
+		for _, p := range protocols.Profiles(st, *u) {
 			if p.File == parts[3] {
 				hd.Set("Content-Type", p.Type)
 				hd.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", p.File))
@@ -377,7 +379,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 	case len(parts) == 3:
 		hd.Set("Content-Type", "application/json")
-		b, _ := json.MarshalIndent(FailoverConfig(view, *u), "", "  ")
+		b, _ := json.MarshalIndent(protocols.FailoverConfig(view, *u), "", "  ")
 		w.Write(b)
 	case strings.Contains(req.Header.Get("Accept"), "text/html"):
 		hd.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "+
@@ -390,13 +392,11 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		subPage.Execute(w, p)
 	default:
 		hd.Set("Content-Type", "text/plain; charset=utf-8")
-		io.WriteString(w, Subscription(view, *u))
+		io.WriteString(w, protocols.Subscription(view, *u))
 	}
 }
 
 // ---------------------------------------------------------------- the user's page
-
-type pageLink struct{ Name, URL string }
 
 type page struct {
 	Lang, Dir                     string
@@ -407,13 +407,13 @@ type page struct {
 	Percent                       int
 	SubURL, JSONURL, LastSeen     string
 	QR                            template.URL // generated here, so safe as a data: URL
-	Links                         []pageLink
-	Files                         []pageLink // profile files, for apps without share links
-	Login                         string     // "name / password" for the SSH and VPN apps
-	History                       []histBar  // daily traffic, oldest first; empty without any
-	Network                       string     // "sorted for your network: NAME", when ranked for it
-	SubName                       string     // the subscription's name in apps
-	Apps                          []appLink  // one-tap links that add the subscription to an app
+	Links                         []protocols.NamedLink
+	Files                         []protocols.NamedLink // profile files, for apps without share links
+	Login                         string                // "name / password" for the SSH and VPN apps
+	History                       []histBar             // daily traffic, oldest first; empty without any
+	Network                       string                // "sorted for your network: NAME", when ranked for it
+	SubName                       string                // the subscription's name in apps
+	Apps                          []appLink             // one-tap links that add the subscription to an app
 }
 
 // appLink is an import link: its scheme is an app's, which html/template would otherwise refuse.
@@ -477,16 +477,16 @@ func pageData(st *state.State, u state.User, uu *state.UserUsage, now time.Time,
 		c.Scale = 6
 		p.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(c.PNG()))
 	}
-	p.Links = NamedLinks(st, u)
-	p.SubName = subName(st, u)
+	p.Links = protocols.NamedLinks(st, u)
+	p.SubName = protocols.SubName(st, u)
 	for _, a := range subImports(p.SubURL, p.SubName) {
 		p.Apps = append(p.Apps, appLink{Name: a.Name, URL: template.URL(a.URL)}) // built here from the URL and an escaped name
 	}
-	for _, f := range Profiles(st, u) {
-		p.Files = append(p.Files, pageLink{Name: f.Name, URL: p.SubURL + "/f/" + url.PathEscape(f.File)})
+	for _, f := range protocols.Profiles(st, u) {
+		p.Files = append(p.Files, protocols.NamedLink{Name: f.Name, URL: p.SubURL + "/f/" + url.PathEscape(f.File)})
 	}
 	if hasLogin(st) {
-		p.Login = u.Name + " / " + tunnelPassword(u)
+		p.Login = u.Name + " / " + protocols.TunnelPassword(u)
 	}
 	days := uu.LastDays(now, 30)
 	top := slices.Max(days)

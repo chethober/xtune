@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -68,7 +70,7 @@ func testState() *state.State {
 func TestLinks(t *testing.T) {
 	st := testState()
 	u := state.User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555", SSKey: "dXNlcmtleXVzZXJrZXk="}
-	l := Link(st, state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 2053, SNI: "www.b.com"}, u, state.Knobs{FP: "firefox"})
+	l := protocols.Link(st, state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 2053, SNI: "www.b.com"}, u, state.Knobs{FP: "firefox"})
 	pu, err := url.Parse(l)
 	if err != nil {
 		t.Fatal(err)
@@ -78,21 +80,21 @@ func TestLinks(t *testing.T) {
 		q.Get("flow") != "xtls-rprx-vision" || q.Get("pbk") != "pub" || q.Get("sni") != "www.b.com" {
 		t.Errorf("bad reality link: %s", l)
 	}
-	l = Link(st, state.Entry{ID: "venc", Kind: "vlessenc-xhttp", Port: 3000, Path: "/p"}, u, state.Knobs{Mode: "packet-up"})
+	l = protocols.Link(st, state.Entry{ID: "venc", Kind: "vlessenc-xhttp", Port: 3000, Path: "/p"}, u, state.Knobs{Mode: "packet-up"})
 	q = mustQuery(t, l)
 	if q.Get("encryption") != st.VencEnc || q.Get("mode") != "packet-up" || q.Get("path") != "/p" || q.Get("security") != "none" {
 		t.Errorf("bad vless-encryption link: %s", l)
 	}
-	l = Link(st, state.Entry{ID: "ss", Kind: "ss2022", Port: 4000}, u, state.Knobs{})
+	l = protocols.Link(st, state.Entry{ID: "ss", Kind: "ss2022", Port: 4000}, u, state.Knobs{})
 	if !strings.HasPrefix(l, "ss://2022-blake3-aes-128-gcm%3A") || !strings.Contains(l, "@203.0.113.7:4000") {
 		t.Errorf("bad ss link: %s", l)
 	}
-	l = Link(st, state.Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, state.Knobs{})
+	l = protocols.Link(st, state.Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, state.Knobs{})
 	if !strings.HasPrefix(l, "hysteria2://"+u.UUID+"@203.0.113.7:5000?") || !strings.Contains(l, "pinSHA256=ff") {
 		t.Errorf("bad hysteria2 link: %s", l)
 	}
 	st.Host = "2001:db8::1"
-	if l = Link(st, state.Entry{ID: "x", Kind: "reality-tcp", Port: 1}, u, state.Knobs{}); !strings.Contains(l, "@[2001:db8::1]:1?") {
+	if l = protocols.Link(st, state.Entry{ID: "x", Kind: "reality-tcp", Port: 1}, u, state.Knobs{}); !strings.Contains(l, "@[2001:db8::1]:1?") {
 		t.Errorf("IPv6 host not bracketed: %s", l)
 	}
 }
@@ -110,7 +112,7 @@ func TestServerConfigOnlyEnabledUsers(t *testing.T) {
 	on, off := state.NewUser("on"), state.NewUser("off")
 	off.Enabled = false
 	entries := []state.Entry{{ID: "a", Kind: "reality-tcp", Port: 1, SNI: "x.com"}, {ID: "s", Kind: "ss2022", Port: 2}}
-	cfg := ServerConfig(st, entries, []state.User{on, off})
+	cfg := protocols.ServerConfig(st, entries, []state.User{on, off})
 	ibs := cfg["inbounds"].([]J)
 	if len(ibs) != 2 {
 		t.Fatalf("want 2 inbounds, got %d", len(ibs))
@@ -119,7 +121,7 @@ func TestServerConfigOnlyEnabledUsers(t *testing.T) {
 	if len(clients) != 1 || clients[0]["email"] != "on" || clients[0]["flow"] != "xtls-rprx-vision" {
 		t.Errorf("disabled user leaked or flow missing: %v", clients)
 	}
-	if got := ServerConfig(st, entries, []state.User{off})["inbounds"].([]J); len(got) != 0 {
+	if got := protocols.ServerConfig(st, entries, []state.User{off})["inbounds"].([]J); len(got) != 0 {
 		t.Errorf("no enabled users should mean no inbounds, got %d", len(got))
 	}
 }
@@ -172,15 +174,15 @@ func TestDomainsInLinks(t *testing.T) {
 	st := testState()
 	st.Domain, st.CDNDomain = "direct.example.com", "cdn.example.com"
 	u := state.NewUser("ann")
-	l := Link(st, state.Entry{ID: "r", Kind: "reality-tcp", Port: 443, SNI: "www.b.com"}, u, state.Knobs{})
+	l := protocols.Link(st, state.Entry{ID: "r", Kind: "reality-tcp", Port: 443, SNI: "www.b.com"}, u, state.Knobs{})
 	if !strings.Contains(l, "@direct.example.com:443?") {
 		t.Errorf("direct entry should use the direct domain: %s", l)
 	}
-	if l = Link(st, state.Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, state.Knobs{}); !strings.Contains(l, "@direct.example.com:5000?") {
+	if l = protocols.Link(st, state.Entry{ID: "hy", Kind: "hysteria2", Port: 5000}, u, state.Knobs{}); !strings.Contains(l, "@direct.example.com:5000?") {
 		t.Errorf("hysteria2 should use the direct domain: %s", l)
 	}
 	cdn := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
-	l = Link(st, cdn, u, state.Knobs{FP: "firefox", Mode: "packet-up"})
+	l = protocols.Link(st, cdn, u, state.Knobs{FP: "firefox", Mode: "packet-up"})
 	pu, err := url.Parse(l)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +192,7 @@ func TestDomainsInLinks(t *testing.T) {
 		q.Get("host") != "cdn.example.com" || q.Get("fp") != "firefox" || q.Get("mode") != "packet-up" || q.Get("path") != "/p" || q.Get("flow") != "" {
 		t.Errorf("bad CDN link: %s", l)
 	}
-	ob := Outbound(st, cdn, u, state.Knobs{}, "proxy")
+	ob := protocols.Outbound(st, cdn, u, state.Knobs{}, "proxy")
 	if addr := ob["settings"].(J)["vnext"].([]J)[0]["address"]; addr != "cdn.example.com" {
 		t.Errorf("CDN outbound address %v", addr)
 	}
@@ -198,20 +200,20 @@ func TestDomainsInLinks(t *testing.T) {
 	if ss["security"] != "tls" || ss["xhttpSettings"].(J)["host"] != "cdn.example.com" {
 		t.Errorf("CDN outbound stream settings: %v", ss)
 	}
-	ib := ServerConfig(st, []state.Entry{cdn}, []state.User{u})["inbounds"].([]J)[0]
+	ib := protocols.ServerConfig(st, []state.Entry{cdn}, []state.User{u})["inbounds"].([]J)[0]
 	iss := ib["streamSettings"].(J)
 	if iss["security"] != "tls" || iss["network"] != "xhttp" || iss["tlsSettings"].(J)["certificates"] == nil {
 		t.Errorf("CDN inbound needs TLS with the origin certificate: %v", iss)
 	}
 	st.Domain = ""
-	if l = Link(st, state.Entry{ID: "s", Kind: "ss2022", Port: 4000}, u, state.Knobs{}); !strings.Contains(l, "@203.0.113.7:4000") {
+	if l = protocols.Link(st, state.Entry{ID: "s", Kind: "ss2022", Port: 4000}, u, state.Knobs{}); !strings.Contains(l, "@203.0.113.7:4000") {
 		t.Errorf("without a direct domain links use the IP: %s", l)
 	}
 }
 
 func TestTestCertsCoverAllTLSInbounds(t *testing.T) {
 	st := testState()
-	cfg := ServerConfig(st, []state.Entry{{ID: "hy", Kind: "hysteria2", Port: 1}, {ID: "c", Kind: "cdn-xhttp", Port: 2, Path: "/p"},
+	cfg := protocols.ServerConfig(st, []state.Entry{{ID: "hy", Kind: "hysteria2", Port: 1}, {ID: "c", Kind: "cdn-xhttp", Port: 2, Path: "/p"},
 		{ID: "r", Kind: "reality-tcp", Port: 3, SNI: "x.com"}, {ID: "s", Kind: "ss2022", Port: 4}}, []state.User{state.NewUser("a")})
 	testCerts(cfg, "/t")
 	for _, ib := range cfg["inbounds"].([]J) {
@@ -247,7 +249,7 @@ func TestSubscriptionIsBase64Links(t *testing.T) {
 	st := testState()
 	st.Entries = []state.Entry{{ID: "a", Kind: "reality-tcp", Port: 1, SNI: "x.com"}}
 	u := state.NewUser("z")
-	raw, err := base64.StdEncoding.DecodeString(Subscription(st, u))
+	raw, err := base64.StdEncoding.DecodeString(protocols.Subscription(st, u))
 	if err != nil || !strings.HasPrefix(string(raw), "vless://"+u.UUID) {
 		t.Errorf("subscription body: %q %v", raw, err)
 	}
@@ -683,7 +685,7 @@ func TestFailoverConfig(t *testing.T) {
 	st := testState()
 	st.Country, st.CDNDomain = "ir", "cdn.example.com"
 	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p", Mode: "packet-up"}}
-	cfg := FailoverConfig(st, state.NewUser("ann"))
+	cfg := protocols.FailoverConfig(st, state.NewUser("ann"))
 	b, _ := json.Marshal(cfg)
 	s := string(b)
 	for _, want := range []string{`"proxy-r-tcp"`, `"proxy-cdn-xhttp"`, `"balancerTag":"auto"`, `"leastPing"`, `geosite:category-ir`, `geoip:ir`, `"fallbackTag":"proxy-r-tcp"`} {
@@ -692,7 +694,7 @@ func TestFailoverConfig(t *testing.T) {
 		}
 	}
 	st.Country = ""
-	if b, _ = json.Marshal(FailoverConfig(st, state.NewUser("ann"))); strings.Contains(string(b), "geoip:ir") {
+	if b, _ = json.Marshal(protocols.FailoverConfig(st, state.NewUser("ann"))); strings.Contains(string(b), "geoip:ir") {
 		t.Error("country rules without a country")
 	}
 }

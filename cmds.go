@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -517,7 +519,7 @@ func cmdWarp(args []string) error {
 		return err
 	}
 	fs := flag.NewFlagSet("warp", flag.ExitOnError)
-	domains := fs.String("domains", "", "routing domains that use WARP, comma-separated (default: "+strings.Join(defaultWarpDomains, ",")+")")
+	domains := fs.String("domains", "", "routing domains that use WARP, comma-separated (default: "+strings.Join(protocols.DefaultWarpDomains, ",")+")")
 	all := fs.Bool("all", false, "send all traffic through WARP")
 	pos := parse(fs, args)
 	r, err := remote.OpenLocal()
@@ -596,7 +598,7 @@ func printLinksJSON(w io.Writer, st *state.State, name string) error {
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	out := J{"name": u.Name, "enabled": u.Enabled, "links": Links(st, *u)}
+	out := J{"name": u.Name, "enabled": u.Enabled, "links": protocols.Links(st, *u)}
 	if sub := SubURL(st, *u); sub != "" {
 		out["subscription"], out["failover"] = sub, sub+"/json"
 	}
@@ -615,7 +617,7 @@ func printLinksQR(w io.Writer, st *state.State, name string) error {
 		fmt.Fprintf(w, "%s: subscription\n", u.Name)
 		return printQR(w, sub)
 	}
-	for _, l := range NamedLinks(st, *u) {
+	for _, l := range protocols.NamedLinks(st, *u) {
 		fmt.Fprintf(w, "\n%s: %s\n", u.Name, l.Name)
 		if err := printQR(w, l.URL); err != nil {
 			return err

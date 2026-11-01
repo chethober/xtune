@@ -18,6 +18,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 )
 
@@ -111,7 +113,7 @@ func sampleCF(n int, rnd *mrand.Rand) []string {
 // variable so tests can stand in for the edge.
 var cfProbe = func(ctx context.Context, ip string, port int, sni string) (string, error) {
 	var d net.Dialer
-	c, err := d.DialContext(ctx, "tcp", hostPort(ip, port))
+	c, err := d.DialContext(ctx, "tcp", protocols.HostPort(ip, port))
 	if err != nil {
 		return "", err
 	}
@@ -233,7 +235,7 @@ func cleanIPTargets(st *state.State, entries []state.Entry) map[string][]state.E
 		if host == "" {
 			continue
 		}
-		k := hostPort(host, port)
+		k := protocols.HostPort(host, port)
 		out[k] = append(out[k], e)
 	}
 	return out

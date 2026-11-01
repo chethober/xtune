@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -317,16 +319,16 @@ func TestCleanIPVariants(t *testing.T) {
 	u := state.NewUser("bob")
 	e := entries[1]
 	k := state.Knobs{FP: "chrome", Frag: "none", Mode: "auto", Addr: "104.16.1.1"}
-	l := Link(st, e, u, k)
+	l := protocols.Link(st, e, u, k)
 	pu, _ := url.Parse(l)
 	if pu.Hostname() != "104.16.1.1" || pu.Query().Get("sni") != "cdn.example.com" || pu.Query().Get("host") != "cdn.example.com" {
 		t.Errorf("clean-IP link %s", l)
 	}
-	ob := Outbound(st, e, u, k, "p")
+	ob := protocols.Outbound(st, e, u, k, "p")
 	if a := ob["settings"].(J)["vnext"].([]J)[0]["address"]; a != "104.16.1.1" {
 		t.Errorf("outbound dials %v", a)
 	}
-	if dialAddr(st, entries[0], state.Knobs{Addr: "104.16.1.1"}) != st.Addr() {
+	if protocols.DialAddr(st, entries[0], state.Knobs{Addr: "104.16.1.1"}) != st.Addr() {
 		t.Error("a clean IP must not apply to direct configs")
 	}
 	// deploying keeps the domain: the clean IP reaches the network it was found on through the rankings
@@ -716,7 +718,7 @@ func TestExtraWorkers(t *testing.T) {
 	}
 	// clients get a copy of the workers.dev config through it, not of the custom-domain one
 	u := state.NewUser("bob")
-	links := NamedLinks(st, u)
+	links := protocols.NamedLinks(st, u)
 	var names []string
 	for _, l := range links {
 		names = append(names, l.Name)
@@ -724,7 +726,7 @@ func TestExtraWorkers(t *testing.T) {
 	if strings.Join(names, ",") != "worker,worker-2,worker-dom" || !strings.Contains(links[1].URL, "sni="+x.Host) {
 		t.Errorf("links %v", names)
 	}
-	if obs := FailoverConfig(st, u)["outbounds"].([]J); obs[1]["tag"] != "proxy-worker-2" {
+	if obs := protocols.FailoverConfig(st, u)["outbounds"].([]J); obs[1]["tag"] != "proxy-worker-2" {
 		t.Errorf("failover outbounds: %v", obs[1]["tag"])
 	}
 	// moving the inbound moves both Workers
@@ -941,7 +943,7 @@ func TestAutopilotRotates(t *testing.T) {
 	if got, _ := state.Load(r); got == nil || got.ClientIP != next {
 		t.Error("the new address was not saved")
 	}
-	link := Link(st, st.Entries[0], state.NewUser("bob"), state.Knobs{})
+	link := protocols.Link(st, st.Entries[0], state.NewUser("bob"), state.Knobs{})
 	if !strings.Contains(link, "@"+next+":443") {
 		t.Errorf("links should use the new address: %s", link)
 	}
@@ -978,20 +980,20 @@ func TestTrojanReality(t *testing.T) {
 	if !e.Reality() || e.Net() != "tcp" || !e.Xray() || e.Family() != "trojan" {
 		t.Errorf("kind: reality=%v net=%q", e.Reality(), e.Net())
 	}
-	ib := inbound(st, e, []state.User{u})
+	ib := protocols.Inbound(st, e, []state.User{u})
 	ss := ib["streamSettings"].(J)
 	if ib["protocol"] != "trojan" || ss["network"] != "tcp" || ss["security"] != "reality" ||
 		ib["settings"].(J)["clients"].([]J)[0]["password"] != u.UUID {
 		t.Errorf("inbound %v", ib)
 	}
-	ob := Outbound(st, e, u, state.Knobs{FP: "firefox", Frag: "frag-mild"}, "p")
+	ob := protocols.Outbound(st, e, u, state.Knobs{FP: "firefox", Frag: "frag-mild"}, "p")
 	srv := ob["settings"].(J)["servers"].([]J)[0]
 	oss := ob["streamSettings"].(J)
 	if ob["protocol"] != "trojan" || srv["password"] != u.UUID || srv["port"] != 8443 ||
 		oss["realitySettings"].(J)["fingerprint"] != "firefox" || oss["sockopt"].(J)["dialerProxy"] != "frag-mild" {
 		t.Errorf("outbound %v", ob)
 	}
-	l := Link(st, e, u, state.Knobs{FP: "chrome"})
+	l := protocols.Link(st, e, u, state.Knobs{FP: "chrome"})
 	pu, _ := url.Parse(l)
 	q := pu.Query()
 	if pu.Scheme != "trojan" || pu.User.Username() != u.UUID || q.Get("security") != "reality" || q.Get("pbk") != "pub" ||
@@ -1045,19 +1047,19 @@ func TestCDNOverHTTP3(t *testing.T) {
 		t.Fatalf("h3 variants %+v", h3)
 	}
 	u := state.NewUser("bob")
-	tls := Outbound(st, e, u, h3[0].K, "p")["streamSettings"].(J)["tlsSettings"].(J)
+	tls := protocols.Outbound(st, e, u, h3[0].K, "p")["streamSettings"].(J)["tlsSettings"].(J)
 	if a := tls["alpn"].([]string); len(a) != 1 || a[0] != "h3" || tls["fingerprint"] != nil || tls["serverName"] != "cdn.example.com" {
 		t.Errorf("h3 tls %v", tls)
 	}
-	q := mustQuery(t, Link(st, e, u, h3[0].K))
+	q := mustQuery(t, protocols.Link(st, e, u, h3[0].K))
 	if q.Get("alpn") != "h3" || q.Has("fp") || q.Get("sni") != "cdn.example.com" {
 		t.Errorf("h3 link %v", q)
 	}
-	if q := mustQuery(t, Link(st, e, u, state.Knobs{FP: "chrome"})); q.Get("alpn") != "h2,http/1.1" {
+	if q := mustQuery(t, protocols.Link(st, e, u, state.Knobs{FP: "chrome"})); q.Get("alpn") != "h2,http/1.1" {
 		t.Errorf("TCP link lost its ALPN: %v", q)
 	}
 	// the server side does not change: the CDN reaches the origin over TCP
-	ib := inbound(st, e, []state.User{u})
+	ib := protocols.Inbound(st, e, []state.User{u})
 	if a := ib["streamSettings"].(J)["tlsSettings"].(J)["alpn"].([]string); a[0] != "h2" {
 		t.Errorf("origin ALPN %v", a)
 	}

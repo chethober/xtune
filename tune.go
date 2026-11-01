@@ -22,16 +22,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/net/proxy"
 )
 
-const (
-	probeURL = "https://www.gstatic.com/generate_204"
-	upURL    = "https://speed.cloudflare.com/__up"
-)
+// upURL takes uploads, for the upload measurement.
+const upURL = "https://speed.cloudflare.com/__up"
 
 var sniCandidates = []string{"www.samsung.com", "www.nvidia.com", "www.amd.com", "www.microsoft.com", "dl.google.com",
 	"www.speedtest.net", "www.intel.com", "www.sony.com", "swdist.apple.com", "addons.mozilla.org"}
@@ -359,7 +359,7 @@ func ExpandVariants(entries []state.Entry, depth string, resolvers ...string) []
 		switch {
 		case e.Kind == "reality-tcp" && e.Primary:
 			for _, f := range fps {
-				for _, g := range fragNames {
+				for _, g := range protocols.FragNames {
 					ks = append(ks, state.Knobs{FP: f, Frag: g})
 				}
 			}
@@ -367,7 +367,7 @@ func ExpandVariants(entries []state.Entry, depth string, resolvers ...string) []
 			ks = []state.Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
 		case e.Kind == "reality-xhttp" || e.Kind == "cdn-xhttp":
 			for _, f := range fps[:2] {
-				for _, g := range fragNames {
+				for _, g := range protocols.FragNames {
 					ks = append(ks, state.Knobs{FP: f, Frag: g, Mode: "auto"})
 				}
 			}
@@ -386,7 +386,7 @@ func ExpandVariants(entries []state.Entry, depth string, resolvers ...string) []
 		case e.Kind == "trojan-reality":
 			ks = []state.Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
 		case e.Kind == "reality-grpc":
-			for _, g := range fragNames {
+			for _, g := range protocols.FragNames {
 				ks = append(ks, state.Knobs{FP: "chrome", Frag: g})
 			}
 		case e.Kind == "vlessenc-xhttp":
@@ -398,7 +398,7 @@ func ExpandVariants(entries []state.Entry, depth string, resolvers ...string) []
 		case e.Kind == "amneziawg":
 			ks = awgVariants()
 		case e.Kind == "worker-ws": // fragmenting the ClientHello hides workers.dev from SNI filters
-			for _, g := range fragNames {
+			for _, g := range protocols.FragNames {
 				ks = append(ks, state.Knobs{FP: "chrome", Frag: g})
 			}
 			ks = append(ks, state.Knobs{FP: "firefox", Frag: "none"})
@@ -409,9 +409,9 @@ func ExpandVariants(entries []state.Entry, depth string, resolvers ...string) []
 		case e.Kind == "dnstt":
 			rs := append(resolvers, localResolvers()...)
 			if depth == "deep" {
-				rs = append(rs, dnsResolvers...)
+				rs = append(rs, protocols.DNSResolvers...)
 			} else {
-				rs = append(rs, dnsResolvers[0], dnsResolvers[1], dnsResolvers[3])
+				rs = append(rs, protocols.DNSResolvers[0], protocols.DNSResolvers[1], protocols.DNSResolvers[3])
 			}
 			seen := map[string]bool{}
 			for _, r := range rs {
@@ -523,7 +523,7 @@ func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir
 		h.stop()
 		return nil, err
 	}
-	cfg := J{"log": J{"loglevel": "error"}, "inbounds": []J{}, "outbounds": fragOutbounds(), "routing": J{"rules": []J{}}}
+	cfg := J{"log": J{"loglevel": "error"}, "inbounds": []J{}, "outbounds": protocols.FragOutbounds(), "routing": J{"rules": []J{}}}
 	for i, v := range vs {
 		v.port = ports[i]
 		cfg["inbounds"] = append(cfg["inbounds"].([]J), J{"tag": fmt.Sprintf("in%d", i), "listen": "127.0.0.1",
@@ -532,7 +532,7 @@ func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir
 		if v.Entry.Kind == "wireguard" && testPeers {
 			ou = wgVariantUser(u, v.K)
 		}
-		cfg["outbounds"] = append(cfg["outbounds"].([]J), Outbound(st, v.Entry, ou, v.K, fmt.Sprintf("out%d", i)))
+		cfg["outbounds"] = append(cfg["outbounds"].([]J), protocols.Outbound(st, v.Entry, ou, v.K, fmt.Sprintf("out%d", i)))
 		rules := cfg["routing"].(J)["rules"].([]J)
 		cfg["routing"].(J)["rules"] = append(rules, J{"inboundTag": []string{fmt.Sprintf("in%d", i)}, "outboundTag": fmt.Sprintf("out%d", i)})
 	}
@@ -618,7 +618,7 @@ func probe(v *Variant, n int) {
 			_, err := v.handshake(ctx)
 			good = err == nil
 		} else {
-			req, _ := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+			req, _ := http.NewRequestWithContext(ctx, "GET", protocols.ProbeURL, nil)
 			resp, err := c.Do(req)
 			if err == nil {
 				io.Copy(io.Discard, resp.Body)
@@ -937,7 +937,7 @@ func Report(w io.Writer, o TuneOpts, st *state.State, u state.User, vs []*Varian
 	}
 	defer lf.Close()
 	for i, v := range best {
-		link := Link(st, v.Entry, u, v.K) // "" for VPNs and the DNS tunnel, which take profile files
+		link := protocols.Link(st, v.Entry, u, v.K) // "" for VPNs and the DNS tunnel, which take profile files
 		note := ""
 		if v.K.Frag != "none" {
 			note = "  (best result used client-side TLS fragment " + v.K.Frag + ")"
@@ -947,7 +947,7 @@ func Report(w io.Writer, o TuneOpts, st *state.State, u state.User, vs []*Varian
 			fmt.Fprintln(lf, link)
 		}
 		if v.Entry.Xray() {
-			writeJSON(filepath.Join(o.Out, "client_"+v.Entry.ID+".json"), ClientConfig(Outbound(st, v.Entry, u, v.K, "proxy")))
+			writeJSON(filepath.Join(o.Out, "client_"+v.Entry.ID+".json"), protocols.ClientConfig(protocols.Outbound(st, v.Entry, u, v.K, "proxy")))
 		}
 	}
 	return best, nil
@@ -1067,18 +1067,18 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 	tuneUser := state.NewUser("tune")
 	tuneUser.WGIP = state.WgSubnet.Addr().Next().Next().String()
 	testDir := remote.Dir + "/test"
-	cfg := ServerConfig(st, entries, wgTestPeers(tuneUser, entries))
+	cfg := protocols.ServerConfig(st, entries, wgTestPeers(tuneUser, entries))
 	testCerts(cfg, testDir)
 	cfgJSON, _ := json.MarshalIndent(cfg, "", " ")
 	files := map[string]string{testDir + "/hy.crt": st.CertPEM, testDir + "/hy.key": st.KeyPEM, remote.Dir + "/test.json": string(cfgJSON)}
 	var extras []string
 	if state.HasEngine(entries, "tunnel") {
-		tc, _ := json.MarshalIndent(buildTunnelConf(st, entries, []state.User{tuneUser}, ""), "", " ")
+		tc, _ := json.MarshalIndent(protocols.TunnelServerConf(st, entries, []state.User{tuneUser}, ""), "", " ")
 		files[testDir+"/tunnels.json"] = string(tc)
 		extras = append(extras, "tunnels")
 	}
 	if state.HasEngine(entries, "awg") { // its clients' range is NATed for the test only (tnet:)
-		ac, _ := json.MarshalIndent(buildAWGConf(st, entries, awgTestPeers(tuneUser), ""), "", " ")
+		ac, _ := json.MarshalIndent(protocols.AWGServerConf(st, entries, awgTestPeers(tuneUser), ""), "", " ")
 		files[testDir+"/awg.json"] = string(ac)
 		for _, x := range awgSpecs(entries) {
 			extras = append(extras, strings.Replace(x, "net:", "tnet:", 1))
@@ -1191,7 +1191,7 @@ func supported(bin string, st *state.State, entries []state.Entry, log func(stri
 	var keep []state.Entry
 	for _, e := range entries {
 		if e.Hop != "" {
-			cfg := ClientConfig(Outbound(st, e, state.NewUser("t"), state.Knobs{}, "proxy"))
+			cfg := protocols.ClientConfig(protocols.Outbound(st, e, state.NewUser("t"), state.Knobs{}, "proxy"))
 			if err := xrayAccepts(bin, cfg); err != nil {
 				log("[!] the local Xray cannot do Hysteria2 port hopping (update it with `xtune xray update`); skipping " + e.ID)
 				continue
@@ -1199,8 +1199,8 @@ func supported(bin string, st *state.State, entries []state.Entry, log func(stri
 		}
 		if e.Trojan() { // the server side too: the test instance would not start with an inbound Xray rejects
 			u := state.NewUser("t")
-			cfg := ClientConfig(Outbound(st, e, u, state.Knobs{FP: "chrome"}, "proxy"))
-			cfg["inbounds"] = append(cfg["inbounds"].([]J), inbound(st, e, []state.User{u}))
+			cfg := protocols.ClientConfig(protocols.Outbound(st, e, u, state.Knobs{FP: "chrome"}, "proxy"))
+			cfg["inbounds"] = append(cfg["inbounds"].([]J), protocols.Inbound(st, e, []state.User{u}))
 			if err := xrayAccepts(bin, cfg); err != nil {
 				log("[!] the local Xray cannot do Trojan over REALITY (update it with `xtune xray update`); skipping " + e.ID)
 				continue
@@ -1218,7 +1218,7 @@ func supportedKnobs(bin string, st *state.State, vs []*Variant, log func(string)
 	if i < 0 {
 		return vs
 	}
-	if err := xrayAccepts(bin, ClientConfig(Outbound(st, vs[i].Entry, state.NewUser("t"), vs[i].K, "proxy"))); err == nil {
+	if err := xrayAccepts(bin, protocols.ClientConfig(protocols.Outbound(st, vs[i].Entry, state.NewUser("t"), vs[i].K, "proxy"))); err == nil {
 		return vs
 	}
 	log("[!] the local Xray cannot do XHTTP over HTTP/3 (update it with `xtune xray update`); skipping those variants")
@@ -1246,7 +1246,7 @@ func testCerts(cfg J, dir string) {
 	for _, ib := range cfg["inbounds"].([]J) {
 		ss, _ := ib["streamSettings"].(J) // shadowsocks has none
 		if ts, ok := ss["tlsSettings"].(J); ok {
-			ts["certificates"] = certFiles(dir)
+			ts["certificates"] = protocols.CertFiles(dir)
 		}
 	}
 }

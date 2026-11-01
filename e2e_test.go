@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -71,7 +73,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	}
 	defer func() { srv.Process.Kill(); srv.Wait() }()
 	// the SSH tunnels: xtune's own server, in this process, with the config the deploy wrote
-	var tc TunnelConf
+	var tc protocols.TunnelConf
 	json.Unmarshal([]byte(fs.files[remote.Dir+"/tunnels.json"]), &tc)
 	tc.Stats = filepath.Join(dir, "tunnels-stats.json")
 	writeJSON(filepath.Join(dir, "tunnels.json"), tc)
@@ -146,7 +148,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	cport, _ := freePorts(len(st.Entries))
 	ccfg := J{"log": J{"loglevel": "warning"}, "inbounds": []J{}, "outbounds": []J{}, "routing": J{"rules": []J{}}}
 	for i, e := range st.Entries {
-		ob := Outbound(st, e, st.Users[0], e.Knobs(), "out"+itoa(i))
+		ob := protocols.Outbound(st, e, st.Users[0], e.Knobs(), "out"+itoa(i))
 		ob["streamSettings"].(J)["tlsSettings"].(J)["certificates"] = []J{{"usage": "verify", "certificateFile": filepath.Join(dir, "ca.crt")}}
 		ccfg["outbounds"] = append(ccfg["outbounds"].([]J), ob)
 		ccfg["inbounds"] = append(ccfg["inbounds"].([]J), J{"tag": "in" + itoa(i), "listen": "127.0.0.1", "port": cport[i], "protocol": "socks"})

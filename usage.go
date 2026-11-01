@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -94,7 +96,7 @@ func credential(e state.Entry, u state.User) string {
 	case "ss2022":
 		return u.SSKey
 	case "wireguard":
-		_, pub := wgUserKey(u)
+		_, pub := protocols.WGUserKey(u)
 		return pub
 	}
 	return u.UUID // VLESS id, Hysteria2 auth
@@ -215,7 +217,7 @@ func reconcile(r *remote.Server, st *state.State, active []state.User) error {
 			}
 		}
 		if len(missing) > 0 {
-			add = append(add, inbound(st, e, missing))
+			add = append(add, protocols.Inbound(st, e, missing))
 			adds += len(missing)
 		}
 	}

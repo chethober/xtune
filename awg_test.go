@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
@@ -60,7 +62,7 @@ func TestAWGAddressesAndPlan(t *testing.T) {
 		t.Errorf("deployed entries leave the test ranges: %+v", deployed[1])
 	}
 	u := state.User{WGIP: "10.66.3.7"}
-	if a := awgAddr(deployed[1], u); a.String() != "10.80.3.7" {
+	if a := protocols.AWGAddr(deployed[1], u); a.String() != "10.80.3.7" {
 		t.Errorf("user address %s", a)
 	}
 	if s := awgServerAddr(deployed[1]); s.String() != "10.80.0.1/16" {
@@ -74,7 +76,7 @@ func TestAWGAddressesAndPlan(t *testing.T) {
 	peers := awgTestPeers(tu)
 	keys, ips := map[string]bool{}, map[string]bool{}
 	for _, p := range peers {
-		_, pub := awgUserKey(p)
+		_, pub := protocols.AWGUserKey(p)
 		keys[pub], ips[p.WGIP] = true, true
 	}
 	if len(peers) != len(awgVariants()) || len(keys) != len(peers) || len(ips) != len(peers) {
@@ -93,7 +95,7 @@ func TestAWGProfile(t *testing.T) {
 	u.WGIP = "10.66.0.9"
 	e := state.Entry{ID: "awg", Kind: "amneziawg", Port: 51999, Subnet: "10.80.0.0/16", MTU: 1280, Mode: "quic"}
 	st.Entries = []state.Entry{e}
-	conf := AWGConfFile(st, e, u)
+	conf := protocols.AWGConfFile(st, e, u)
 	for _, want := range []string{"Address = 10.80.0.9/32", "MTU = 1280", "Endpoint = 203.0.113.7:51999", "I1 = <b 0xc3",
 		"PublicKey = " + st.AWG.Public, "H4 = " + itoa(int(st.AWG.H4)), "S1 = " + itoa(st.AWG.S1)} {
 		if !strings.Contains(conf, want) {
@@ -101,25 +103,25 @@ func TestAWGProfile(t *testing.T) {
 		}
 	}
 	e.Mode = ""
-	if strings.Contains(AWGConfFile(st, e, u), "I1") {
+	if strings.Contains(protocols.AWGConfFile(st, e, u), "I1") {
 		t.Error("the I1 line is only for the quic variant (older apps reject it)")
 	}
-	ps := Profiles(st, u)
-	if len(ps) != 1 || !strings.HasSuffix(ps[0].File, ".conf") || Link(st, e, u, e.Knobs()) != "" {
+	ps := protocols.Profiles(st, u)
+	if len(ps) != 1 || !strings.HasSuffix(ps[0].File, ".conf") || protocols.Link(st, e, u, e.Knobs()) != "" {
 		t.Errorf("AmneziaWG comes as a profile file: %+v", ps)
 	}
 }
 
 // awgTestServer runs the server side of entry e on a userspace network stack, with an HTTP
 // server answering 204 on the server's tunnel address.
-func awgTestServer(t *testing.T, c AWGConf, e state.Entry) *device.Device {
+func awgTestServer(t *testing.T, c protocols.AWGConf, e state.Entry) *device.Device {
 	t.Helper()
 	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{awgServerAddr(e).Addr()}, nil, 1420)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := device.NewDevice(newNetTUN(tdev), conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
-	if err := d.IpcSet(c.uapiServer(e)); err != nil {
+	if err := d.IpcSet(c.UAPIServer(e)); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Up(); err != nil {
@@ -145,7 +147,7 @@ func TestAWGEndToEnd(t *testing.T) {
 	ports, _ := freeUDPPorts(t, 1)
 	e := state.Entry{ID: "awg", Kind: "amneziawg", Port: ports[0], Subnet: awgSubnet(0, true)}
 	tu := state.User{Name: "tune", UUID: state.NewUUID(), Enabled: true, WGIP: "10.66.0.2"}
-	c := buildAWGConf(st, []state.Entry{e}, awgTestPeers(tu), "")
+	c := protocols.AWGServerConf(st, []state.Entry{e}, awgTestPeers(tu), "")
 	srv := awgTestServer(t, c, e)
 
 	for _, k := range awgVariants() {
@@ -190,7 +192,7 @@ func TestAWGPeerReload(t *testing.T) {
 	ports, _ := freeUDPPorts(t, 1)
 	e := state.Entry{ID: "awg", Kind: "amneziawg", Port: ports[0], Subnet: awgSubnet(0, true)}
 	ann, bob := state.User{Name: "ann", UUID: state.NewUUID(), Enabled: true, WGIP: "10.66.0.2"}, state.User{Name: "bob", UUID: state.NewUUID(), Enabled: true, WGIP: "10.66.0.3"}
-	srv := awgTestServer(t, buildAWGConf(st, []state.Entry{e}, []state.User{ann}, ""), e)
+	srv := awgTestServer(t, protocols.AWGServerConf(st, []state.Entry{e}, []state.User{ann}, ""), e)
 	get := func(u state.User) error {
 		d := awgDial(st, e, u, state.Knobs{})
 		defer d.Close()
@@ -206,7 +208,7 @@ func TestAWGPeerReload(t *testing.T) {
 	}
 	bob2 := bob
 	ann.Enabled = false
-	if err := srv.IpcSet(buildAWGConf(st, []state.Entry{e}, []state.User{ann, bob2}, "").uapiPeers(e)); err != nil {
+	if err := srv.IpcSet(protocols.AWGServerConf(st, []state.Entry{e}, []state.User{ann, bob2}, "").UAPIPeers(e)); err != nil {
 		t.Fatal(err)
 	}
 	if err := get(bob); err != nil {

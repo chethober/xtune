@@ -12,9 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
 
@@ -29,9 +30,6 @@ import (
 // working when one server's IP is blocked. Quotas count traffic on every server, and so do device
 // limits: followers report who is online, the primary counts each user's devices on all servers
 // and tells followers which IPs to block.
-
-// peerStale is how long a follower that stopped reporting stays in subscriptions.
-const peerStale = 24 * time.Hour
 
 type peerReport struct {
 	Name   string              `json:"name"`
@@ -67,55 +65,6 @@ func peerState(st *state.State) *state.State {
 	return p
 }
 
-// peerServers are this deployment and, on a primary, the followers that reported recently, with
-// their entries named after them.
-func peerServers(st *state.State) []*state.State {
-	out := []*state.State{st}
-	if st.Peers == nil {
-		return out
-	}
-	names := make([]string, 0, len(st.Peers.Servers))
-	for n := range st.Peers.Servers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		p := st.Peers.Servers[n]
-		if p.State == nil || time.Since(time.Unix(p.Seen, 0)) > peerStale {
-			continue
-		}
-		ps := *p.State
-		ps.Entries = nil
-		for _, e := range p.State.Entries {
-			e.ID = n + "-" + e.ID
-			ps.Entries = append(ps.Entries, e)
-		}
-		out = append(out, &ps)
-	}
-	return out
-}
-
-// NamedLinks are the user's share links on every server, named by config.
-func NamedLinks(st *state.State, u state.User) []pageLink {
-	var out []pageLink
-	for _, s := range subServers(st) {
-		for _, e := range linkEntries(s) {
-			if l := Link(s, e, u, e.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
-				out = append(out, pageLink{Name: e.ID, URL: l})
-			}
-		}
-	}
-	return out
-}
-
-func Links(st *state.State, u state.User) []string {
-	var out []string
-	for _, l := range NamedLinks(st, u) {
-		out = append(out, l.URL)
-	}
-	return out
-}
-
 // errFollower is returned for user changes on a follower: the primary owns the users.
 func errFollower(st *state.State) error {
 	host := st.Follow.URL
@@ -132,7 +81,7 @@ func PeerURL(st *state.State) string {
 	if st.Peers == nil || subHost(st) == "" {
 		return ""
 	}
-	return "https://" + hostPort(subHost(st), st.Sub.Port) + "/" + st.Sub.Path + "/peer/" + st.Peers.Secret
+	return "https://" + protocols.HostPort(subHost(st), st.Sub.Port) + "/" + st.Sub.Path + "/peer/" + st.Peers.Secret
 }
 
 // EnablePeers lets followers join; it needs the subscription server, which they report to.
@@ -443,7 +392,7 @@ func printPeers(st *state.State) {
 		if seen > 5*time.Minute {
 			state = "last report " + fmtSince(seen) + " ago"
 		}
-		if seen > peerStale {
+		if seen > protocols.PeerStale {
 			state += ", left out of subscriptions"
 		}
 		fmt.Printf("%-20s %-28s %s  (%s)\n", n, p.State.Addr(), strings.Join(ids, ", "), state)

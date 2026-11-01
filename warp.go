@@ -13,43 +13,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
 )
 
-// defaultWarpDomains are AI services that block datacenter IPs or whole countries.
-var defaultWarpDomains = []string{"geosite:category-ai-!cn", "geosite:google-gemini"}
-
 // warpAPI is Cloudflare's client API, as used by the WARP apps; a variable so tests can replace it.
 var warpAPI = "https://api.cloudflareclient.com/v0a2158"
-
-func warpOutbound(w *state.Warp) J {
-	addrs := []string{w.Address4 + "/32"}
-	if w.Address6 != "" {
-		addrs = append(addrs, w.Address6+"/128")
-	}
-	s := J{"secretKey": w.PrivateKey, "address": addrs, "mtu": 1280,
-		"peers": []J{{"publicKey": w.PeerKey, "endpoint": w.Endpoint}}}
-	if len(w.Reserved) == 3 {
-		s["reserved"] = w.Reserved
-	}
-	return J{"tag": "warp", "protocol": "wireguard", "settings": s}
-}
-
-func warpRule(w *state.Warp) J {
-	if w.All {
-		return J{"network": "tcp,udp", "outboundTag": "warp"}
-	}
-	return J{"domain": warpDomains(w), "outboundTag": "warp"}
-}
-
-func warpDomains(w *state.Warp) []string {
-	if len(w.Domains) == 0 {
-		return defaultWarpDomains
-	}
-	return w.Domains
-}
 
 func describeWarp(w *state.Warp) string {
 	if w == nil {
@@ -58,7 +30,7 @@ func describeWarp(w *state.Warp) string {
 	if w.All {
 		return "on, all traffic"
 	}
-	return "on for " + strings.Join(warpDomains(w), ", ")
+	return "on for " + strings.Join(protocols.WarpDomains(w), ", ")
 }
 
 // registerWarp creates a free WARP account for a new WireGuard key.

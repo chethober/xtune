@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -24,7 +26,7 @@ func metricsURL(st *state.State) string {
 	if st.Sub.Metrics == "" || subHost(st) == "" {
 		return ""
 	}
-	return "https://" + hostPort(subHost(st), st.Sub.Port) + "/" + st.Sub.Path + "/metrics"
+	return "https://" + protocols.HostPort(subHost(st), st.Sub.Port) + "/" + st.Sub.Path + "/metrics"
 }
 
 // metricsAuth checks the token from the header or the URL.
@@ -187,5 +189,5 @@ func printMetrics(w io.Writer, st *state.State) {
 	if st.Sub.Mode == "cdn" {
 		fmt.Fprintf(w, "    tls_config: {server_name: %s}\n", st.CDNDomain)
 	}
-	fmt.Fprintf(w, "    static_configs: [{targets: ['%s']}]\n", hostPort(subHost(st), st.Sub.Port))
+	fmt.Fprintf(w, "    static_configs: [{targets: ['%s']}]\n", protocols.HostPort(subHost(st), st.Sub.Port))
 }

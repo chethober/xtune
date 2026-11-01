@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -79,11 +81,11 @@ func TestPlanEntriesHop(t *testing.T) {
 		t.Errorf("helper specs: %s", specs)
 	}
 	st := testState()
-	l := Link(st, *hop, state.NewUser("a"), state.Knobs{})
+	l := protocols.Link(st, *hop, state.NewUser("a"), state.Knobs{})
 	if q := mustQuery(t, l); q.Get("mport") != hop.Hop {
 		t.Errorf("hysteria2 link lacks the hop range: %s", l)
 	}
-	ob, _ := json.Marshal(Outbound(st, *hop, state.NewUser("a"), state.Knobs{}, "p"))
+	ob, _ := json.Marshal(protocols.Outbound(st, *hop, state.NewUser("a"), state.Knobs{}, "p"))
 	if !strings.Contains(string(ob), `"udphop"`) || !strings.Contains(string(ob), `"remotePorts":"`+hop.Hop+`"`) {
 		t.Errorf("outbound lacks udphop: %s", ob)
 	}
@@ -108,7 +110,7 @@ func TestSplitCDNVariant(t *testing.T) {
 		t.Errorf("want 2 split variants (packet-up, stream-up), got %d", n)
 	}
 	k := state.Knobs{FP: "chrome", Frag: "none", Mode: "packet-up", Split: "cdn-up"}
-	ss := Outbound(st, cdn, state.NewUser("a"), k, "p")["streamSettings"].(J)
+	ss := protocols.Outbound(st, cdn, state.NewUser("a"), k, "p")["streamSettings"].(J)
 	down := ss["xhttpSettings"].(J)["extra"].(J)["downloadSettings"].(J)
 	if down["address"] != "direct.example.com" || down["port"] != 2053 || down["tlsSettings"].(J)["pinnedPeerCertSha256"] != "ff" {
 		t.Errorf("download half should go straight to the server, pinned: %v", down)
@@ -116,12 +118,12 @@ func TestSplitCDNVariant(t *testing.T) {
 	if ss["tlsSettings"].(J)["serverName"] != "cdn.example.com" {
 		t.Error("upload half should stay on the CDN")
 	}
-	q := mustQuery(t, Link(st, cdn, state.NewUser("a"), k))
+	q := mustQuery(t, protocols.Link(st, cdn, state.NewUser("a"), k))
 	var extra J
 	if err := json.Unmarshal([]byte(q.Get("extra")), &extra); err != nil || extra["downloadSettings"] == nil {
 		t.Errorf("link extra: %q %v", q.Get("extra"), err)
 	}
-	if q := mustQuery(t, Link(st, cdn, state.NewUser("a"), state.Knobs{Mode: "auto"})); q.Get("extra") != "" {
+	if q := mustQuery(t, protocols.Link(st, cdn, state.NewUser("a"), state.Knobs{Mode: "auto"})); q.Get("extra") != "" {
 		t.Error("extra on an unsplit link")
 	}
 	if e := (state.Entry{Kind: "cdn-xhttp", Split: "cdn-up", Mode: "stream-up"}); e.Knobs().Split != "cdn-up" {
@@ -139,8 +141,8 @@ func TestXrayAcceptsNewConfigs(t *testing.T) {
 	hop := state.Entry{ID: "hy2-hop", Kind: "hysteria2", Port: 30000, Hop: "21000-21999"}
 	cdn := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
 	for name, cfg := range map[string]J{
-		"hop":   ClientConfig(Outbound(st, hop, u, state.Knobs{}, "proxy")),
-		"split": ClientConfig(Outbound(st, cdn, u, state.Knobs{FP: "chrome", Mode: "packet-up", Split: "cdn-up"}, "proxy")),
+		"hop":   protocols.ClientConfig(protocols.Outbound(st, hop, u, state.Knobs{}, "proxy")),
+		"split": protocols.ClientConfig(protocols.Outbound(st, cdn, u, state.Knobs{FP: "chrome", Mode: "packet-up", Split: "cdn-up"}, "proxy")),
 		"relay": relayConfig("203.0.113.7", []state.Forward{{ID: "r-tcp", Port: 30443, To: 443, Net: "tcp"}, {ID: "hy2", Port: 30444, To: 8443, Net: "udp"}}),
 	} {
 		if err := xrayAccepts(bin, cfg); err != nil {
@@ -161,13 +163,13 @@ func TestXrayAcceptsNewConfigs(t *testing.T) {
 	entries := []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 30001, SNI: "www.microsoft.com"}, cdn, hop,
 		{ID: "ss2022", Kind: "ss2022", Port: 30002}}
 	u.SSKey = state.NewSSKey()
-	cfg := ServerConfig(st, entries, []state.User{u})
+	cfg := protocols.ServerConfig(st, entries, []state.User{u})
 	testCerts(cfg, dir)
 	if err := xrayAccepts(bin, cfg); err != nil {
 		t.Errorf("server config: %v", err)
 	}
 	st.Entries = entries
-	if err := xrayAccepts(bin, FailoverConfig(st, u)); err != nil {
+	if err := xrayAccepts(bin, protocols.FailoverConfig(st, u)); err != nil {
 		t.Errorf("failover config: %v", err)
 	}
 }

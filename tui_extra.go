@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/charmbracelet/huh"
@@ -275,7 +277,7 @@ func (t *tui) warp() error {
 	fmt.Println(dimStyle.Render("Many services refuse datacenter IPs or whole countries. With WARP, Xray reaches them\n" +
 		"through Cloudflare's free WARP network instead of this server's IP."))
 	choice := "ai"
-	opts := []huh.Option[string]{huh.NewOption("On for AI services ("+strings.Join(defaultWarpDomains, ", ")+")", "ai"),
+	opts := []huh.Option[string]{huh.NewOption("On for AI services ("+strings.Join(protocols.DefaultWarpDomains, ", ")+")", "ai"),
 		huh.NewOption("On for chosen sites ...", "custom"), huh.NewOption("On for all traffic", "all")}
 	if st.Warp != nil {
 		opts = append(opts, huh.NewOption("Off", "off"))

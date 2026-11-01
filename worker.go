@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 )
 
@@ -26,16 +28,12 @@ import (
 //go:embed worker.js
 var workerJS string
 
-// workerPath is the WebSocket path clients use: the entry's path, with Xray early data (the
-// first bytes go in a header, saving a round trip) that the Worker decodes.
-func workerPath(e state.Entry) string { return e.Path + "?ed=2560" }
-
 // workerRoutes maps each worker-ws entry's path to its inbound on the server at ip.
 func workerRoutes(entries []state.Entry, ip string) map[string]string {
 	routes := map[string]string{}
 	for _, e := range entries {
 		if e.Worker() {
-			routes[e.Path] = hostPort(ip, e.Port)
+			routes[e.Path] = protocols.HostPort(ip, e.Port)
 		}
 	}
 	return routes
@@ -265,7 +263,7 @@ func (o *TuneOpts) prepareWorker(host string, entries []state.Entry) []state.Ent
 				}
 				e.SNI = w.Domain
 			}
-			routes[e.Path] = hostPort(ip, e.Port)
+			routes[e.Path] = protocols.HostPort(ip, e.Port)
 		}
 		keep = append(keep, e)
 	}

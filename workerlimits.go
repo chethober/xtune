@@ -54,27 +54,6 @@ func workerRefs(st *state.State) []workerRef {
 	return refs
 }
 
-// linkEntries are the entries clients get: the deployed ones, plus a copy of each workers.dev
-// config for every extra Worker.
-func linkEntries(st *state.State) []state.Entry {
-	if st.Worker == nil || len(st.Worker.Extra) == 0 {
-		return st.Entries
-	}
-	var out []state.Entry
-	for _, e := range st.Entries {
-		out = append(out, e)
-		if !e.Worker() || e.SNI != st.Worker.Host {
-			continue
-		}
-		for i, x := range st.Worker.Extra {
-			c := e
-			c.ID, c.SNI = fmt.Sprintf("%s-%d", e.ID, i+2), x.Host
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // cfGraphQLAPI is a variable so tests can point it at a local server.
 var cfGraphQLAPI = "https://api.cloudflare.com/client/v4/graphql"
 

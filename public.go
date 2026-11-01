@@ -17,6 +17,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -212,7 +214,7 @@ func protocolNames(st *state.State) []string {
 		{"openvpn", "OpenVPN"}, {"ikev2", "IKEv2"}, {"amneziawg", "AmneziaWG"}, {"worker", "CF Worker"}, {"trojan", "Trojan"},
 	}
 	var out []string
-	for _, s := range peerServers(st) {
+	for _, s := range protocols.PeerServers(st) {
 		for _, e := range s.Entries {
 			for _, l := range labels {
 				if strings.HasPrefix(e.Kind, l.prefix) && !slices.Contains(out, l.name) {

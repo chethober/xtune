@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/remote"
 	"github.com/chethober/xtune/internal/state"
@@ -17,111 +18,18 @@ import (
 // Config and subscription names. Apps show a config by the name after "#" in its link, and a
 // subscription by its Profile-Title header; both come from the templates in state.Naming.
 
-var namePlaceholder = regexp.MustCompile(`\{(\w+)\}`)
-
 var configVars = []string{"flag", "country", "server", "user", "id", "proto", "port", "via"}
 var subVars = []string{"flag", "country", "server", "user"}
 
-// kindLabels are the protocol names shown for {proto}.
-var kindLabels = map[string]string{
-	"reality-tcp": "REALITY", "reality-xhttp": "REALITY XHTTP", "reality-grpc": "REALITY gRPC",
-	"vlessenc-tcp": "VLESS PQ", "vlessenc-xhttp": "VLESS PQ XHTTP", "cdn-xhttp": "CDN XHTTP",
-	"hysteria2": "Hysteria2", "ss2022": "Shadowsocks", "wireguard": "WireGuard", "worker-ws": "Worker",
-	"trojan-reality": "Trojan", "amneziawg": "AmneziaWG", "ssh": "SSH", "ssh-tls": "SSH TLS", "cdn-ssh": "CDN SSH",
-	"dnstt": "DNS tunnel", "mtproto": "MTProto", "openvpn-udp": "OpenVPN UDP", "openvpn-tcp": "OpenVPN TCP", "ikev2": "IKEv2",
-}
-
-func kindLabel(kind string) string {
-	if l, ok := kindLabels[kind]; ok {
-		return l
-	}
-	return kind
-}
-
-// flagEmoji is the flag of an ISO 3166-1 alpha-2 country code ("DE" → 🇩🇪), "" for anything else.
-func flagEmoji(cc string) string {
-	if !validCountryCode(cc) {
-		return ""
-	}
-	cc = strings.ToUpper(cc)
-	return string([]rune{rune(cc[0]) - 'A' + 0x1F1E6, rune(cc[1]) - 'A' + 0x1F1E6})
-}
-
-func validCountryCode(cc string) bool {
-	if len(cc) != 2 {
-		return false
-	}
-	for _, c := range strings.ToUpper(cc) {
-		if c < 'A' || c > 'Z' {
-			return false
-		}
-	}
-	return true
-}
-
-// serverFlag is the country code behind {flag} and {country}, "" when unknown or off.
-func serverFlag(st *state.State) string {
-	if validCountryCode(st.Naming.Flag) {
-		return strings.ToUpper(st.Naming.Flag)
-	}
-	return ""
-}
-
-// expandName fills a template and tidies it: placeholders left empty take their separators along.
-func expandName(tmpl string, vars map[string]string) string {
-	s := namePlaceholder.ReplaceAllStringFunc(tmpl, func(m string) string {
-		if v, ok := vars[m[1:len(m)-1]]; ok {
-			return v
-		}
-		return m
-	})
-	var out []string
-	for _, t := range strings.Fields(s) {
-		if isNameSep(t) && (len(out) == 0 || isNameSep(out[len(out)-1])) {
-			continue
-		}
-		out = append(out, t)
-	}
-	for len(out) > 0 && isNameSep(out[len(out)-1]) {
-		out = out[:len(out)-1]
-	}
-	return strings.Join(out, " ")
-}
-
-func isNameSep(t string) bool {
-	return strings.Trim(t, "-·|/•,:–—") == ""
-}
-
-func nameVars(st *state.State, u state.User) map[string]string {
-	cc := serverFlag(st)
-	return map[string]string{"flag": flagEmoji(cc), "country": cc, "server": st.Naming.Label, "user": u.Name}
-}
-
-// configName is what apps show for one config of u.
-func configName(st *state.State, e state.Entry, u state.User) string {
-	v := nameVars(st, u)
-	v["id"], v["proto"], v["port"] = e.ID, kindLabel(e.Kind), fmt.Sprint(clientPort(e))
-	v["via"] = ""
-	if st.Naming.Via != "" {
-		v["via"] = "via " + st.Naming.Via
-	}
-	return expandName(orStr(st.Naming.Config, state.DefaultConfigName), v)
-}
-
-// subName is the subscription's name in apps (Profile-Title) and of the failover config.
-func subName(st *state.State, u state.User) string {
-	return expandName(orStr(st.Naming.Sub, state.DefaultSubName), nameVars(st, u))
-}
-
 // subImports are one-tap links that add the subscription, under its name, to the apps that take
 // one. The subscription URL itself stays plain: apps that do not know these links still use it.
-func subImports(sub, name string) []pageLink {
+func subImports(sub, name string) []protocols.NamedLink {
 	if sub == "" {
 		return nil
 	}
 	q := url.QueryEscape
 	frag := "#" + url.PathEscape(name)
-	return []pageLink{
+	return []protocols.NamedLink{
 		{Name: "v2rayNG", URL: "v2rayng://install-sub?url=" + q(sub) + "&name=" + q(name)},
 		{Name: "Hiddify", URL: "hiddify://import/" + sub + frag},
 		{Name: "Streisand", URL: "streisand://import/" + sub + frag},
@@ -131,7 +39,7 @@ func subImports(sub, name string) []pageLink {
 
 // checkTemplate rejects placeholders a template cannot use.
 func checkTemplate(tmpl string, allowed []string) error {
-	for _, m := range namePlaceholder.FindAllStringSubmatch(tmpl, -1) {
+	for _, m := range protocols.NamePlaceholder.FindAllStringSubmatch(tmpl, -1) {
 		ok := false
 		for _, a := range allowed {
 			ok = ok || a == m[1]
@@ -148,7 +56,7 @@ func checkTemplate(tmpl string, allowed []string) error {
 // countryLookup finds the country an IP is registered in. A variable so tests can stand in for DNS.
 var countryLookup = func(ip net.IP) (string, error) {
 	_, cc, err := cymruOrigin(net.DefaultResolver, ip)
-	if err == nil && !validCountryCode(cc) {
+	if err == nil && !protocols.ValidCountryCode(cc) {
 		err = errors.New("no country for " + ip.String())
 	}
 	return cc, err
@@ -224,7 +132,7 @@ func SetNaming(r *remote.Server, c NamingChange, now time.Time) (*state.State, e
 			n.Flag, n.Detected, n.Checked = "", false, 0
 		case v == "none" || v == "off" || v == "":
 			n.Flag, n.Detected = "off", false
-		case validCountryCode(v):
+		case protocols.ValidCountryCode(v):
 			n.Flag, n.Detected = strings.ToUpper(v), false
 		default:
 			return nil, fmt.Errorf("--country %q: use a two-letter country code (de, nl, us, …), auto or none", *c.Country)
@@ -243,8 +151,8 @@ func describeNaming(st *state.State) string {
 	switch {
 	case n.Flag == "off":
 		flag = "off"
-	case serverFlag(st) != "":
-		flag = flagEmoji(serverFlag(st)) + " " + serverFlag(st)
+	case protocols.ServerFlag(st) != "":
+		flag = protocols.FlagEmoji(protocols.ServerFlag(st)) + " " + protocols.ServerFlag(st)
 		if n.Detected {
 			flag += " (looked up)"
 		}
@@ -255,8 +163,8 @@ func describeNaming(st *state.State) string {
 		e = st.Entries[0]
 	}
 	return fmt.Sprintf("server label:   %s\ncountry flag:   %s\nconfig names:   %s\n                e.g. %s\nsubscription:   %s\n                e.g. %s",
-		orStr(n.Label, "(none)"), flag, orStr(n.Config, state.DefaultConfigName+"  (default)"), configName(st, e, u),
-		orStr(n.Sub, state.DefaultSubName+"  (default)"), subName(st, u))
+		orStr(n.Label, "(none)"), flag, orStr(n.Config, state.DefaultConfigName+"  (default)"), protocols.ConfigName(st, e, u),
+		orStr(n.Sub, state.DefaultSubName+"  (default)"), protocols.SubName(st, u))
 }
 
 func cmdNames(args []string) error {

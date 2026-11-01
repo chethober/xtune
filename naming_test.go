@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 )
 
@@ -49,52 +51,26 @@ func linkName(t *testing.T, link string) string {
 	return n
 }
 
-func TestFlagEmoji(t *testing.T) {
-	for cc, want := range map[string]string{"DE": "🇩🇪", "nl": "🇳🇱", "US": "🇺🇸", "": "", "off": "", "D1": "", "DEU": ""} {
-		if got := flagEmoji(cc); got != want {
-			t.Errorf("flagEmoji(%q) = %q, want %q", cc, got, want)
-		}
-	}
-}
-
-func TestExpandNameDropsEmptyParts(t *testing.T) {
-	vars := map[string]string{"flag": "", "country": "", "server": "", "user": "bob", "id": "r-tcp", "proto": "REALITY", "via": ""}
-	for tmpl, want := range map[string]string{
-		"{flag} {user}-{id} {via}":            "bob-r-tcp",
-		"{flag} {server} · {proto} | {user}":  "REALITY | bob",
-		"{server} - {proto} - {via}":          "REALITY",
-		"[{proto}] {user}":                    "[REALITY] bob",
-		"{flag} {server} {unknown}":           "{unknown}",
-		"  {user}   ·   ·  {id}  ":            "bob · r-tcp",
-		"{flag}{server}":                      "",
-		"{flag} {country} {server} · {proto}": "REALITY",
-	} {
-		if got := expandName(tmpl, vars); got != want {
-			t.Errorf("%q: got %q, want %q", tmpl, got, want)
-		}
-	}
-}
-
 // Deployments that never set names keep the names they had before 1.0; only the flag is new.
 func TestDefaultNamesUnchanged(t *testing.T) {
 	st := testState()
 	u := state.User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555", SSKey: "dXNlcmtleXVzZXJrZXk="}
 	e := state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}
-	if n := linkName(t, Link(st, e, u, state.Knobs{})); n != "bob-r-tcp" {
+	if n := linkName(t, protocols.Link(st, e, u, state.Knobs{})); n != "bob-r-tcp" {
 		t.Errorf("default config name %q", n)
 	}
-	if n := subName(st, u); n != "xtune - bob" {
+	if n := protocols.SubName(st, u); n != "xtune - bob" {
 		t.Errorf("default subscription name %q", n)
 	}
 	st.Naming.Flag = "DE"
-	if n := linkName(t, Link(st, e, u, state.Knobs{})); n != "🇩🇪 bob-r-tcp" {
+	if n := linkName(t, protocols.Link(st, e, u, state.Knobs{})); n != "🇩🇪 bob-r-tcp" {
 		t.Errorf("with a flag %q", n)
 	}
-	if n := FailoverConfig(st, u)["remarks"]; n != "🇩🇪 xtune - bob" {
+	if n := protocols.FailoverConfig(st, u)["remarks"]; n != "🇩🇪 xtune - bob" {
 		t.Errorf("failover config remarks %q", n)
 	}
 	st.Naming.Flag = "off"
-	if n := linkName(t, Link(st, e, u, state.Knobs{})); n != "bob-r-tcp" {
+	if n := linkName(t, protocols.Link(st, e, u, state.Knobs{})); n != "bob-r-tcp" {
 		t.Errorf("flag off %q", n)
 	}
 }
@@ -114,8 +90,8 @@ func TestNamesInEveryLinkKind(t *testing.T) {
 		{ID: "cdn", Kind: "cdn-xhttp", Port: 2096, Path: "/p"},
 		{ID: "ssh", Kind: "ssh", Port: 2222},
 	} {
-		l := Link(st, e, u, e.Knobs())
-		want := "🇩🇪 Frankfurt · " + kindLabel(e.Kind) + " · " + strconv.Itoa(clientPort(e))
+		l := protocols.Link(st, e, u, e.Knobs())
+		want := "🇩🇪 Frankfurt · " + protocols.KindLabel(e.Kind) + " · " + strconv.Itoa(protocols.ClientPort(e))
 		if n := linkName(t, l); n != want {
 			t.Errorf("%s: name %q, want %q", e.Kind, n, want)
 		}
@@ -138,7 +114,7 @@ func TestSetNaming(t *testing.T) {
 	if loaded, _ := state.Load(r); loaded.Naming != st.Naming {
 		t.Errorf("not saved: %+v", loaded.Naming)
 	}
-	if n := subName(st, st.Users[0]); n != "🇳🇱 Amsterdam VPN" {
+	if n := protocols.SubName(st, st.Users[0]); n != "🇳🇱 Amsterdam VPN" {
 		t.Errorf("subscription name %q", n)
 	}
 

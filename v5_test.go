@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -125,7 +127,7 @@ func TestWireGuard(t *testing.T) {
 	st.Users = st.Users[:2]
 
 	a := st.Users[0]
-	cfg := ServerConfig(st, st.Entries, st.Users)
+	cfg := protocols.ServerConfig(st, st.Entries, st.Users)
 	var in J
 	for _, ib := range cfg["inbounds"].([]J) {
 		if ib["protocol"] == "wireguard" {
@@ -136,7 +138,7 @@ func TestWireGuard(t *testing.T) {
 	if len(peers) != 2 || peers[0]["email"] != a.Name || peers[0]["allowedIPs"].([]string)[0] != a.WGIP+"/32" {
 		t.Fatalf("server peers: %v", peers)
 	}
-	ob := Outbound(st, wg, a, state.Knobs{MTU: 1280}, "proxy")
+	ob := protocols.Outbound(st, wg, a, state.Knobs{MTU: 1280}, "proxy")
 	set := ob["settings"].(J)
 	priv, _ := base64.StdEncoding.DecodeString(set["secretKey"].(string))
 	k, err := ecdh.X25519().NewPrivateKey(priv)
@@ -146,21 +148,21 @@ func TestWireGuard(t *testing.T) {
 	if set["mtu"] != 1280 || set["peers"].([]J)[0]["publicKey"] != st.WGPub {
 		t.Errorf("client outbound: %v", set)
 	}
-	l, err := url.Parse(Link(st, wg, a, state.Knobs{}))
+	l, err := url.Parse(protocols.Link(st, wg, a, state.Knobs{}))
 	if err != nil || l.Scheme != "wireguard" || l.Query().Get("publickey") != st.WGPub || l.Query().Get("address") != a.WGIP+"/32" {
 		t.Errorf("link: %v %v", l, err)
 	}
-	if c := WGConf(st, wg, a); !strings.Contains(c, "Address = "+a.WGIP+"/32") || !strings.Contains(c, "Endpoint = 203.0.113.7:51820") {
+	if c := protocols.WGConf(st, wg, a); !strings.Contains(c, "Address = "+a.WGIP+"/32") || !strings.Contains(c, "Endpoint = 203.0.113.7:51820") {
 		t.Errorf("WireGuard app config:\n%s", c)
 	}
-	if fc := FailoverConfig(st, a); !strings.Contains(mustJSON(t, fc), `"protocol":"wireguard"`) {
+	if fc := protocols.FailoverConfig(st, a); !strings.Contains(mustJSON(t, fc), `"protocol":"wireguard"`) {
 		t.Error("the failover config should include WireGuard")
 	}
 	if bin := FindLocalXray(""); bin != "" { // Xray itself agrees with both ends
-		if err := xrayAccepts(bin, ServerConfig(st, []state.Entry{wg}, st.Users)); err != nil {
+		if err := xrayAccepts(bin, protocols.ServerConfig(st, []state.Entry{wg}, st.Users)); err != nil {
 			t.Errorf("server config: %v", err)
 		}
-		if err := xrayAccepts(bin, ClientConfig(ob)); err != nil {
+		if err := xrayAccepts(bin, protocols.ClientConfig(ob)); err != nil {
 			t.Errorf("client config: %v", err)
 		}
 	}
@@ -223,7 +225,7 @@ func TestTunnelServer(t *testing.T) {
 	dir := t.TempDir()
 	conf, stats := filepath.Join(dir, "tunnels.json"), filepath.Join(dir, "stats.json")
 	write := func(users ...state.User) {
-		if err := writeJSON(conf, buildTunnelConf(st, st.Entries, users, stats)); err != nil {
+		if err := writeJSON(conf, protocols.TunnelServerConf(st, st.Entries, users, stats)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -404,8 +406,8 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 	if err := ensureVPNCert(st); err != nil {
 		t.Fatal(err)
 	}
-	ca, _ := parseCertPEM(st.VPNCA)
-	cert, _ := parseCertPEM(st.VPNCert)
+	ca, _ := protocols.ParseCertPEM(st.VPNCA)
+	cert, _ := protocols.ParseCertPEM(st.VPNCert)
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	if _, err := cert.Verify(x509.VerifyOptions{DNSName: "vpn.example.com", Roots: pool}); err != nil {
@@ -424,7 +426,7 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 		t.Error("OpenVPN TCP config")
 	}
 	sw := files["/v/swanctl.conf"]
-	if !strings.Contains(sw, "id = ann\n    secret = \""+tunnelPassword(ann)+"\"") || strings.Contains(sw, "id = off") || !strings.Contains(sw, "id = vpn.example.com") {
+	if !strings.Contains(sw, "id = ann\n    secret = \""+protocols.TunnelPassword(ann)+"\"") || strings.Contains(sw, "id = off") || !strings.Contains(sw, "id = vpn.example.com") {
 		t.Errorf("swanctl config:\n%s", sw)
 	}
 	if specs := vpnSpecs([]state.Entry{udp, ike}); strings.Join(specs, " ") != "openvpn:ovpn-udp net:10.68.0.0/20 ikev2 net:10.69.0.0/16" {
@@ -438,36 +440,36 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 		os.WriteFile(cred, []byte(name+"\n"+pass+"\n"), 0o600)
 		return cmdVPNAuth([]string{filepath.Join(dir, "users.json"), cred})
 	}
-	if err := auth("ann", tunnelPassword(ann)); err != nil {
+	if err := auth("ann", protocols.TunnelPassword(ann)); err != nil {
 		t.Errorf("ann: %v", err)
 	}
-	if auth("ann", "nope") == nil || auth("off", tunnelPassword(off)) == nil {
+	if auth("ann", "nope") == nil || auth("off", protocols.TunnelPassword(off)) == nil {
 		t.Error("a wrong password or a disabled user got in")
 	}
 	ann.Devices = 1 // ann is already on from 198.51.100.4
-	uj, _ := json.Marshal(vpnUsers([]state.User{ann}))
+	uj, _ := json.Marshal(protocols.VPNUsers([]state.User{ann}))
 	os.WriteFile(filepath.Join(dir, "users.json"), uj, 0o600)
 	os.WriteFile(filepath.Join(dir, "ovpn-udp.status"), []byte(ovpnStatus), 0o600)
 	t.Setenv("untrusted_ip", "192.0.2.50")
-	if auth("ann", tunnelPassword(ann)) == nil {
+	if auth("ann", protocols.TunnelPassword(ann)) == nil {
 		t.Error("a second device got past the limit")
 	}
 	t.Setenv("untrusted_ip", "198.51.100.4")
-	if err := auth("ann", tunnelPassword(ann)); err != nil {
+	if err := auth("ann", protocols.TunnelPassword(ann)); err != nil {
 		t.Errorf("the same device again: %v", err)
 	}
 
 	st.Entries = []state.Entry{udp, ike}
-	for _, p := range Profiles(st, ann) {
+	for _, p := range protocols.Profiles(st, ann) {
 		if p.Body == "" || p.File == "" {
 			t.Errorf("empty profile %+v", p)
 		}
 	}
-	if mc := MobileConfig(st, ann); !strings.Contains(mc, "<string>IKEv2</string>") || !strings.Contains(mc, tunnelPassword(ann)) {
+	if mc := protocols.MobileConfig(st, ann); !strings.Contains(mc, "<string>IKEv2</string>") || !strings.Contains(mc, protocols.TunnelPassword(ann)) {
 		t.Error("Apple profile")
 	}
 	var sswan J
-	if err := json.Unmarshal([]byte(SswanProfile(st, ann)), &sswan); err != nil || sswan["type"] != "ikev2-eap" {
+	if err := json.Unmarshal([]byte(protocols.SswanProfile(st, ann)), &sswan); err != nil || sswan["type"] != "ikev2-eap" {
 		t.Errorf("strongSwan profile: %v %v", sswan, err)
 	}
 }
@@ -566,7 +568,7 @@ func TestProfilesOnSubscriptionPage(t *testing.T) {
 	}
 	base := "/p4th/" + ann.SubToken
 	page := get(base, "text/html").Body.String()
-	for _, want := range []string{base + "/f/ann-ovpn-udp.ovpn", base + "/f/ann-ikev2.mobileconfig", base + "/f/ann-dnstt.txt", tunnelPassword(ann)} {
+	for _, want := range []string{base + "/f/ann-ovpn-udp.ovpn", base + "/f/ann-ikev2.mobileconfig", base + "/f/ann-dnstt.txt", protocols.TunnelPassword(ann)} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page lacks %s", want)
 		}
@@ -584,11 +586,11 @@ func TestProfilesOnSubscriptionPage(t *testing.T) {
 	}
 	// TLS and WebSocket SSH have no link scheme: a settings file says how to connect
 	st.Entries = []state.Entry{{ID: "ssh-tls", Kind: "ssh-tls", Port: 2083, SNI: "www.a.com", Mode: "ws"}}
-	if l := Link(st, st.Entries[0], ann, st.Entries[0].Knobs()); l != "" {
+	if l := protocols.Link(st, st.Entries[0], ann, st.Entries[0].Knobs()); l != "" {
 		t.Errorf("an ssh:// link for SSH over TLS: %s", l)
 	}
 	info := get(base+"/f/ann-ssh-tls.txt", "").Body.String()
-	for _, want := range []string{"SSL/TLS", "SNI: www.a.com", "Upgrade: websocket", "Port: 2083", tunnelPassword(ann)} {
+	for _, want := range []string{"SSL/TLS", "SNI: www.a.com", "Upgrade: websocket", "Port: 2083", protocols.TunnelPassword(ann)} {
 		if !strings.Contains(info, want) {
 			t.Errorf("SSH settings lack %q:\n%s", want, info)
 		}
@@ -647,8 +649,8 @@ func TestWireGuardHarnessPeers(t *testing.T) {
 		}
 		return ""
 	}
-	own, _ := wgUserKey(u)
-	alias, _ := wgUserKey(wgVariantUser(u, state.Knobs{MTU: 1280}))
+	own, _ := protocols.WGUserKey(u)
+	alias, _ := protocols.WGUserKey(wgVariantUser(u, state.Knobs{MTU: 1280}))
 	if got := key(false); got != own {
 		t.Error("a check must connect with the user's own key")
 	}
@@ -667,7 +669,7 @@ func TestWireGuardTestPeersOnlyOnWireGuard(t *testing.T) {
 	u := state.NewUser("tune")
 	u.WGIP = "10.66.0.2"
 	entries := []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "wg", Kind: "wireguard", Port: 51820}}
-	cfg := ServerConfig(st, entries, wgTestPeers(u, entries))
+	cfg := protocols.ServerConfig(st, entries, wgTestPeers(u, entries))
 	for _, ib := range cfg["inbounds"].([]J) {
 		b, _ := json.Marshal(ib)
 		alias := strings.Contains(string(b), "/mtu1280") || strings.Contains(string(b), "tune-mtu1280")

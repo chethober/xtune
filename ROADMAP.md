@@ -42,7 +42,7 @@ The first release that promises stability, not just features.
   does not fight the rest of the code.
   - [x] server transport (`internal/remote`)
   - [x] state (`internal/state`): the data model and its storage
-  - [ ] protocols
+  - [x] protocols (`internal/protocols`): configs, links, subscriptions, profiles
   - [ ] tuning
   - [ ] TUI
   - [ ] subscription

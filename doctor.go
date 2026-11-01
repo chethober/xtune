@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -305,7 +307,7 @@ func doctorCDN(d *doctor, st *state.State) {
 		if !e.CDN() || st.CDNDomain == "" {
 			continue
 		}
-		resp, err := cdnGet("https://" + hostPort(st.CDNDomain, e.Port) + e.Path)
+		resp, err := cdnGet("https://" + protocols.HostPort(st.CDNDomain, e.Port) + e.Path)
 		switch {
 		case err != nil:
 			d.warn("could not reach %s through the CDN from here: %v", st.CDNDomain, err)
@@ -338,10 +340,10 @@ func doctorCerts(d *doctor, st *state.State) {
 	if st.Sub.Mode != "direct" {
 		return
 	}
-	c, err := tlsCert(hostPort(st.Domain, st.Sub.Port), st.Domain)
+	c, err := tlsCert(protocols.HostPort(st.Domain, st.Sub.Port), st.Domain)
 	switch {
 	case err != nil:
-		d.fail("subscription server https://%s: %v", hostPort(st.Domain, st.Sub.Port), err)
+		d.fail("subscription server https://%s: %v", protocols.HostPort(st.Domain, st.Sub.Port), err)
 	case time.Until(c.NotAfter) < 14*24*time.Hour:
 		d.warn("the subscription server's Let's Encrypt certificate expires %s and was not renewed yet", c.NotAfter.Format("2006-01-02"))
 	default:

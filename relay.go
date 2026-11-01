@@ -14,6 +14,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/remote"
 	"github.com/chethober/xtune/internal/state"
 )
@@ -25,61 +27,7 @@ import (
 // this server's configs at the relay's address, listed in subscriptions like a follower's,
 // named RELAY-ID and with this server's flag: traffic still leaves the internet from here.
 
-// relayable entries can go through a port forwarder: the others are reached by domain (CDN,
-// Worker), through DNS resolvers (dnstt), or are VPNs whose certificate or profile names this server.
-func relayable(e state.Entry) bool {
-	switch {
-	case e.Reality(), e.VlessEnc():
-		return !e.CDN()
-	}
-	switch e.Kind {
-	case "hysteria2", "ss2022", "wireguard", "ssh", "ssh-tls", "mtproto":
-		return true
-	}
-	return false
-}
-
-// relayTarget is the address of this server relays forward to.
-func relayTarget(st *state.State) string { return orStr(st.ClientIP, st.Host) }
-
 var relayNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
-
-// relayStates are this server's configs as clients reach them through each relay. A relay that
-// forwards to an old address (after a move) is left out until it is synced.
-func relayStates(st *state.State) []*state.State {
-	var out []*state.State
-	for _, rl := range st.Relays {
-		if rl.Target != relayTarget(st) {
-			continue
-		}
-		rs := *st
-		rs.Domain, rs.CDNDomain, rs.ClientIP, rs.Host = "", "", rl.Addr, rl.Addr
-		rs.Relays, rs.Peers, rs.Worker = nil, nil, nil
-		rs.Naming.Via = rl.Name
-		rs.Entries = nil
-		for _, e := range st.Entries {
-			i := slices.IndexFunc(rl.Forwards, func(f state.Forward) bool { return f.ID == e.ID && f.To == e.Port })
-			if i < 0 || !relayable(e) {
-				continue // redeployed since the relay was synced
-			}
-			e.ID, e.Port, e.Hop, e.Addr = rl.Name+"-"+e.ID, rl.Forwards[i].Port, "", ""
-			rs.Entries = append(rs.Entries, e)
-		}
-		if len(rs.Entries) > 0 {
-			out = append(out, &rs)
-		}
-	}
-	return out
-}
-
-// subServers are the servers whose configs subscriptions list: this one, its relays, then the
-// followers. Usage and statistics use peerServers: relays carry this server's own configs.
-func subServers(st *state.State) []*state.State {
-	ps := peerServers(st)
-	out := []*state.State{ps[0]}
-	out = append(out, relayStates(st)...)
-	return append(out, ps[1:]...)
-}
 
 // planForwards picks the relay's port for each relayable entry: the same port when it is free
 // there, else a free high port. Ports a relay already uses for an entry are kept.
@@ -91,7 +39,7 @@ func planForwards(st *state.State, prev []state.Forward, used map[string]map[int
 	free := func(net string, p int) bool { return !used[net][p] && !taken[net][p] }
 	var out []state.Forward
 	for _, e := range st.Entries {
-		if !relayable(e) || (len(only) > 0 && !slices.Contains(only, e.ID)) {
+		if !protocols.Relayable(e) || (len(only) > 0 && !slices.Contains(only, e.ID)) {
 			continue
 		}
 		f := state.Forward{ID: e.ID, To: e.Port, Net: e.Proto()}
@@ -171,7 +119,7 @@ func SyncRelay(r, relay *remote.Server, o RelayOpts) (*state.State, error) {
 	if err != nil {
 		return nil, err
 	}
-	target := relayTarget(st)
+	target := protocols.RelayTarget(st)
 	if relay.Conn.Host == r.Conn.Host || relay.Conn.Host == target {
 		return nil, errors.New("the relay must be another server")
 	}
@@ -298,8 +246,8 @@ func printRelays(st *state.State) {
 
 // relayProblem says what is wrong with a relay since its last sync, or ok when nothing is.
 func relayProblem(st *state.State, rl state.Relay, ok string) string {
-	if rl.Target != relayTarget(st) {
-		return "forwards to " + rl.Target + ", this server is now " + relayTarget(st) + ": xtune relay sync " + rl.Name
+	if rl.Target != protocols.RelayTarget(st) {
+		return "forwards to " + rl.Target + ", this server is now " + protocols.RelayTarget(st) + ": xtune relay sync " + rl.Name
 	}
 	stale := 0
 	for _, f := range rl.Forwards {

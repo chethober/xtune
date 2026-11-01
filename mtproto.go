@@ -10,12 +10,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
 )
@@ -47,33 +47,9 @@ var mtprotoDialDC = func(ctx context.Context, dc int) (net.Conn, error) {
 	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", addr)
 }
 
-const (
-	mtprotoFrameLen = 64
-	mtprotoKeyLen   = 16 // the proxy secret
-)
-
 // mtprotoConnType marks the padded-intermediate transport both sides of the proxy use, so the
 // de-obfuscated byte stream is identical on each and can be copied straight through.
 var mtprotoConnType = [4]byte{0xdd, 0xdd, 0xdd, 0xdd}
-
-func mtprotoKey(u state.User) []byte { return secret(u, "mtproto")[:mtprotoKeyLen] }
-
-// mtprotoSecret is the secret Telegram apps take: the "dd" prefix (padded-intermediate transport,
-// no fake TLS) plus the user's 16-byte key in hex.
-func mtprotoSecret(u state.User) string { return "dd" + hex.EncodeToString(mtprotoKey(u)) }
-
-// mtprotoLink opens the proxy in Telegram and doubles as the page's QR code.
-func mtprotoLink(st *state.State, e state.Entry, u state.User) string {
-	q := url.Values{"server": {st.Addr()}, "port": {fmt.Sprint(e.Port)}, "secret": {mtprotoSecret(u)}}
-	return "https://t.me/proxy?" + q.Encode()
-}
-
-// MTProtoInfo is what to type into Telegram's proxy settings by hand.
-func MTProtoInfo(st *state.State, e state.Entry, u state.User) string {
-	return fmt.Sprintf("%s for %s\n\nTelegram > Settings > Data and Storage > Proxy > Add proxy > MTProto\n\n"+
-		"Server: %s\nPort: %d\nSecret: %s\n\nOr open: %s\n",
-		e.ID, u.Name, st.Addr(), e.Port, mtprotoSecret(u), mtprotoLink(st, e, u))
-}
 
 // ---------------------------------------------------------------- obfuscation
 
@@ -124,11 +100,11 @@ func reversed(frame []byte) []byte {
 // returns the data centre it asked for and a de-obfuscated connection. The 64 raw bytes are
 // passed in already read, so the caller can try several users' keys against one frame.
 func mtprotoReadHandshake(c net.Conn, raw, key []byte) (dc int, _ *obfConn, ok bool) {
-	if len(raw) != mtprotoFrameLen {
+	if len(raw) != protocols.MTProtoFrameLen {
 		return 0, nil, false
 	}
 	recv := ctrStream(raw, key)
-	dec := make([]byte, mtprotoFrameLen)
+	dec := make([]byte, protocols.MTProtoFrameLen)
 	recv.XORKeyStream(dec, raw) // advances recv past the frame, where the stream continues
 	if subtle.ConstantTimeCompare(dec[56:60], mtprotoConnType[:]) != 1 {
 		return 0, nil, false
@@ -147,7 +123,7 @@ func mtprotoSendHandshake(ctx context.Context, dc int) (*obfConn, error) {
 	frame := mtprotoFrame(dc)
 	send := ctrStream(frame, nil)
 	recv := ctrStream(reversed(frame), nil)
-	enc := make([]byte, mtprotoFrameLen)
+	enc := make([]byte, protocols.MTProtoFrameLen)
 	send.XORKeyStream(enc, frame)
 	copy(enc[8:56], frame[8:56]) // the data centre reads key and IV from the clear bytes
 	if _, err := c.Write(enc); err != nil {
@@ -160,7 +136,7 @@ func mtprotoSendHandshake(ctx context.Context, dc int) (*obfConn, error) {
 // mtprotoFrame builds a random 64-byte handshake for data centre dc, avoiding the byte patterns
 // Telegram reserves for other transports.
 func mtprotoFrame(dc int) []byte {
-	f := make([]byte, mtprotoFrameLen)
+	f := make([]byte, protocols.MTProtoFrameLen)
 	for {
 		rand.Read(f)
 		if f[0] == 0xef {
@@ -188,7 +164,7 @@ func mtprotoFrame(dc int) []byte {
 // target to download through.
 func mtprotoHandshake(st *state.State, ctx context.Context, e state.Entry, u state.User) (time.Duration, error) {
 	t0 := time.Now()
-	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", hostPort(st.Addr(), e.Port))
+	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", protocols.HostPort(st.Addr(), e.Port))
 	if err != nil {
 		return 0, err
 	}
@@ -197,8 +173,8 @@ func mtprotoHandshake(st *state.State, ctx context.Context, e state.Entry, u sta
 		c.SetDeadline(dl)
 	}
 	frame := mtprotoFrame(2) // ask for DC 2, where most users land
-	send := ctrStream(frame, mtprotoKey(u))
-	enc := make([]byte, mtprotoFrameLen)
+	send := ctrStream(frame, protocols.MTProtoKey(u))
+	enc := make([]byte, protocols.MTProtoFrameLen)
 	send.XORKeyStream(enc, frame)
 	copy(enc[8:56], frame[8:56])
 	if _, err := c.Write(enc); err != nil {
@@ -206,7 +182,7 @@ func mtprotoHandshake(st *state.State, ctx context.Context, e state.Entry, u sta
 	}
 	// The proxy keeps the connection open only once its onward dial to Telegram has succeeded; a
 	// wrong secret or an unreachable data centre closes it. A short read settles which happened.
-	recv := ctrStream(reversed(frame), mtprotoKey(u))
+	recv := ctrStream(reversed(frame), protocols.MTProtoKey(u))
 	buf := make([]byte, 64)
 	c.SetReadDeadline(time.Now().Add(3 * time.Second))
 	n, err := c.Read(buf)
@@ -234,7 +210,7 @@ type mtSession struct {
 func (ts *tunnelServer) serveMT(c net.Conn, entry, ip string) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(30 * time.Second))
-	raw := make([]byte, mtprotoFrameLen)
+	raw := make([]byte, protocols.MTProtoFrameLen)
 	if _, err := io.ReadFull(c, raw); err != nil {
 		return
 	}
@@ -292,7 +268,7 @@ func (ts *tunnelServer) serveMT(c net.Conn, entry, ip string) {
 }
 
 // mtAuth finds the user whose secret authenticates raw, enforcing the device limit.
-func (ts *tunnelServer) mtAuth(c net.Conn, raw []byte, ip string) (TunnelUser, int, *obfConn) {
+func (ts *tunnelServer) mtAuth(c net.Conn, raw []byte, ip string) (protocols.TunnelUser, int, *obfConn) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	for _, u := range ts.users {
@@ -300,7 +276,7 @@ func (ts *tunnelServer) mtAuth(c net.Conn, raw []byte, ip string) (TunnelUser, i
 			continue
 		}
 		key, err := hex.DecodeString(u.MT)
-		if err != nil || len(key) != mtprotoKeyLen {
+		if err != nil || len(key) != protocols.MTProtoKeyLen {
 			continue
 		}
 		dc, client, ok := mtprotoReadHandshake(c, raw, key)
@@ -315,10 +291,10 @@ func (ts *tunnelServer) mtAuth(c net.Conn, raw []byte, ip string) (TunnelUser, i
 				}
 			}
 			if !ips[ip] && len(ips) >= u.Devices {
-				return TunnelUser{}, 0, nil
+				return protocols.TunnelUser{}, 0, nil
 			}
 		}
 		return u, dc, client
 	}
-	return TunnelUser{}, 0, nil
+	return protocols.TunnelUser{}, 0, nil
 }

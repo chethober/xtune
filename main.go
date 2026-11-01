@@ -19,6 +19,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -480,7 +482,7 @@ func printDeployment(st *state.State) {
 			continue
 		}
 		fmt.Printf("\n# %s\n", u.Name)
-		for _, l := range Links(st, u) {
+		for _, l := range protocols.Links(st, u) {
 			fmt.Println(l)
 		}
 	}
@@ -780,21 +782,21 @@ func printLinks(w io.Writer, st *state.State, name string) error {
 	}
 	if sub := SubURL(st, *u); sub != "" {
 		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n", u.Name, state, sub, sub)
-		fmt.Fprintf(w, "add it as %q in one tap:\n", subName(st, *u))
-		for _, a := range subImports(sub, subName(st, *u)) {
+		fmt.Fprintf(w, "add it as %q in one tap:\n", protocols.SubName(st, *u))
+		for _, a := range subImports(sub, protocols.SubName(st, *u)) {
 			fmt.Fprintf(w, "  %-10s %s\n", a.Name, a.URL)
 		}
 		fmt.Fprintln(w)
 	} else {
 		fmt.Fprintf(w, "# %s (%d configs%s, base64 subscription body below the links)\n", u.Name, len(st.Entries), state)
 	}
-	for _, l := range Links(st, *u) {
+	for _, l := range protocols.Links(st, *u) {
 		fmt.Fprintln(w, l)
 	}
 	if SubURL(st, *u) == "" {
-		fmt.Fprintf(w, "\n%s\n", Subscription(st, *u))
+		fmt.Fprintf(w, "\n%s\n", protocols.Subscription(st, *u))
 	}
-	if ps := Profiles(st, *u); len(ps) > 0 {
+	if ps := protocols.Profiles(st, *u); len(ps) > 0 {
 		fmt.Fprintf(w, "\nFiles for apps without share links (xtune users profiles %s writes them):\n", u.Name)
 		for _, p := range ps {
 			where := p.File
@@ -804,7 +806,7 @@ func printLinks(w io.Writer, st *state.State, name string) error {
 			fmt.Fprintf(w, "  %-34s %s\n", p.Name, where)
 		}
 		if hasLogin(st) {
-			fmt.Fprintf(w, "SSH / VPN login: user name %s, password %s\n", u.Name, tunnelPassword(*u))
+			fmt.Fprintf(w, "SSH / VPN login: user name %s, password %s\n", u.Name, protocols.TunnelPassword(*u))
 		}
 	}
 	return nil
@@ -816,7 +818,7 @@ func writeProfiles(w io.Writer, st *state.State, name, dir string) error {
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	ps := Profiles(st, *u)
+	ps := protocols.Profiles(st, *u)
 	if len(ps) == 0 {
 		return fmt.Errorf("the deployment has no configs that need profile files")
 	}
@@ -921,7 +923,7 @@ func printSub(w io.Writer, st *state.State) error {
 		return nil
 	}
 	fmt.Fprintf(w, "subscription server: %s mode, https://%s, page language %s\n\n", st.Sub.Mode,
-		hostPort(subHost(st), st.Sub.Port), orStr(st.Sub.Lang, "from the browser"))
+		protocols.HostPort(subHost(st), st.Sub.Port), orStr(st.Sub.Lang, "from the browser"))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, u := range st.Users {
 		fmt.Fprintf(tw, "%s\t%s\n", u.Name, SubURL(st, u))

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -9,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
 
@@ -21,7 +22,7 @@ import (
 // writeConfig writes config.json for the active users and checks it with Xray, without a restart,
 // and the active users of the SSH tunnels and VPNs, which pick them up by themselves.
 func writeConfig(r *remote.Server, st *state.State, active []state.User) error {
-	cfgJSON, _ := json.MarshalIndent(ServerConfig(st, st.Entries, active), "", " ")
+	cfgJSON, _ := json.MarshalIndent(protocols.ServerConfig(st, st.Entries, active), "", " ")
 	if err := r.Upload(remote.Dir+"/config.json", cfgJSON, "600"); err != nil {
 		return err
 	}
@@ -29,13 +30,13 @@ func writeConfig(r *remote.Server, st *state.State, active []state.User) error {
 		return err
 	}
 	if state.HasEngine(st.Entries, "tunnel") {
-		tc, _ := json.MarshalIndent(buildTunnelConf(st, st.Entries, active, tunnelStatsFile), "", " ")
+		tc, _ := json.MarshalIndent(protocols.TunnelServerConf(st, st.Entries, active, tunnelStatsFile), "", " ")
 		if err := r.Upload(remote.Dir+"/tunnels.json", tc, "600"); err != nil {
 			return err
 		}
 	}
 	if state.HasEngine(st.Entries, "awg") {
-		ac, _ := json.MarshalIndent(buildAWGConf(st, st.Entries, active, awgStatsFile), "", " ")
+		ac, _ := json.MarshalIndent(protocols.AWGServerConf(st, st.Entries, active, awgStatsFile), "", " ")
 		if err := r.Upload(remote.Dir+"/awg.json", ac, "600"); err != nil {
 			return err
 		}
@@ -296,11 +297,6 @@ func requireState(r *remote.Server) (*state.State, error) {
 	return st, nil
 }
 
-// Subscription is the base64 body most clients accept as an imported subscription.
-func Subscription(st *state.State, u state.User) string {
-	return base64.StdEncoding.EncodeToString([]byte(strings.Join(Links(st, u), "\n")))
-}
-
 // ---------------------------------------------------------------- users
 
 func validUserName(name string) error {
@@ -490,7 +486,7 @@ func resetUsage(r *remote.Server, name string) error {
 
 // SetCountry chooses which country's sites client configs send direct ("" = none).
 func SetCountry(r *remote.Server, code string) error {
-	if _, ok := countries[code]; code != "" && !ok {
+	if _, ok := protocols.Countries[code]; code != "" && !ok {
 		return fmt.Errorf("unknown country %q (supported: %s)", code, countryList())
 	}
 	defer r.Lock()()
@@ -504,7 +500,7 @@ func SetCountry(r *remote.Server, code string) error {
 
 func countryList() string {
 	var cs []string
-	for c := range countries {
+	for c := range protocols.Countries {
 		cs = append(cs, c)
 	}
 	sort.Strings(cs)

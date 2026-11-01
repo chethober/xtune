@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -786,7 +788,7 @@ func (t *tui) names() error {
 		huh.NewInput().Title("Server label ({server})").Description("Shown in config names, e.g. Frankfurt. Empty = none.").Value(&label),
 		huh.NewInput().Title("Country flag").Description("auto (looked up from the server's IP), none, or a code such as de, nl, fi.").
 			Value(&country).Validate(func(s string) error {
-			if s = strings.ToLower(strings.TrimSpace(s)); s == "auto" || s == "none" || validCountryCode(s) {
+			if s = strings.ToLower(strings.TrimSpace(s)); s == "auto" || s == "none" || protocols.ValidCountryCode(s) {
 				return nil
 			}
 			return fmt.Errorf("auto, none or a two-letter code")

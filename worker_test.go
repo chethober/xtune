@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -33,12 +35,12 @@ func TestWorkerConfigs(t *testing.T) {
 	if e.Proto() != "tcp" || !e.Xray() || e.Family() != "worker" || e.CDN() {
 		t.Fatalf("kind: %+v", e)
 	}
-	ib := inbound(st, e, []state.User{u})
+	ib := protocols.Inbound(st, e, []state.User{u})
 	ss := ib["streamSettings"].(J)
 	if ib["settings"].(J)["decryption"] != st.VencDec || ss["network"] != "tcp" || ss["sockopt"].(J)["acceptProxyProtocol"] != true {
 		t.Errorf("inbound: VLESS Encryption over plain TCP with the PROXY header: %v", ib)
 	}
-	ob := Outbound(st, e, u, state.Knobs{FP: "firefox", Frag: "frag-mild"}, "proxy")
+	ob := protocols.Outbound(st, e, u, state.Knobs{FP: "firefox", Frag: "frag-mild"}, "proxy")
 	vn := ob["settings"].(J)["vnext"].([]J)[0]
 	oss := ob["streamSettings"].(J)
 	if vn["address"] != e.SNI || vn["port"] != 443 || vn["users"].([]J)[0]["encryption"] != st.VencEnc {
@@ -49,7 +51,7 @@ func TestWorkerConfigs(t *testing.T) {
 		oss["sockopt"].(J)["dialerProxy"] != "frag-mild" {
 		t.Errorf("outbound stream: %v", oss)
 	}
-	l, err := url.Parse(Link(st, e, u, state.Knobs{FP: "chrome"}))
+	l, err := url.Parse(protocols.Link(st, e, u, state.Knobs{FP: "chrome"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +340,7 @@ func TestDeployKeepsKnobsAndCloudflare(t *testing.T) {
 	if got.Cloudflare.Token != "old-token" || got.Worker == nil || got.Worker.Name != "w" || got.AWG == nil {
 		t.Errorf("kept: %+v %+v", got.Cloudflare, got.Worker)
 	}
-	var ac AWGConf
+	var ac protocols.AWGConf
 	if err := json.Unmarshal([]byte(fs.files[remote.Dir+"/awg.json"]), &ac); err != nil || len(ac.Peers) != 1 ||
 		ac.Params.Priv == "" || ac.Stats != awgStatsFile {
 		t.Errorf("awg.json: %v %+v", err, ac)
@@ -363,21 +365,21 @@ func TestWorkerRelayXray(t *testing.T) {
 	e := state.Entry{ID: "worker", Kind: "worker-ws", Port: inPort, Path: "/" + randHex(6), SNI: "w.example.workers.dev"}
 	u := state.NewUser("ann")
 
-	srvCfg := ServerConfig(st, []state.Entry{e}, []state.User{u})
+	srvCfg := protocols.ServerConfig(st, []state.Entry{e}, []state.User{u})
 	delete(srvCfg, "routing") // the target below is on localhost, which freedom refuses by default
 	srvCfg["outbounds"].([]J)[0]["settings"] = J{"finalRules": []J{{"action": "allow", "ip": []string{"127.0.0.0/8"}}}}
 	srvCfg["log"] = J{"loglevel": "warning", "access": filepath.Join(dir, "access.log")}
 	runXray(t, bin, filepath.Join(dir, "server.json"), srvCfg)
 
 	early := make(chan string, 1)
-	relay := &http.Server{Addr: hostPort("127.0.0.1", relayPort), Handler: websocket.Server{
+	relay := &http.Server{Addr: protocols.HostPort("127.0.0.1", relayPort), Handler: websocket.Server{
 		Handshake: func(c *websocket.Config, r *http.Request) error {
 			early <- r.Header.Get("Sec-WebSocket-Protocol")
 			return nil
 		},
 		Handler: func(ws *websocket.Conn) {
 			ws.PayloadType = websocket.BinaryFrame
-			c, err := net.Dial("tcp", hostPort("127.0.0.1", inPort))
+			c, err := net.Dial("tcp", protocols.HostPort("127.0.0.1", inPort))
 			if err != nil {
 				return
 			}
@@ -397,7 +399,7 @@ func TestWorkerRelayXray(t *testing.T) {
 	go relay.ListenAndServe()
 	defer relay.Close()
 
-	ob := Outbound(st, e, u, state.Knobs{FP: "chrome", Frag: "none"}, "proxy")
+	ob := protocols.Outbound(st, e, u, state.Knobs{FP: "chrome", Frag: "none"}, "proxy")
 	vn := ob["settings"].(J)["vnext"].([]J)[0]
 	vn["address"], vn["port"] = "127.0.0.1", relayPort
 	ss := ob["streamSettings"].(J)
@@ -410,13 +412,13 @@ func TestWorkerRelayXray(t *testing.T) {
 		"inbounds": []J{{"listen": "127.0.0.1", "port": socksPort, "protocol": "socks"}}}
 	runXray(t, bin, filepath.Join(dir, "client.json"), cliCfg)
 
-	web := &http.Server{Addr: hostPort("127.0.0.1", webPort), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	web := &http.Server{Addr: protocols.HostPort("127.0.0.1", webPort), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	})}
 	go web.ListenAndServe()
 	defer web.Close()
 	time.Sleep(time.Second)
-	resp, err := socksClient(socksPort, 10*time.Second).Get("http://" + hostPort("127.0.0.1", webPort) + "/")
+	resp, err := socksClient(socksPort, 10*time.Second).Get("http://" + protocols.HostPort("127.0.0.1", webPort) + "/")
 	if err != nil || resp.StatusCode != 204 {
 		sl, _ := os.ReadFile(filepath.Join(dir, "server.json.log"))
 		cl, _ := os.ReadFile(filepath.Join(dir, "client.json.log"))

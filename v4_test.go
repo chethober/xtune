@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -297,7 +299,7 @@ func TestPrimaryAndFollower(t *testing.T) {
 	// the primary's subscription lists the follower's configs, at the follower's address
 	st, _ = state.Load(pr)
 	var names []string
-	for _, l := range NamedLinks(st, st.Users[0]) {
+	for _, l := range protocols.NamedLinks(st, st.Users[0]) {
 		names = append(names, l.Name)
 		if strings.HasPrefix(l.Name, "de1-") && !strings.Contains(l.URL, "198.51.100.20") {
 			t.Errorf("follower link %s points elsewhere", l.URL)
@@ -306,7 +308,7 @@ func TestPrimaryAndFollower(t *testing.T) {
 	if got := strings.Join(names, ","); got != "r-tcp,ss2022,de1-r-tcp,de1-ss2022" {
 		t.Errorf("links: %s", got)
 	}
-	if fc, _ := json.Marshal(FailoverConfig(st, st.Users[0])); !strings.Contains(string(fc), "proxy-de1-r-tcp") {
+	if fc, _ := json.Marshal(protocols.FailoverConfig(st, st.Users[0])); !strings.Contains(string(fc), "proxy-de1-r-tcp") {
 		t.Error("the failover config lacks the follower")
 	}
 	if st.Peers.Servers["de1"].State.RealityPriv != "" {

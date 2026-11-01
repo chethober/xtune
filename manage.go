@@ -14,6 +14,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/protocols"
+
 	"github.com/chethober/xtune/internal/state"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -143,10 +145,10 @@ type mUser struct {
 
 type mUserDetail struct {
 	mUser
-	Sub   string     `json:"sub,omitempty"`
-	Links []pageLink `json:"links"`
-	Files []string   `json:"files,omitempty"` // profile files on the subscription page, for apps without links
-	Daily []int64    `json:"daily"`           // traffic per day, the last 30 days, oldest first
+	Sub   string                `json:"sub,omitempty"`
+	Links []protocols.NamedLink `json:"links"`
+	Files []string              `json:"files,omitempty"` // profile files on the subscription page, for apps without links
+	Daily []int64               `json:"daily"`           // traffic per day, the last 30 days, oldest first
 }
 
 type mConfig struct {
@@ -234,9 +236,9 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 		if u == nil {
 			return nil, fmt.Errorf("no user %q", name)
 		}
-		d := mUserDetail{mUser: userRow(*u, us.Users[name], now), Sub: SubURL(st, *u), Links: NamedLinks(st, *u),
+		d := mUserDetail{mUser: userRow(*u, us.Users[name], now), Sub: SubURL(st, *u), Links: protocols.NamedLinks(st, *u),
 			Daily: orUsage(us.Users[name]).LastDays(now, 30)}
-		for _, p := range Profiles(st, *u) {
+		for _, p := range protocols.Profiles(st, *u) {
 			d.Files = append(d.Files, p.File)
 		}
 		return d, nil
@@ -380,7 +382,7 @@ func manageStatus(r *remote.Server, st *state.State, us *state.Usage, m *manager
 		s.Sub = st.Sub.Mode + ", " + orStr(ss.Sub, "?")
 	}
 	quiet := quietEntries(st, us, now)
-	for _, srv := range peerServers(st) {
+	for _, srv := range protocols.PeerServers(st) {
 		for _, e := range srv.Entries {
 			c := mConfig{ID: e.ID, State: "idle"}
 			eu := us.Entries[state.EntryKey(e)]

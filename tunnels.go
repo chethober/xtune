@@ -19,12 +19,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/chethober/xtune/internal/protocols"
 
 	"github.com/chethober/xtune/internal/state"
 
@@ -48,25 +49,6 @@ var (
 	allowDest        = publicIP
 )
 
-// TunnelConf is what the tunnel server runs.
-type TunnelConf struct {
-	Entries   []state.Entry `json:"entries"`
-	Users     []TunnelUser  `json:"users"`
-	HostKey   string        `json:"hostKey"`
-	CertPEM   string        `json:"certPem"`
-	KeyPEM    string        `json:"keyPem"`
-	DNSTTKey  string        `json:"dnsttKey,omitempty"`
-	DNSDomain string        `json:"dnsDomain,omitempty"`
-	Stats     string        `json:"stats"` // where the server writes its counters
-}
-
-type TunnelUser struct {
-	Name    string `json:"name"`
-	Pass    string `json:"pass"`
-	MT      string `json:"mt,omitempty"` // MTProto proxy secret (hex), when an mtproto config is deployed
-	Devices int    `json:"devices,omitempty"`
-}
-
 // tunnelStats are the server's counters since it started (Boot). The enforce job adds what
 // changed since its last read, so a restart loses nothing it has already read.
 type tunnelStats struct {
@@ -77,32 +59,15 @@ type tunnelStats struct {
 	Written int64               `json:"written"` // unix seconds
 }
 
-// buildTunnelConf builds the tunnel server's config for these users.
-func buildTunnelConf(st *state.State, entries []state.Entry, users []state.User, statsPath string) TunnelConf {
-	c := TunnelConf{Entries: state.FilterEntries(entries, state.Entry.SSH), HostKey: st.SSHHostKey, CertPEM: st.CertPEM, KeyPEM: st.KeyPEM,
-		DNSTTKey: st.DNSTTKey, DNSDomain: st.DNSDomain, Stats: statsPath, Users: []TunnelUser{}}
-	mt := state.HasEngine(entries, "tunnel") && slices.ContainsFunc(entries, func(e state.Entry) bool { return e.Kind == "mtproto" })
-	for _, u := range users {
-		if u.Enabled {
-			tu := TunnelUser{Name: u.Name, Pass: tunnelPassword(u), Devices: u.Devices}
-			if mt {
-				tu.MT = hex.EncodeToString(mtprotoKey(u))
-			}
-			c.Users = append(c.Users, tu)
-		}
-	}
-	return c
-}
-
 // ---------------------------------------------------------------- server
 
 type tunnelServer struct {
 	path    string
-	conf    TunnelConf
+	conf    protocols.TunnelConf
 	sshConf *ssh.ServerConfig
 
 	mu       sync.Mutex
-	users    map[string]TunnelUser
+	users    map[string]protocols.TunnelUser
 	sessions map[*tunSession]bool
 	mt       map[*mtSession]bool
 	boot     string
@@ -125,7 +90,7 @@ func cmdTunnels(args []string) error {
 // runTunnels serves conf until a listener fails or the entries in the file change (the service
 // manager starts it again with the new ones). ready, if set, is closed once it listens.
 func runTunnels(path string, ready chan<- []net.Addr) error {
-	ts := &tunnelServer{path: path, users: map[string]TunnelUser{}, sessions: map[*tunSession]bool{},
+	ts := &tunnelServer{path: path, users: map[string]protocols.TunnelUser{}, sessions: map[*tunSession]bool{},
 		mt: map[*mtSession]bool{}, boot: randHex(8), traffic: map[string]*[2]atomic.Int64{}, entries: map[string]*atomic.Int64{}}
 	if err := readJSONFile(path, &ts.conf); err != nil {
 		return err
@@ -230,7 +195,7 @@ func (ts *tunnelServer) watch(errc chan<- error) {
 			continue
 		}
 		last = fi.ModTime()
-		var c TunnelConf
+		var c protocols.TunnelConf
 		if readJSONFile(ts.path, &c) != nil {
 			continue
 		}
@@ -243,10 +208,10 @@ func (ts *tunnelServer) watch(errc chan<- error) {
 }
 
 // setUsers replaces the users and disconnects sessions whose user is gone or changed.
-func (ts *tunnelServer) setUsers(us []TunnelUser) {
+func (ts *tunnelServer) setUsers(us []protocols.TunnelUser) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	ts.users = map[string]TunnelUser{}
+	ts.users = map[string]protocols.TunnelUser{}
 	for _, u := range us {
 		ts.users[u.Name] = u
 	}
@@ -521,7 +486,7 @@ func tunnelDial(st *state.State, e state.Entry, u state.User, k state.Knobs) fun
 			return fail(fmt.Errorf("server host key: %w", err))
 		}
 		sc, chans, reqs, err := ssh.NewClientConn(raw, addr, &ssh.ClientConfig{User: u.Name,
-			Auth: []ssh.AuthMethod{ssh.Password(tunnelPassword(u))}, HostKeyCallback: ssh.FixedHostKey(pub)})
+			Auth: []ssh.AuthMethod{ssh.Password(protocols.TunnelPassword(u))}, HostKeyCallback: ssh.FixedHostKey(pub)})
 		if err != nil {
 			return fail(err)
 		}
@@ -561,7 +526,7 @@ func tunnelRaw(st *state.State, ctx context.Context, e state.Entry, k state.Knob
 		if dl, ok := ctx.Deadline(); ok {
 			timeout = time.Until(dl)
 		}
-		s, err := dnsttclient.Dial(orStr(k.Resolver, dnsResolvers[0]), pub, st.DNSDomain, timeout)
+		s, err := dnsttclient.Dial(orStr(k.Resolver, protocols.DNSResolvers[0]), pub, st.DNSDomain, timeout)
 		if err != nil {
 			return nil, nop, err
 		}
@@ -576,7 +541,7 @@ func tunnelRaw(st *state.State, ctx context.Context, e state.Entry, k state.Knob
 	if e.CDN() {
 		host = st.CDNDomain
 	}
-	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", hostPort(host, e.Port))
+	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", protocols.HostPort(host, e.Port))
 	if err != nil {
 		return nil, nop, err
 	}
@@ -647,12 +612,6 @@ func wsUpgrade(c net.Conn, host string) (net.Conn, error) {
 	}
 	return &bufConn{Conn: c, r: br}, nil
 }
-
-// dnsResolvers are the resolvers DNS tunnel variants are tried through: plain UDP to public
-// resolvers (often the only thing a censor lets out), and DNS over HTTPS and TLS, which look
-// like web traffic.
-var dnsResolvers = []string{"udp:8.8.8.8:53", "udp:1.1.1.1:53", "udp:9.9.9.9:53",
-	"doh:https://cloudflare-dns.com/dns-query", "doh:https://dns.google/dns-query", "dot:dns.quad9.net:853"}
 
 // localResolvers adds the resolvers this machine is configured with: on many censored networks
 // the ISP's own resolver is the one that still forwards everything.

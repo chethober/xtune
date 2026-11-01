@@ -34,6 +34,8 @@ All notable changes to this project are documented here. The format follows
 - Internal: the data model and its storage (`State`, `Entry`, `User`, `Usage` and the settings they hold, with
   reading and writing `state.json` and `usage.json`) moved to `internal/state`. The format of both files is
   unchanged.
+- Internal: building configs, share links, subscriptions, names and the VPN, tunnel and AmneziaWG profiles moved to
+  `internal/protocols`.
 
 ## [0.10.1] - 2026-10-28
 
