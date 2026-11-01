@@ -206,8 +206,8 @@ func TestWireGuardUserChangesRestart(t *testing.T) {
 }
 
 func TestTunnelServer(t *testing.T) {
-	defer func(s, w time.Duration, a func(net.IP) bool) { tunnelStatsEvery, tunnelWatchEvery, allowDest = s, w, a }(
-		tunnelStatsEvery, tunnelWatchEvery, allowDest)
+	s, w, a := tunnelStatsEvery, tunnelWatchEvery, allowDest
+	t.Cleanup(func() { tunnelStatsEvery, tunnelWatchEvery, allowDest = s, w, a }) // after the server has stopped
 	tunnelStatsEvery, tunnelWatchEvery = 50*time.Millisecond, 50*time.Millisecond
 	allowDest = func(net.IP) bool { return true } // the test site is on loopback
 	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "hello") }))
@@ -229,7 +229,7 @@ func TestTunnelServer(t *testing.T) {
 	}
 	write(ann, bob)
 	ready := make(chan []net.Addr, 1)
-	go runTunnels(conf, ready)
+	serveTunnels(t, conf, ready)
 	select {
 	case <-ready:
 	case <-time.After(5 * time.Second):
@@ -675,4 +675,30 @@ func TestWireGuardTestPeersOnlyOnWireGuard(t *testing.T) {
 			t.Errorf("inbound %v: MTU test peer present = %v", ib["tag"], alias)
 		}
 	}
+}
+
+// serveTunnels runs the tunnel server on conf until the test ends. It is stopped before TempDir's
+// cleanup, since it writes its stats file every tick: changed entries make it exit, the way the
+// service manager restarts it.
+func serveTunnels(t *testing.T, conf string, ready chan<- []net.Addr) {
+	t.Helper()
+	stopped := make(chan error, 1)
+	go func() { stopped <- runTunnels(conf, ready) }()
+	t.Cleanup(func() {
+		var c protocols.TunnelConf
+		if err := readJSONFile(conf, &c); err != nil {
+			t.Error(err)
+			return
+		}
+		c.Entries = nil
+		if err := writeJSON(conf, c); err != nil {
+			t.Error(err)
+			return
+		}
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("tunnel server did not stop")
+		}
+	})
 }
