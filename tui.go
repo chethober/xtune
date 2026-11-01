@@ -144,6 +144,7 @@ func runServerTUI() {
 				huh.NewOption("Subscription server: public links", "sub"),
 				huh.NewOption("Addresses: direct / CDN domain", "addresses"),
 				huh.NewOption("Client routing: direct country", "country"),
+				huh.NewOption("Names: config and subscription names, country flag", "names"),
 				huh.NewOption("WARP: sites that refuse the server's IP", "warp"),
 				huh.NewOption("Alerts: Telegram / webhook", "notify"),
 				huh.NewOption("Manage from Telegram: links for @chthvpnbot", "manage"),
@@ -175,6 +176,8 @@ func runServerTUI() {
 			showErr(t.addresses())
 		case "country":
 			showErr(t.country())
+		case "names":
+			showErr(t.names())
 		case "warp":
 			showErr(t.warp())
 		case "notify":
@@ -756,6 +759,49 @@ func (t *tui) country() error {
 		return err
 	}
 	return SetCountry(t.r, code)
+}
+
+// ---------------------------------------------------------------- names (server)
+
+func (t *tui) names() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nNames"))
+	fmt.Println(describeNaming(st))
+	n := st.Naming
+	label, config, sub := n.Label, n.Config, n.Sub
+	country := "auto"
+	switch {
+	case n.Flag == "off":
+		country = "none"
+	case n.Flag != "" && !n.Detected:
+		country = strings.ToLower(n.Flag)
+	}
+	err = huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Server label ({server})").Description("Shown in config names, e.g. Frankfurt. Empty = none.").Value(&label),
+		huh.NewInput().Title("Country flag").Description("auto (looked up from the server's IP), none, or a code such as de, nl, fi.").
+			Value(&country).Validate(func(s string) error {
+			if s = strings.ToLower(strings.TrimSpace(s)); s == "auto" || s == "none" || validCountryCode(s) {
+				return nil
+			}
+			return fmt.Errorf("auto, none or a two-letter code")
+		}),
+		huh.NewInput().Title("Config names").Description("Empty = "+state.DefaultConfigName+"\n{"+strings.Join(configVars, "} {")+"}").
+			Value(&config).Validate(func(s string) error { return checkTemplate(s, configVars) }),
+		huh.NewInput().Title("Subscription name").Description("Empty = "+state.DefaultSubName+"\n{"+strings.Join(subVars, "} {")+"}").
+			Value(&sub).Validate(func(s string) error { return checkTemplate(s, subVars) }),
+	)).WithTheme(t.theme).Run()
+	if err != nil {
+		return err
+	}
+	st, err = SetNaming(t.r, NamingChange{Label: &label, Country: &country, Config: &config, Sub: &sub}, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Println(describeNaming(st))
+	return nil
 }
 
 // ---------------------------------------------------------------- addresses (server)

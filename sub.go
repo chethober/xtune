@@ -357,7 +357,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	// the de-facto standard headers clients use to show usage and expiry
 	hd.Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", uu.Up, uu.Down, u.Quota, u.Expires))
-	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte("xtune - "+u.Name)))
+	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(subName(st, *u))))
 	hd.Set("Profile-Update-Interval", "6")
 	hd.Set("Profile-Web-Page-Url", SubURL(st, *u))
 	now := time.Now()
@@ -413,6 +413,14 @@ type page struct {
 	Login                         string     // "name / password" for the SSH and VPN apps
 	History                       []histBar  // daily traffic, oldest first; empty without any
 	Network                       string     // "sorted for your network: NAME", when ranked for it
+	SubName                       string     // the subscription's name in apps
+	Apps                          []appLink  // one-tap links that add the subscription to an app
+}
+
+// appLink is an import link: its scheme is an app's, which html/template would otherwise refuse.
+type appLink struct {
+	Name string
+	URL  template.URL
 }
 
 type histBar struct {
@@ -471,6 +479,10 @@ func pageData(st *state.State, u state.User, uu *state.UserUsage, now time.Time,
 		p.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(c.PNG()))
 	}
 	p.Links = NamedLinks(st, u)
+	p.SubName = subName(st, u)
+	for _, a := range subImports(p.SubURL, p.SubName) {
+		p.Apps = append(p.Apps, appLink{Name: a.Name, URL: template.URL(a.URL)}) // built here from the URL and an escaped name
+	}
 	for _, f := range Profiles(st, u) {
 		p.Files = append(p.Files, pageLink{Name: f.Name, URL: p.SubURL + "/f/" + url.PathEscape(f.File)})
 	}
@@ -555,7 +567,8 @@ button,.btn{flex:none;text-decoration:none;font:inherit;font-size:13px;font-weig
 <div class="card"><h2>{{.T.subLink}}</h2>
 <div class="row"><code>{{.SubURL}}</code><button data-copy="{{.SubURL}}">{{.T.copy}}</button></div>
 {{if .QR}}<img class="qr" src="{{.QR}}" alt="{{.T.qrAlt}}">{{end}}
-<p class="dim">{{.T.subHelp}}</p></div>
+<p class="dim">{{.T.subHelp}}</p>
+{{if .Apps}}<div class="k">{{.T.openIn}} <b>{{.SubName}}</b></div><div class="row" style="flex-wrap:wrap">{{range .Apps}}<a class="btn" href="{{.URL}}">{{.Name}}</a>{{end}}</div>{{end}}</div>
 <div class="card"><h2>{{.T.failover}}</h2>
 <div class="row"><code>{{.JSONURL}}</code><button data-copy="{{.JSONURL}}">{{.T.copy}}</button></div>
 <p class="dim">{{.T.failHelp}}</p></div>

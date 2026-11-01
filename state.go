@@ -210,7 +210,7 @@ func DeployVariants(r *remote.Server, st *state.State, chosen []*Variant) (*stat
 		st.Public, st.Manage = old.Public, old.Manage
 		st.Plans, st.Peers, st.Follow = old.Plans, old.Peers, old.Follow
 		st.Backups, st.Networks = old.Backups, old.Networks
-		st.Autopilot, st.ClientIP = old.Autopilot, old.ClientIP
+		st.Autopilot, st.ClientIP, st.Naming = old.Autopilot, old.ClientIP, old.Naming
 		forgetStaleRanks(st)           // configs that moved are measured anew
 		if st.Cloudflare.Token == "" { // a token given for this tune replaces the deployment's
 			st.Cloudflare = old.Cloudflare
@@ -219,6 +219,7 @@ func DeployVariants(r *remote.Server, st *state.State, chosen []*Variant) (*stat
 			st.Worker = old.Worker
 		}
 	}
+	detectFlag(st, time.Now())
 	if err := Apply(r, st); err != nil {
 		return st, err
 	}

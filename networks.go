@@ -291,8 +291,15 @@ func forNetwork(st *state.State, asn string, now time.Time) (*state.State, strin
 // asnLookup finds the ASN an IP belongs to. A variable so tests can stand in for DNS.
 var asnLookup = func(ip net.IP) (string, error) { return cymruASN(net.DefaultResolver, ip) }
 
-// cymruASN asks Team Cymru's IP-to-ASN DNS service: TXT "ASN | prefix | CC | registry | date".
+// cymruASN asks Team Cymru's IP-to-ASN DNS service for the ASN an IP belongs to.
 func cymruASN(res *net.Resolver, ip net.IP) (string, error) {
+	asn, _, err := cymruOrigin(res, ip)
+	return asn, err
+}
+
+// cymruOrigin asks Team Cymru's IP-to-ASN DNS service: TXT "ASN | prefix | CC | registry | date".
+// It returns the ASN ("AS1234") and the country the prefix is registered in ("DE").
+func cymruOrigin(res *net.Resolver, ip net.IP) (asn, cc string, err error) {
 	var q string
 	if v4 := ip.To4(); v4 != nil {
 		q = fmt.Sprintf("%d.%d.%d.%d.origin.asn.cymru.com", v4[3], v4[2], v4[1], v4[0])
@@ -309,17 +316,25 @@ func cymruASN(res *net.Resolver, ip net.IP) (string, error) {
 	defer cancel()
 	txts, err := res.LookupTXT(ctx, q)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	return parseCymru(txts, ip)
+}
+
+func parseCymru(txts []string, ip net.IP) (asn, cc string, err error) {
 	for _, t := range txts {
-		f := strings.Fields(strings.SplitN(t, "|", 2)[0])
+		parts := strings.Split(t, "|")
+		f := strings.Fields(parts[0])
 		if len(f) > 0 { // several ASNs may announce it; the first will do
 			if _, err := strconv.Atoi(f[0]); err == nil {
-				return "AS" + f[0], nil
+				if len(parts) > 2 {
+					cc = strings.ToUpper(strings.TrimSpace(parts[2]))
+				}
+				return "AS" + f[0], cc, nil
 			}
 		}
 	}
-	return "", errors.New("no ASN for " + ip.String())
+	return "", "", errors.New("no ASN for " + ip.String())
 }
 
 // asnCache keeps lookups by /24 (IPv4) or /48 (IPv6) for a day: apps ask every few hours.

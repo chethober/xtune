@@ -1,0 +1,305 @@
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"net"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
+)
+
+// Config and subscription names. Apps show a config by the name after "#" in its link, and a
+// subscription by its Profile-Title header; both come from the templates in state.Naming.
+
+var namePlaceholder = regexp.MustCompile(`\{(\w+)\}`)
+
+var configVars = []string{"flag", "country", "server", "user", "id", "proto", "port", "via"}
+var subVars = []string{"flag", "country", "server", "user"}
+
+// kindLabels are the protocol names shown for {proto}.
+var kindLabels = map[string]string{
+	"reality-tcp": "REALITY", "reality-xhttp": "REALITY XHTTP", "reality-grpc": "REALITY gRPC",
+	"vlessenc-tcp": "VLESS PQ", "vlessenc-xhttp": "VLESS PQ XHTTP", "cdn-xhttp": "CDN XHTTP",
+	"hysteria2": "Hysteria2", "ss2022": "Shadowsocks", "wireguard": "WireGuard", "worker-ws": "Worker",
+	"trojan-reality": "Trojan", "amneziawg": "AmneziaWG", "ssh": "SSH", "ssh-tls": "SSH TLS", "cdn-ssh": "CDN SSH",
+	"dnstt": "DNS tunnel", "mtproto": "MTProto", "openvpn-udp": "OpenVPN UDP", "openvpn-tcp": "OpenVPN TCP", "ikev2": "IKEv2",
+}
+
+func kindLabel(kind string) string {
+	if l, ok := kindLabels[kind]; ok {
+		return l
+	}
+	return kind
+}
+
+// flagEmoji is the flag of an ISO 3166-1 alpha-2 country code ("DE" → 🇩🇪), "" for anything else.
+func flagEmoji(cc string) string {
+	if !validCountryCode(cc) {
+		return ""
+	}
+	cc = strings.ToUpper(cc)
+	return string([]rune{rune(cc[0]) - 'A' + 0x1F1E6, rune(cc[1]) - 'A' + 0x1F1E6})
+}
+
+func validCountryCode(cc string) bool {
+	if len(cc) != 2 {
+		return false
+	}
+	for _, c := range strings.ToUpper(cc) {
+		if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// serverFlag is the country code behind {flag} and {country}, "" when unknown or off.
+func serverFlag(st *state.State) string {
+	if validCountryCode(st.Naming.Flag) {
+		return strings.ToUpper(st.Naming.Flag)
+	}
+	return ""
+}
+
+// expandName fills a template and tidies it: placeholders left empty take their separators along.
+func expandName(tmpl string, vars map[string]string) string {
+	s := namePlaceholder.ReplaceAllStringFunc(tmpl, func(m string) string {
+		if v, ok := vars[m[1:len(m)-1]]; ok {
+			return v
+		}
+		return m
+	})
+	var out []string
+	for _, t := range strings.Fields(s) {
+		if isNameSep(t) && (len(out) == 0 || isNameSep(out[len(out)-1])) {
+			continue
+		}
+		out = append(out, t)
+	}
+	for len(out) > 0 && isNameSep(out[len(out)-1]) {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, " ")
+}
+
+func isNameSep(t string) bool {
+	return strings.Trim(t, "-·|/•,:–—") == ""
+}
+
+func nameVars(st *state.State, u state.User) map[string]string {
+	cc := serverFlag(st)
+	return map[string]string{"flag": flagEmoji(cc), "country": cc, "server": st.Naming.Label, "user": u.Name}
+}
+
+// configName is what apps show for one config of u.
+func configName(st *state.State, e state.Entry, u state.User) string {
+	v := nameVars(st, u)
+	v["id"], v["proto"], v["port"] = e.ID, kindLabel(e.Kind), fmt.Sprint(clientPort(e))
+	v["via"] = ""
+	return expandName(orStr(st.Naming.Config, state.DefaultConfigName), v)
+}
+
+// subName is the subscription's name in apps (Profile-Title) and of the failover config.
+func subName(st *state.State, u state.User) string {
+	return expandName(orStr(st.Naming.Sub, state.DefaultSubName), nameVars(st, u))
+}
+
+// subImports are one-tap links that add the subscription, under its name, to the apps that take
+// one. The subscription URL itself stays plain: apps that do not know these links still use it.
+func subImports(sub, name string) []pageLink {
+	if sub == "" {
+		return nil
+	}
+	q := url.QueryEscape
+	frag := "#" + url.PathEscape(name)
+	return []pageLink{
+		{Name: "v2rayNG", URL: "v2rayng://install-sub?url=" + q(sub) + "&name=" + q(name)},
+		{Name: "Hiddify", URL: "hiddify://import/" + sub + frag},
+		{Name: "Streisand", URL: "streisand://import/" + sub + frag},
+		{Name: "sing-box", URL: "sing-box://import-remote-profile?url=" + q(sub) + frag},
+	}
+}
+
+// checkTemplate rejects placeholders a template cannot use.
+func checkTemplate(tmpl string, allowed []string) error {
+	for _, m := range namePlaceholder.FindAllStringSubmatch(tmpl, -1) {
+		ok := false
+		for _, a := range allowed {
+			ok = ok || a == m[1]
+		}
+		if !ok {
+			return fmt.Errorf("unknown placeholder {%s} (use %s)", m[1], "{"+strings.Join(allowed, "} {")+"}")
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- the server's country
+
+// countryLookup finds the country an IP is registered in. A variable so tests can stand in for DNS.
+var countryLookup = func(ip net.IP) (string, error) {
+	_, cc, err := cymruOrigin(net.DefaultResolver, ip)
+	if err == nil && !validCountryCode(cc) {
+		err = errors.New("no country for " + ip.String())
+	}
+	return cc, err
+}
+
+// detectFlag looks up the server's country when it is not known yet, at most once a day after a
+// failure. It reports whether the naming changed.
+func detectFlag(st *state.State, now time.Time) bool {
+	n := &st.Naming
+	if n.Flag != "" || now.Unix()-n.Checked < 24*3600 {
+		return false
+	}
+	ip := net.ParseIP(orStr(st.ClientIP, st.Host))
+	if ip == nil {
+		if ips, err := net.LookupIP(st.Host); err == nil && len(ips) > 0 {
+			ip = ips[0]
+		}
+	}
+	if ip == nil {
+		n.Checked = now.Unix()
+		return true
+	}
+	cc, err := countryLookup(ip)
+	if err != nil {
+		n.Checked = now.Unix()
+		return true
+	}
+	n.Flag, n.Detected, n.Checked = cc, true, 0
+	return true
+}
+
+// forgetDetectedFlag drops a looked-up country after the server moves, so it is looked up again.
+func forgetDetectedFlag(st *state.State) {
+	if st.Naming.Detected {
+		st.Naming.Flag, st.Naming.Detected, st.Naming.Checked = "", false, 0
+	}
+}
+
+// ---------------------------------------------------------------- changing the names
+
+// NamingChange is what `xtune names` changes; nil fields stay as they are.
+type NamingChange struct {
+	Label, Country, Config, Sub *string
+}
+
+// SetNaming changes how configs and subscriptions are named. Country is a country code, "auto" to
+// look it up, or "none"/"off" for no flag. Empty templates go back to the defaults.
+func SetNaming(r *remote.Server, c NamingChange, now time.Time) (*state.State, error) {
+	defer r.Lock()()
+	st, err := requireState(r)
+	if err != nil {
+		return nil, err
+	}
+	n := st.Naming
+	if c.Label != nil {
+		n.Label = strings.TrimSpace(*c.Label)
+	}
+	if c.Config != nil {
+		if err := checkTemplate(*c.Config, configVars); err != nil {
+			return nil, fmt.Errorf("--config: %w", err)
+		}
+		n.Config = strings.TrimSpace(*c.Config)
+	}
+	if c.Sub != nil {
+		if err := checkTemplate(*c.Sub, subVars); err != nil {
+			return nil, fmt.Errorf("--sub: %w", err)
+		}
+		n.Sub = strings.TrimSpace(*c.Sub)
+	}
+	if c.Country != nil {
+		switch v := strings.ToLower(strings.TrimSpace(*c.Country)); {
+		case v == "auto":
+			n.Flag, n.Detected, n.Checked = "", false, 0
+		case v == "none" || v == "off" || v == "":
+			n.Flag, n.Detected = "off", false
+		case validCountryCode(v):
+			n.Flag, n.Detected = strings.ToUpper(v), false
+		default:
+			return nil, fmt.Errorf("--country %q: use a two-letter country code (de, nl, us, …), auto or none", *c.Country)
+		}
+	}
+	st.Naming = n
+	if c.Country != nil {
+		detectFlag(st, now)
+	}
+	return st, state.Save(r, st)
+}
+
+func describeNaming(st *state.State) string {
+	n := st.Naming
+	flag := "none yet (looked up automatically)"
+	switch {
+	case n.Flag == "off":
+		flag = "off"
+	case serverFlag(st) != "":
+		flag = flagEmoji(serverFlag(st)) + " " + serverFlag(st)
+		if n.Detected {
+			flag += " (looked up)"
+		}
+	}
+	u := state.User{Name: "USER"}
+	e := state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443}
+	if len(st.Entries) > 0 {
+		e = st.Entries[0]
+	}
+	return fmt.Sprintf("server label:   %s\ncountry flag:   %s\nconfig names:   %s\n                e.g. %s\nsubscription:   %s\n                e.g. %s",
+		orStr(n.Label, "(none)"), flag, orStr(n.Config, state.DefaultConfigName+"  (default)"), configName(st, e, u),
+		orStr(n.Sub, state.DefaultSubName+"  (default)"), subName(st, u))
+}
+
+func cmdNames(args []string) error {
+	if err := serverOnly("names", args); err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("names", flag.ExitOnError)
+	label := fs.String("label", "", "this server's name, {server} in the templates")
+	country := fs.String("country", "", "country flag: a code (de, nl, …), auto (look it up) or none")
+	config := fs.String("config", "", "config name template; --config= restores the default ("+state.DefaultConfigName+")")
+	sub := fs.String("sub", "", "subscription name template; --sub= restores the default ("+state.DefaultSubName+")")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: xtune names [--label NAME] [--country CC|auto|none] [--config TEMPLATE] [--sub TEMPLATE]")
+		fmt.Fprintln(fs.Output(), "placeholders: config {"+strings.Join(configVars, "} {")+"}; subscription {"+strings.Join(subVars, "} {")+"}")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	var c NamingChange
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "label":
+			c.Label = label
+		case "country":
+			c.Country = country
+		case "config":
+			c.Config = config
+		case "sub":
+			c.Sub = sub
+		}
+	})
+	r, err := remote.OpenLocal()
+	if err != nil {
+		return err
+	}
+	var st *state.State
+	if c == (NamingChange{}) {
+		st, err = requireState(r)
+	} else {
+		st, err = SetNaming(r, c, time.Now())
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Println(describeNaming(st))
+	if t := orStr(st.Naming.Config, state.DefaultConfigName); !strings.Contains(t, "{id}") && !strings.Contains(t, "{port}") {
+		fmt.Println("note: without {id} or {port} several configs can share a name")
+	}
+	return nil
+}

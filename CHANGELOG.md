@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Country flags: config names in apps start with the flag of the country the server is in (looked up from its
+  IP with Team Cymru's DNS service, again after `xtune migrate`; or chosen with `xtune names --country de`).
+  Followers keep their own flags in the primary's subscriptions.
+- `xtune names` (and *Names* in the server TUI): a server label and templates for config names
+  (`{flag} {country} {server} {user} {id} {proto} {port} {via}`) and the subscription's name in apps
+  (`Profile-Title` and the failover config). Without templates, names stay as before: `USER-ID` and
+  `xtune - USER`, after the flag.
+- Named subscription import links: the user's page and `xtune users links` give one-tap links that add the
+  subscription under its name to v2rayNG, Hiddify, Streisand and sing-box.
+
 ### Changed
 - Internal: the server transport (SSH and local command execution, the state lock and the embedded `helper.sh`)
   moved to `internal/remote`, the first step of splitting the root package before v1.0. No change in behaviour.

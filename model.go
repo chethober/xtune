@@ -376,14 +376,14 @@ func FailoverConfig(st *state.State, u state.User) J {
 	if first != "" {
 		balancer["fallbackTag"] = first
 	}
-	return J{"remarks": "xtune - " + u.Name, "log": J{"loglevel": "warning"}, "inbounds": clientInbounds(), "outbounds": obs,
+	return J{"remarks": subName(st, u), "log": J{"loglevel": "warning"}, "inbounds": clientInbounds(), "outbounds": obs,
 		"burstObservatory": J{"subjectSelector": []string{"proxy-"},
 			"pingConfig": J{"destination": probeURL, "interval": "1m", "timeout": "5s", "sampling": 3}},
 		"routing": J{"domainStrategy": "AsIs", "balancers": []J{balancer}, "rules": rules}}
 }
 
 func Link(st *state.State, e state.Entry, u state.User, k state.Knobs) string {
-	name := url.PathEscape(u.Name + "-" + e.ID)
+	name := url.PathEscape(configName(st, e, u))
 	hostPort := hostPort(dialAddr(st, e, k), clientPort(e))
 	switch e.Kind {
 	case "hysteria2":

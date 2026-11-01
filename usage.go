@@ -274,7 +274,8 @@ func Enforce(r *remote.Server) error {
 			}
 		}
 	}
-	if applyResets(st, us, now) {
+	reset, flagged := applyResets(st, us, now), detectFlag(st, now)
+	if reset || flagged {
 		if err := state.Save(r, st); err != nil {
 			return err
 		}

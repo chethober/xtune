@@ -141,6 +141,7 @@ type State struct {
 	Networks    map[string]*NetRank    `json:"networks,omitempty"`  // configs ranked per network (ASN), for subscriptions
 	Autopilot   *Autopilot             `json:"autopilot,omitempty"` // where to get a new IP when this one is blocked
 	ClientIP    string                 `json:"clientIp,omitempty"`  // the address clients use instead of Host (a reserved IP)
+	Naming      Naming                 `json:"naming,omitzero"`     // config and subscription names, with the country flag
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`

@@ -58,7 +58,7 @@ func peerState(st *state.State) *state.State {
 	p := &state.State{Host: st.Host, ClientIP: st.ClientIP, Domain: st.Domain, CDNDomain: st.CDNDomain, RealityPub: st.RealityPub,
 		ShortID: st.ShortID, VencEnc: st.VencEnc, SSKey: st.SSKey, CertSNI: st.CertSNI, CertHash: st.CertHash,
 		WGPub: st.WGPub, SSHHostPub: st.SSHHostPub, DNSTTPub: st.DNSTTPub, DNSDomain: st.DNSDomain,
-		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries}
+		VPNCA: st.VPNCA, VPNName: st.VPNName, Entries: st.Entries, Naming: st.Naming}
 	if st.AWG != nil {
 		awg := *st.AWG
 		awg.Priv = ""

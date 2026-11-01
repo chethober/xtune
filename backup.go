@@ -102,6 +102,7 @@ func seed(r *remote.Server, b *Backup, probeOut string, log func(string)) (*stat
 	}
 	st := *b.State
 	st.Host, st.ClientIP = r.Conn.Host, "" // a reserved IP stays with the old server
+	forgetDetectedFlag(&st)                // the new server may be elsewhere
 	if st.Autopilot != nil {
 		ap := *st.Autopilot
 		ap.Droplet, ap.Owned = 0, "" // found again on the new server

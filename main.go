@@ -80,6 +80,8 @@ On the server (as root):
   xtune sub       metrics [status | on | token | off]   Prometheus metrics on the subscription server
   xtune domains   [--direct D] [--cdn C]   show or change the addresses used in links
   xtune country   [ir|cn|ru|none]          sites of this country go direct in client configs
+  xtune names     [--label NAME] [--country CC|auto|none] [--config T] [--sub T]
+                                           config and subscription names in apps, with the server's flag
   xtune networks  [list | del ASN | clear] configs ranked per network (ASN): subscriptions list each
                                            network's best configs first (from tunes, checks and reports)
   xtune notify    [status | telegram --chat ID | webhook [URL] | test | off]   admin alerts
@@ -135,6 +137,8 @@ func main() {
 		err = cmdSub(args)
 	case "country":
 		err = cmdCountry(args)
+	case "names":
+		err = cmdNames(args)
 	case "notify":
 		err = cmdNotify(args)
 	case "warp":
@@ -766,7 +770,12 @@ func printLinks(w io.Writer, st *state.State, name string) error {
 		state = ", DISABLED"
 	}
 	if sub := SubURL(st, *u); sub != "" {
-		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n\n", u.Name, state, sub, sub)
+		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n", u.Name, state, sub, sub)
+		fmt.Fprintf(w, "add it as %q in one tap:\n", subName(st, *u))
+		for _, a := range subImports(sub, subName(st, *u)) {
+			fmt.Fprintf(w, "  %-10s %s\n", a.Name, a.URL)
+		}
+		fmt.Fprintln(w)
 	} else {
 		fmt.Fprintf(w, "# %s (%d configs%s, base64 subscription body below the links)\n", u.Name, len(st.Entries), state)
 	}
