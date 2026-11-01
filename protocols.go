@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/chethober/xtune/internal/state"
-
 	"golang.org/x/crypto/ssh"
 	"www.bamsoftware.com/git/dnstt.git/noise"
 )

@@ -16,12 +16,9 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/cloudflare"
-
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // `xtune doctor` checks the things that break a deployment without an obvious error: services,

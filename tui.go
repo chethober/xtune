@@ -10,15 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/chethober/xtune/internal/protocols"
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 var (

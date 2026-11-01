@@ -10,9 +10,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // A plan is a named set of limits ("basic: 50 GB, 30 days, 2 devices, monthly reset"). Users can

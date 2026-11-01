@@ -8,9 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 func manageCall(t *testing.T, srv *httptest.Server, token string, q J) (int, map[string]any) {

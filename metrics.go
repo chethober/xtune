@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // The subscription server can serve Prometheus metrics at /PATH/metrics, for admins who run

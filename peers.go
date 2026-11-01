@@ -16,10 +16,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Several servers under one subscription. One server is the primary: it owns the users, their

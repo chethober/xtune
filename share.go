@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/netinfo"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Several networks, one deployment. `xtune tune --share bundle.json` leaves the test matrix

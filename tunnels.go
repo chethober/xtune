@@ -25,16 +25,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
-	"golang.org/x/crypto/ssh"
-	"www.bamsoftware.com/git/dnstt.git/dns"
-
 	dnsttclient "github.com/chethober/xtune/internal/dnstt/client"
 	dnsttserver "github.com/chethober/xtune/internal/dnstt/server"
+	"github.com/chethober/xtune/internal/protocols"
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
+	"golang.org/x/crypto/ssh"
+	"www.bamsoftware.com/git/dnstt.git/dns"
 )
 
 // The SSH tunnel server: `xtune tunnels run CONF` serves the ssh, ssh-tls, cdn-ssh and dnstt

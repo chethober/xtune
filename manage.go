@@ -15,10 +15,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // Management links: users and plans from Telegram, through the community VPN bot @chthvpnbot

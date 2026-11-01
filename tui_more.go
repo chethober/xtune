@@ -6,11 +6,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/chethober/xtune/internal/cloudflare"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/charmbracelet/huh"
+	"github.com/chethober/xtune/internal/cloudflare"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // ---------------------------------------------------------------- plans (server)

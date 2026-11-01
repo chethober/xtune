@@ -14,10 +14,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // warpAPI is Cloudflare's client API, as used by the WARP apps; a variable so tests can replace it.

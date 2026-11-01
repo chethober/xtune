@@ -25,10 +25,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // localXray is a local Xray to validate generated configs with; tests that need it skip without.

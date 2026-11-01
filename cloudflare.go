@@ -12,10 +12,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/cloudflare"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // With a Cloudflare API token, xtune keeps the domains' DNS records pointed at the server itself

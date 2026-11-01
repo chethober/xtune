@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/chethober/xtune/internal/protocols"
-
 	"github.com/chethober/xtune/internal/remote"
 	"github.com/chethober/xtune/internal/state"
 )

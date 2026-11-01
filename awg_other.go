@@ -5,9 +5,8 @@ package main
 import (
 	"errors"
 
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/chethober/xtune/internal/state"
 )
 
 func awgServerDevice(e state.Entry, uapi string) (*device.Device, error) {

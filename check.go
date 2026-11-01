@@ -13,9 +13,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // `xtune check` measures the deployed configs from this network, quickly: are they reachable,

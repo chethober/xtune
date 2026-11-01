@@ -14,9 +14,7 @@ import (
 	"strings"
 
 	"github.com/chethober/xtune/internal/cloudflare"
-
 	"github.com/chethober/xtune/internal/protocols"
-
 	"github.com/chethober/xtune/internal/state"
 )
 

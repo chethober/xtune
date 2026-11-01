@@ -5,11 +5,10 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // awgServerDevice brings up entry e on its own TUN interface with the server's tunnel address.

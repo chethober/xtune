@@ -23,10 +23,8 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 )
 
 // OpenVPN and IKEv2 run on the distribution's openvpn and strongSwan (installed with --vpn).

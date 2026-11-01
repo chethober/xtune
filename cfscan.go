@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/chethober/xtune/internal/protocols"
-
 	"github.com/chethober/xtune/internal/state"
 )
 

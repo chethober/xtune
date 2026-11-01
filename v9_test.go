@@ -22,15 +22,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/netinfo"
-
 	"github.com/chethober/xtune/internal/cloudflare"
-
+	"github.com/chethober/xtune/internal/netinfo"
 	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 	"golang.org/x/net/dns/dnsmessage"
 )
 

@@ -11,12 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/chethober/xtune/internal/protocols"
+	"github.com/chethober/xtune/internal/state"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 

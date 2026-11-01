@@ -20,14 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-
-	"github.com/chethober/xtune/internal/state"
-
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	awgtun "github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/chethober/xtune/internal/protocols"
 	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/internal/state"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
