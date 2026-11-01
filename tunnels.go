@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"golang.org/x/crypto/ssh"
 	"www.bamsoftware.com/git/dnstt.git/dns"
 
@@ -48,14 +50,14 @@ var (
 
 // TunnelConf is what the tunnel server runs.
 type TunnelConf struct {
-	Entries   []Entry      `json:"entries"`
-	Users     []TunnelUser `json:"users"`
-	HostKey   string       `json:"hostKey"`
-	CertPEM   string       `json:"certPem"`
-	KeyPEM    string       `json:"keyPem"`
-	DNSTTKey  string       `json:"dnsttKey,omitempty"`
-	DNSDomain string       `json:"dnsDomain,omitempty"`
-	Stats     string       `json:"stats"` // where the server writes its counters
+	Entries   []state.Entry `json:"entries"`
+	Users     []TunnelUser  `json:"users"`
+	HostKey   string        `json:"hostKey"`
+	CertPEM   string        `json:"certPem"`
+	KeyPEM    string        `json:"keyPem"`
+	DNSTTKey  string        `json:"dnsttKey,omitempty"`
+	DNSDomain string        `json:"dnsDomain,omitempty"`
+	Stats     string        `json:"stats"` // where the server writes its counters
 }
 
 type TunnelUser struct {
@@ -75,11 +77,11 @@ type tunnelStats struct {
 	Written int64               `json:"written"` // unix seconds
 }
 
-// TunnelConf builds the tunnel server's config for these users.
-func (st *State) TunnelConf(entries []Entry, users []User, statsPath string) TunnelConf {
-	c := TunnelConf{Entries: filterEntries(entries, Entry.SSH), HostKey: st.SSHHostKey, CertPEM: st.CertPEM, KeyPEM: st.KeyPEM,
+// buildTunnelConf builds the tunnel server's config for these users.
+func buildTunnelConf(st *state.State, entries []state.Entry, users []state.User, statsPath string) TunnelConf {
+	c := TunnelConf{Entries: state.FilterEntries(entries, state.Entry.SSH), HostKey: st.SSHHostKey, CertPEM: st.CertPEM, KeyPEM: st.KeyPEM,
 		DNSTTKey: st.DNSTTKey, DNSDomain: st.DNSDomain, Stats: statsPath, Users: []TunnelUser{}}
-	mt := hasEngine(entries, "tunnel") && slices.ContainsFunc(entries, func(e Entry) bool { return e.Kind == "mtproto" })
+	mt := state.HasEngine(entries, "tunnel") && slices.ContainsFunc(entries, func(e state.Entry) bool { return e.Kind == "mtproto" })
 	for _, u := range users {
 		if u.Enabled {
 			tu := TunnelUser{Name: u.Name, Pass: tunnelPassword(u), Devices: u.Devices}
@@ -164,7 +166,7 @@ func runTunnels(path string, ready chan<- []net.Addr) error {
 	}
 }
 
-func (ts *tunnelServer) listen(e Entry, errc chan<- error) (net.Addr, error) {
+func (ts *tunnelServer) listen(e state.Entry, errc chan<- error) (net.Addr, error) {
 	switch e.Kind {
 	case "dnstt":
 		priv, err := hex.DecodeString(ts.conf.DNSTTKey)
@@ -500,9 +502,9 @@ func contains2s(xs []string, x string) bool {
 // tunnelDial returns a dialer that reaches addr through a fresh SSH session for every
 // connection, like a client app connecting anew, so reliability means what it means for the
 // Xray configs.
-func (st *State) tunnelDial(e Entry, u User, k Knobs) func(ctx context.Context, network, addr string) (net.Conn, error) {
+func tunnelDial(st *state.State, e state.Entry, u state.User, k state.Knobs) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		raw, closeExtra, err := st.tunnelRaw(ctx, e, k)
+		raw, closeExtra, err := tunnelRaw(st, ctx, e, k)
 		if err != nil {
 			return nil, err
 		}
@@ -548,7 +550,7 @@ func (t *tunnelConn) Close() error {
 
 // tunnelRaw opens the transport SSH runs over, payload included. closeExtra releases a DNS
 // tunnel session.
-func (st *State) tunnelRaw(ctx context.Context, e Entry, k Knobs) (net.Conn, func(), error) {
+func tunnelRaw(st *state.State, ctx context.Context, e state.Entry, k state.Knobs) (net.Conn, func(), error) {
 	nop := func() {}
 	if e.Kind == "dnstt" {
 		pub, err := hex.DecodeString(st.DNSTTPub)
@@ -676,7 +678,7 @@ func localResolvers() []string {
 // collectExtra adds the SSH tunnels', AmneziaWG's and VPNs' traffic since the last run to the users and to
 // byTag, and returns the client IPs online on them and the VPN sessions. Their counters only
 // grow while a server or session lives, so the last values seen are kept in us.Extra.
-func collectExtra(r *remote.Server, st *State, us *Usage, now time.Time, byTag map[string]int64) (map[string][]string, []vpnSession) {
+func collectExtra(r *remote.Server, st *state.State, us *state.Usage, now time.Time, byTag map[string]int64) (map[string][]string, []vpnSession) {
 	online := map[string][]string{}
 	seen := map[string][2]int64{}
 	add := func(key, user, entry string, up, down int64) {
@@ -687,17 +689,17 @@ func collectExtra(r *remote.Server, st *State, us *Usage, now time.Time, byTag m
 		}
 		seen[key] = [2]int64{up, down}
 		if user != "" && d != [2]int64{} {
-			uu := us.of(user)
+			uu := us.Of(user)
 			uu.Up += d[0]
 			uu.Down += d[1]
-			uu.addDaily(now, d[0]+d[1])
+			uu.AddDaily(now, d[0]+d[1])
 		}
 		if entry != "" {
 			byTag[entry] += d[0] + d[1]
 		}
 	}
 	for _, src := range []struct{ engine, file, key string }{{"tunnel", tunnelStatsFile, "tun/"}, {"awg", awgStatsFile, "awg/"}} {
-		if !hasEngine(st.Entries, src.engine) {
+		if !state.HasEngine(st.Entries, src.engine) {
 			continue
 		}
 		var ts tunnelStats
@@ -716,7 +718,7 @@ func collectExtra(r *remote.Server, st *State, us *Usage, now time.Time, byTag m
 		}
 	}
 	var sessions []vpnSession
-	if hasEngine(st.Entries, "openvpn") || hasEngine(st.Entries, "ikev2") {
+	if state.HasEngine(st.Entries, "openvpn") || state.HasEngine(st.Entries, "ikev2") {
 		out, _ := r.Helper("vpn-sessions")
 		sessions = parseVPNSessions(out)
 		for _, s := range sessions {
@@ -757,7 +759,7 @@ func (s vpnSession) Entry() string {
 
 // kickInactive disconnects VPN sessions of users who may no longer connect (the SSH tunnel server
 // does this itself when its user list changes).
-func kickInactive(r *remote.Server, active []User, sessions []vpnSession) error {
+func kickInactive(r *remote.Server, active []state.User, sessions []vpnSession) error {
 	ok := map[string]bool{}
 	for _, u := range active {
 		ok[u.Name] = true

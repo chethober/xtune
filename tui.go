@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -309,7 +311,7 @@ func (t *tui) status() error {
 	}
 	fmt.Printf("  arch %s, xray-autotune: %s, xtune on server: %s%s\n", st.Arch, orStr(st.Unit, "-"), orStr(st.Xtune, "none"), mismatch)
 	fmt.Printf("  enforce timer: %s, subscription server: %s\n", orStr(st.Timer, "-"), orStr(st.Sub, "-"))
-	s, err := LoadState(t.r)
+	s, err := state.Load(t.r)
 	if err != nil {
 		return err
 	}
@@ -324,7 +326,7 @@ func (t *tui) status() error {
 	for _, e := range s.Entries {
 		fmt.Printf("  - %-14s %-15s port %d/%s\n", e.ID, e.Kind, e.Port, e.Proto())
 	}
-	us, err := LoadUsage(t.r)
+	us, err := state.LoadUsage(t.r)
 	if err != nil {
 		return err
 	}
@@ -334,7 +336,7 @@ func (t *tui) status() error {
 			online++
 		}
 	}
-	fmt.Printf("  users: %d, %d active, %d online now\n", len(s.Users), len(s.activeUsers(us, time.Now())), online)
+	fmt.Printf("  users: %d, %d active, %d online now\n", len(s.Users), len(activeUsers(s, us, time.Now())), online)
 	pause()
 	return nil
 }
@@ -400,7 +402,7 @@ func (t *tui) tune() error {
 		return err
 	}
 	o := TuneOpts{XrayBin: bin, CleanIPs: defaultCleanIPs}
-	old, err := LoadState(t.r)
+	old, err := state.Load(t.r)
 	if err != nil {
 		return err
 	}
@@ -495,7 +497,7 @@ func (t *tui) users() error {
 		if err != nil {
 			return err
 		}
-		us, err := LoadUsage(t.r)
+		us, err := state.LoadUsage(t.r)
 		if err != nil {
 			return err
 		}
@@ -523,7 +525,7 @@ func (t *tui) users() error {
 }
 
 // limitsForm asks for quota, expiry and device limits, prefilled from u.
-func (t *tui) limitsForm(u User, name *string) (Limits, error) {
+func (t *tui) limitsForm(u state.User, name *string) (Limits, error) {
 	quota, days, devices, reset := "", "", "", u.Reset
 	if u.Quota > 0 {
 		quota = strconv.FormatFloat(float64(u.Quota)/(1<<30), 'f', -1, 64)
@@ -567,7 +569,7 @@ func (t *tui) limitsForm(u User, name *string) (Limits, error) {
 	return l, nil
 }
 
-func (t *tui) userAction(st *State, action string) error {
+func (t *tui) userAction(st *state.State, action string) error {
 	if action == "add" {
 		var name string
 		plan, err := t.pickPlan(st, "Plan", "Custom limits")
@@ -582,7 +584,7 @@ func (t *tui) userAction(st *State, action string) error {
 				return err
 			}
 			l.Plan = &plan
-		} else if l, err = t.limitsForm(User{}, &name); err != nil {
+		} else if l, err = t.limitsForm(state.User{}, &name); err != nil {
 			return err
 		}
 		st, u, err := AddUser(t.r, strings.TrimSpace(name), l)

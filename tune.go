@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/net/proxy"
 )
@@ -57,8 +59,8 @@ type TuneOpts struct {
 	CleanIPs                      int      // CDN and Worker configs: also measure them through this many clean edge IPs
 	Log                           func(string)
 
-	deployed *State  // the server's deployment, if any
-	worker   *Worker // the Worker the test entries go through
+	deployed *state.State  // the server's deployment, if any
+	worker   *state.Worker // the Worker the test entries go through
 }
 
 // optionalProtocols can be added to the test matrix with --protocols.
@@ -112,8 +114,8 @@ func (o *TuneOpts) defaults() {
 }
 
 type Variant struct {
-	Entry      Entry
-	K          Knobs
+	Entry      state.Entry
+	K          state.Knobs
 	Label      string
 	port       int
 	Ok, N      int
@@ -158,19 +160,19 @@ func usedPorts(probeOut string) map[string]map[int]bool {
 }
 
 // cdnEntry returns a CDN entry on a free CDN-proxied port, or false when none is free.
-func cdnEntry(used map[string]map[int]bool, taken map[int]bool) (Entry, bool) {
+func cdnEntry(used map[string]map[int]bool, taken map[int]bool) (state.Entry, bool) {
 	for _, p := range cdnPorts {
 		if !used["tcp"][p] && !taken[p] {
 			taken[p] = true
-			return Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: p, Path: "/" + randHex(6)}, true
+			return state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: p, Path: "/" + randHex(6)}, true
 		}
 	}
-	return Entry{}, false
+	return state.Entry{}, false
 }
 
 // PlanEntries picks REALITY targets and ports for the test matrix. With cdn, a CDN entry is
 // added first, because only a few ports pass through the CDN.
-func PlanEntries(probeOut string, cdn bool) ([]Entry, []string) {
+func PlanEntries(probeOut string, cdn bool) ([]state.Entry, []string) {
 	return planEntries(probeOut, PlanOpts{CDN: cdn})
 }
 
@@ -183,7 +185,7 @@ type PlanOpts struct {
 	Worker    bool     // a Cloudflare token is set, for the Worker relay
 }
 
-func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
+func planEntries(probeOut string, o PlanOpts) ([]state.Entry, []string) {
 	cdn := o.CDN
 	type sni struct {
 		t    float64
@@ -207,7 +209,7 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 		hosts = []string{"www.microsoft.com"}
 	}
 	taken := map[int]bool{}
-	var cdnE []Entry
+	var cdnE []state.Entry
 	want := func(p string) bool { return slices.Contains(o.Protocols, p) }
 	if cdn {
 		if e, ok := cdnEntry(used, taken); ok {
@@ -215,7 +217,7 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 		}
 		if want("ssh") { // SSH over WebSocket through the CDN, on another of its few ports
 			if e, ok := cdnEntry(used, taken); ok {
-				cdnE = append(cdnE, Entry{ID: "cdn-ssh", Kind: "cdn-ssh", Port: e.Port})
+				cdnE = append(cdnE, state.Entry{ID: "cdn-ssh", Kind: "cdn-ssh", Port: e.Port})
 			}
 		}
 	}
@@ -243,53 +245,53 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 		}
 		return h
 	}
-	E := []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: port("tcp", true), SNI: hosts[0], Primary: true}}
+	E := []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: port("tcp", true), SNI: hosts[0], Primary: true}}
 	for _, h := range hosts[1:] {
-		E = append(E, Entry{ID: "r-tcp-" + short(h), Kind: "reality-tcp", Port: port("tcp", true), SNI: h})
+		E = append(E, state.Entry{ID: "r-tcp-" + short(h), Kind: "reality-tcp", Port: port("tcp", true), SNI: h})
 	}
 	E = append(E,
-		Entry{ID: "r-tcp-hiport", Kind: "reality-tcp", Port: port("tcp", false), SNI: hosts[0]},
-		Entry{ID: "r-xhttp", Kind: "reality-xhttp", Port: port("tcp", true), SNI: hosts[0], Path: "/" + randHex(6)},
-		Entry{ID: "r-grpc", Kind: "reality-grpc", Port: port("tcp", true), SNI: hosts[0], Svc: randHex(5)},
-		Entry{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: port("tcp", false)},
-		Entry{ID: "venc-xhttp", Kind: "vlessenc-xhttp", Port: port("tcp", false), Path: "/" + randHex(6)},
-		Entry{ID: "hy2", Kind: "hysteria2", Port: port("udp", true)},
+		state.Entry{ID: "r-tcp-hiport", Kind: "reality-tcp", Port: port("tcp", false), SNI: hosts[0]},
+		state.Entry{ID: "r-xhttp", Kind: "reality-xhttp", Port: port("tcp", true), SNI: hosts[0], Path: "/" + randHex(6)},
+		state.Entry{ID: "r-grpc", Kind: "reality-grpc", Port: port("tcp", true), SNI: hosts[0], Svc: randHex(5)},
+		state.Entry{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: port("tcp", false)},
+		state.Entry{ID: "venc-xhttp", Kind: "vlessenc-xhttp", Port: port("tcp", false), Path: "/" + randHex(6)},
+		state.Entry{ID: "hy2", Kind: "hysteria2", Port: port("udp", true)},
 		// UDP 443 (QUIC) is filtered on many censored networks; a high port often is not
-		Entry{ID: "hy2-hiport", Kind: "hysteria2", Port: port("udp", false)},
-		Entry{ID: "ss2022", Kind: "ss2022", Port: port("tcp", false)},
+		state.Entry{ID: "hy2-hiport", Kind: "hysteria2", Port: port("udp", false)},
+		state.Entry{ID: "ss2022", Kind: "ss2022", Port: port("tcp", false)},
 	)
 	nat := strings.Contains(probeOut, "\nHOP yes") || strings.HasPrefix(probeOut, "HOP yes")
 	if nat {
 		// port hopping: the server forwards a UDP range to one port, the client keeps changing ports
 		if hop, ok := hopRange(used["udp"], taken); ok {
-			E = append(E, Entry{ID: "hy2-hop", Kind: "hysteria2", Port: port("udp", false), Hop: hop})
+			E = append(E, state.Entry{ID: "hy2-hop", Kind: "hysteria2", Port: port("udp", false), Hop: hop})
 		}
 	}
-	E = append(E, Entry{ID: "wg", Kind: "wireguard", Port: port("udp", false)},
-		Entry{ID: "wg-std", Kind: "wireguard", Port: port("udp", true)})
+	E = append(E, state.Entry{ID: "wg", Kind: "wireguard", Port: port("udp", false)},
+		state.Entry{ID: "wg-std", Kind: "wireguard", Port: port("udp", true)})
 	if want("awg") {
-		E = append(E, Entry{ID: "awg", Kind: "amneziawg", Port: port("udp", false), Subnet: awgSubnet(0, true)},
-			Entry{ID: "awg-std", Kind: "amneziawg", Port: port("udp", true), Subnet: awgSubnet(1, true)})
+		E = append(E, state.Entry{ID: "awg", Kind: "amneziawg", Port: port("udp", false), Subnet: awgSubnet(0, true)},
+			state.Entry{ID: "awg-std", Kind: "amneziawg", Port: port("udp", true), Subnet: awgSubnet(1, true)})
 	}
 	if want("worker") && o.Worker { // workers.dev, and a hostname on the user's zone when there is one
-		E = append(E, Entry{ID: "worker", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)},
-			Entry{ID: "worker-dom", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)})
+		E = append(E, state.Entry{ID: "worker", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)},
+			state.Entry{ID: "worker-dom", Kind: "worker-ws", Port: port("tcp", false), Path: "/" + randHex(6)})
 	}
 	if want("trojan") {
-		E = append(E, Entry{ID: "trojan", Kind: "trojan-reality", Port: port("tcp", true), SNI: hosts[0]})
+		E = append(E, state.Entry{ID: "trojan", Kind: "trojan-reality", Port: port("tcp", true), SNI: hosts[0]})
 	}
 	if want("ssh") {
-		E = append(E, Entry{ID: "ssh", Kind: "ssh", Port: port("tcp", true)},
-			Entry{ID: "ssh-hiport", Kind: "ssh", Port: port("tcp", false)},
-			Entry{ID: "ssh-tls", Kind: "ssh-tls", Port: port("tcp", true), SNI: hosts[0]})
+		E = append(E, state.Entry{ID: "ssh", Kind: "ssh", Port: port("tcp", true)},
+			state.Entry{ID: "ssh-hiport", Kind: "ssh", Port: port("tcp", false)},
+			state.Entry{ID: "ssh-tls", Kind: "ssh-tls", Port: port("tcp", true), SNI: hosts[0]})
 	}
 	if want("dnstt") && o.DNS && nat && !used["udp"][53] {
 		// public UDP 53 is forwarded to the tunnel's port (systemd-resolved keeps 127.0.0.53:53)
-		E = append(E, Entry{ID: "dnstt", Kind: "dnstt", Port: port("udp", false)})
+		E = append(E, state.Entry{ID: "dnstt", Kind: "dnstt", Port: port("udp", false)})
 	}
 	if want("mtproto") { // a standard port Telegram apps expect, and a high one in case it is filtered
-		E = append(E, Entry{ID: "mtproto", Kind: "mtproto", Port: port("tcp", true)},
-			Entry{ID: "mtproto-hiport", Kind: "mtproto", Port: port("tcp", false)})
+		E = append(E, state.Entry{ID: "mtproto", Kind: "mtproto", Port: port("tcp", true)},
+			state.Entry{ID: "mtproto-hiport", Kind: "mtproto", Port: port("tcp", false)})
 	}
 	if want("openvpn") {
 		p := 1194
@@ -297,10 +299,10 @@ func planEntries(probeOut string, o PlanOpts) ([]Entry, []string) {
 			p = port("udp", false)
 		}
 		taken[p] = true
-		E = append(E, Entry{ID: "ovpn-udp", Kind: "openvpn-udp", Port: p}, Entry{ID: "ovpn-tcp", Kind: "openvpn-tcp", Port: port("tcp", true)})
+		E = append(E, state.Entry{ID: "ovpn-udp", Kind: "openvpn-udp", Port: p}, state.Entry{ID: "ovpn-tcp", Kind: "openvpn-tcp", Port: port("tcp", true)})
 	}
 	if want("ikev2") && !o.IKEBusy {
-		E = append(E, Entry{ID: "ikev2", Kind: "ikev2", Port: 500})
+		E = append(E, state.Entry{ID: "ikev2", Kind: "ikev2", Port: 500})
 	}
 	return append(E, cdnE...), hosts
 }
@@ -325,7 +327,7 @@ func hopRange(used, taken map[int]bool) (string, bool) {
 
 // portSpecs are the helper's firewall arguments for entries: "443/tcp", plus "hop:LO-HI:PORT"
 // for a port-hopping range forwarded to PORT.
-func portSpecs(es []Entry) []string {
+func portSpecs(es []state.Entry) []string {
 	var specs []string
 	for _, e := range es {
 		specs = append(specs, fmt.Sprintf("%d/%s", e.Port, e.Proto()))
@@ -344,7 +346,7 @@ func portSpecs(es []Entry) []string {
 
 // ExpandVariants lists every client setting to measure for each entry. resolvers are tried first
 // for the DNS tunnel, before this machine's and the public ones.
-func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Variant {
+func ExpandVariants(entries []state.Entry, depth string, resolvers ...string) []*Variant {
 	fps := []string{"chrome", "firefox", "randomized"}
 	modes := []string{"auto", "packet-up", "stream-one"}
 	if depth == "deep" {
@@ -353,57 +355,57 @@ func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Varia
 	}
 	var out []*Variant
 	for _, e := range entries {
-		var ks []Knobs
+		var ks []state.Knobs
 		switch {
 		case e.Kind == "reality-tcp" && e.Primary:
 			for _, f := range fps {
 				for _, g := range fragNames {
-					ks = append(ks, Knobs{FP: f, Frag: g})
+					ks = append(ks, state.Knobs{FP: f, Frag: g})
 				}
 			}
 		case e.Kind == "reality-tcp":
-			ks = []Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
+			ks = []state.Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
 		case e.Kind == "reality-xhttp" || e.Kind == "cdn-xhttp":
 			for _, f := range fps[:2] {
 				for _, g := range fragNames {
-					ks = append(ks, Knobs{FP: f, Frag: g, Mode: "auto"})
+					ks = append(ks, state.Knobs{FP: f, Frag: g, Mode: "auto"})
 				}
 			}
 			for _, m := range modes[1:] {
-				ks = append(ks, Knobs{FP: "chrome", Frag: "none", Mode: m})
+				ks = append(ks, state.Knobs{FP: "chrome", Frag: "none", Mode: m})
 			}
 			if e.CDN() { // upload through the CDN, download straight from the server
 				for _, m := range []string{"packet-up", "stream-up"} {
-					ks = append(ks, Knobs{FP: "chrome", Frag: "none", Mode: m, Split: "cdn-up"})
+					ks = append(ks, state.Knobs{FP: "chrome", Frag: "none", Mode: m, Split: "cdn-up"})
 				}
 				// HTTP/3 (QUIC) to the CDN: another protocol for DPI to tell apart
 				for _, m := range []string{"auto", "packet-up"} {
-					ks = append(ks, Knobs{Frag: "none", Mode: m, ALPN: "h3"})
+					ks = append(ks, state.Knobs{Frag: "none", Mode: m, ALPN: "h3"})
 				}
 			}
 		case e.Kind == "trojan-reality":
-			ks = []Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
+			ks = []state.Knobs{{FP: "chrome", Frag: "none"}, {FP: "chrome", Frag: "frag-mild"}}
 		case e.Kind == "reality-grpc":
 			for _, g := range fragNames {
-				ks = append(ks, Knobs{FP: "chrome", Frag: g})
+				ks = append(ks, state.Knobs{FP: "chrome", Frag: g})
 			}
 		case e.Kind == "vlessenc-xhttp":
 			for _, m := range modes {
-				ks = append(ks, Knobs{Frag: "none", Mode: m})
+				ks = append(ks, state.Knobs{Frag: "none", Mode: m})
 			}
 		case e.Kind == "wireguard": // a smaller MTU gets past paths that drop large UDP packets
-			ks = []Knobs{{Frag: "none", MTU: 1420}, {Frag: "none", MTU: 1280}}
+			ks = []state.Knobs{{Frag: "none", MTU: 1420}, {Frag: "none", MTU: 1280}}
 		case e.Kind == "amneziawg":
 			ks = awgVariants()
 		case e.Kind == "worker-ws": // fragmenting the ClientHello hides workers.dev from SNI filters
 			for _, g := range fragNames {
-				ks = append(ks, Knobs{FP: "chrome", Frag: g})
+				ks = append(ks, state.Knobs{FP: "chrome", Frag: g})
 			}
-			ks = append(ks, Knobs{FP: "firefox", Frag: "none"})
+			ks = append(ks, state.Knobs{FP: "firefox", Frag: "none"})
 		case e.Kind == "ssh" || e.Kind == "ssh-tls": // plain, or opening with a WebSocket upgrade request
-			ks = []Knobs{{Frag: "none"}, {Frag: "none", Mode: "ws"}}
+			ks = []state.Knobs{{Frag: "none"}, {Frag: "none", Mode: "ws"}}
 		case e.Kind == "cdn-ssh":
-			ks = []Knobs{{Frag: "none", Mode: "ws"}}
+			ks = []state.Knobs{{Frag: "none", Mode: "ws"}}
 		case e.Kind == "dnstt":
 			rs := append(resolvers, localResolvers()...)
 			if depth == "deep" {
@@ -415,11 +417,11 @@ func ExpandVariants(entries []Entry, depth string, resolvers ...string) []*Varia
 			for _, r := range rs {
 				if !seen[r] {
 					seen[r] = true
-					ks = append(ks, Knobs{Frag: "none", Resolver: r})
+					ks = append(ks, state.Knobs{Frag: "none", Resolver: r})
 				}
 			}
 		default:
-			ks = []Knobs{{Frag: "none"}}
+			ks = []state.Knobs{{Frag: "none"}}
 		}
 		for _, k := range ks {
 			v := &Variant{Entry: e, K: k, Cold: -1, Warm: -1}
@@ -490,23 +492,23 @@ func freePorts(n int) ([]int, error) {
 // DNS tunnels through xtune's own client, AmneziaWG in-process, VPNs as handshake probes. On a test
 // instance (testPeers), WireGuard and AmneziaWG variants connect as the test peers the server has
 // for them (wgTestPeers, awgTestPeers).
-func startHarness(bin string, st *State, u User, all []*Variant, dir string, testPeers bool) (*harness, error) {
+func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir string, testPeers bool) (*harness, error) {
 	var vs []*Variant
 	h := &harness{}
 	for _, v := range all {
 		switch e := v.Entry; {
 		case e.Kind == "mtproto":
-			v.handshake = func(ctx context.Context) (time.Duration, error) { return st.mtprotoHandshake(ctx, e, u) }
+			v.handshake = func(ctx context.Context) (time.Duration, error) { return mtprotoHandshake(st, ctx, e, u) }
 		case e.HandshakeOnly():
-			v.handshake = func(ctx context.Context) (time.Duration, error) { return st.vpnHandshake(ctx, e) }
+			v.handshake = func(ctx context.Context) (time.Duration, error) { return vpnHandshake(st, ctx, e) }
 		case e.SSH():
-			v.dial = st.tunnelDial(e, u, v.K)
+			v.dial = tunnelDial(st, e, u, v.K)
 		case e.Kind == "amneziawg":
 			au := u
 			if testPeers {
 				au = awgVariantUser(u, v.K)
 			}
-			d := st.awgDial(e, au, v.K)
+			d := awgDial(st, e, au, v.K)
 			v.dial = d.DialContext
 			h.closers = append(h.closers, d.Close)
 		default:
@@ -530,7 +532,7 @@ func startHarness(bin string, st *State, u User, all []*Variant, dir string, tes
 		if v.Entry.Kind == "wireguard" && testPeers {
 			ou = wgVariantUser(u, v.K)
 		}
-		cfg["outbounds"] = append(cfg["outbounds"].([]J), st.Outbound(v.Entry, ou, v.K, fmt.Sprintf("out%d", i)))
+		cfg["outbounds"] = append(cfg["outbounds"].([]J), Outbound(st, v.Entry, ou, v.K, fmt.Sprintf("out%d", i)))
 		rules := cfg["routing"].(J)["rules"].([]J)
 		cfg["routing"].(J)["rules"] = append(rules, J{"inboundTag": []string{fmt.Sprintf("in%d", i)}, "outboundTag": fmt.Sprintf("out%d", i)})
 	}
@@ -796,7 +798,7 @@ func pick(vs []*Variant) *Variant {
 }
 
 // RunTests screens every variant, then benchmarks the best of each (entry, fragment, mode) group.
-func RunTests(o TuneOpts, st *State, u User, vs []*Variant) error {
+func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) error {
 	h, err := startHarness(o.XrayBin, st, u, vs, o.Out, true)
 	if err != nil {
 		return err
@@ -897,7 +899,7 @@ func Best(vs []*Variant) []*Variant {
 	return best
 }
 
-func Report(w io.Writer, o TuneOpts, st *State, u User, vs []*Variant) ([]*Variant, error) {
+func Report(w io.Writer, o TuneOpts, st *state.State, u state.User, vs []*Variant) ([]*Variant, error) {
 	f, err := os.OpenFile(filepath.Join(o.Out, "results.csv"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
@@ -935,7 +937,7 @@ func Report(w io.Writer, o TuneOpts, st *State, u User, vs []*Variant) ([]*Varia
 	}
 	defer lf.Close()
 	for i, v := range best {
-		link := st.Link(v.Entry, u, v.K) // "" for VPNs and the DNS tunnel, which take profile files
+		link := Link(st, v.Entry, u, v.K) // "" for VPNs and the DNS tunnel, which take profile files
 		note := ""
 		if v.K.Frag != "none" {
 			note = "  (best result used client-side TLS fragment " + v.K.Frag + ")"
@@ -945,7 +947,7 @@ func Report(w io.Writer, o TuneOpts, st *State, u User, vs []*Variant) ([]*Varia
 			fmt.Fprintln(lf, link)
 		}
 		if v.Entry.Xray() {
-			writeJSON(filepath.Join(o.Out, "client_"+v.Entry.ID+".json"), ClientConfig(st.Outbound(v.Entry, u, v.K, "proxy")))
+			writeJSON(filepath.Join(o.Out, "client_"+v.Entry.ID+".json"), ClientConfig(Outbound(st, v.Entry, u, v.K, "proxy")))
 		}
 	}
 	return best, nil
@@ -954,9 +956,9 @@ func Report(w io.Writer, o TuneOpts, st *State, u User, vs []*Variant) ([]*Varia
 // ---------------------------------------------------------------- orchestration
 
 type TuneResult struct {
-	State   *State
-	User    User // the test user, on the test instance only
-	Entries []Entry
+	State   *state.State
+	User    state.User // the test user, on the test instance only
+	Entries []state.Entry
 	All     []*Variant
 	Best    []*Variant
 	Network Network // the network it was measured from ("" ASN when unknown)
@@ -969,7 +971,7 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 	if err := os.MkdirAll(o.Out, 0o700); err != nil {
 		return nil, err
 	}
-	o.deployed, _ = LoadState(r)
+	o.deployed, _ = state.Load(r)
 	netw := detectNetwork(&o.Network, o.Log)
 	made, err := o.tuneCloudflare(r.Conn.Host)
 	if err != nil {
@@ -1008,7 +1010,7 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 		o.Log("[!] no CDN port (" + fmt.Sprint(cdnPorts) + ") is free on the server; skipping the CDN entry")
 	}
 	if len(o.Only) > 0 {
-		var keep []Entry
+		var keep []state.Entry
 		for _, e := range entries {
 			for _, p := range o.Only {
 				if p = strings.TrimSpace(p); p != "" && strings.HasPrefix(e.ID, p) {
@@ -1048,41 +1050,41 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 		w.Routes = o.deployedRoutes() // what the Worker has once the test is over
 		st.Worker = &w
 	}
-	if hasEngine(entries, "openvpn") || hasEngine(entries, "ikev2") {
-		if err := st.ensureVPNCert(); err != nil {
+	if state.HasEngine(entries, "openvpn") || state.HasEngine(entries, "ikev2") {
+		if err := ensureVPNCert(st); err != nil {
 			return nil, err
 		}
 	}
-	if slices.ContainsFunc(entries, func(e Entry) bool { return e.Kind == "dnstt" }) { // its zone must be delegated here
+	if slices.ContainsFunc(entries, func(e state.Entry) bool { return e.Kind == "dnstt" }) { // its zone must be delegated here
 		d := &doctor{}
-		doctorTunnelDNS(d, &State{Host: r.Conn.Host, DNSDomain: o.DNSDomain, Entries: []Entry{{Kind: "dnstt"}}})
+		doctorTunnelDNS(d, &state.State{Host: r.Conn.Host, DNSDomain: o.DNSDomain, Entries: []state.Entry{{Kind: "dnstt"}}})
 		for _, f := range d.out {
 			if f.Level == "fail" {
 				o.Log("[!] " + f.Text)
 			}
 		}
 	}
-	tuneUser := NewUser("tune")
-	tuneUser.WGIP = wgSubnet.Addr().Next().Next().String()
+	tuneUser := state.NewUser("tune")
+	tuneUser.WGIP = state.WgSubnet.Addr().Next().Next().String()
 	testDir := remote.Dir + "/test"
-	cfg := st.ServerConfig(entries, wgTestPeers(tuneUser, entries))
+	cfg := ServerConfig(st, entries, wgTestPeers(tuneUser, entries))
 	testCerts(cfg, testDir)
 	cfgJSON, _ := json.MarshalIndent(cfg, "", " ")
 	files := map[string]string{testDir + "/hy.crt": st.CertPEM, testDir + "/hy.key": st.KeyPEM, remote.Dir + "/test.json": string(cfgJSON)}
 	var extras []string
-	if hasEngine(entries, "tunnel") {
-		tc, _ := json.MarshalIndent(st.TunnelConf(entries, []User{tuneUser}, ""), "", " ")
+	if state.HasEngine(entries, "tunnel") {
+		tc, _ := json.MarshalIndent(buildTunnelConf(st, entries, []state.User{tuneUser}, ""), "", " ")
 		files[testDir+"/tunnels.json"] = string(tc)
 		extras = append(extras, "tunnels")
 	}
-	if hasEngine(entries, "awg") { // its clients' range is NATed for the test only (tnet:)
-		ac, _ := json.MarshalIndent(st.AWGConf(entries, awgTestPeers(tuneUser), ""), "", " ")
+	if state.HasEngine(entries, "awg") { // its clients' range is NATed for the test only (tnet:)
+		ac, _ := json.MarshalIndent(buildAWGConf(st, entries, awgTestPeers(tuneUser), ""), "", " ")
 		files[testDir+"/awg.json"] = string(ac)
 		for _, x := range awgSpecs(entries) {
 			extras = append(extras, strings.Replace(x, "net:", "tnet:", 1))
 		}
 	}
-	for p, c := range st.vpnFiles(entries, []User{tuneUser}, testDir+"/vpn") {
+	for p, c := range vpnFiles(st, entries, []state.User{tuneUser}, testDir+"/vpn") {
 		files[p] = c
 	}
 	for _, x := range vpnSpecs(entries) {
@@ -1139,19 +1141,19 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 // tunnels and AmneziaWG, OpenVPN and strongSwan come from the distribution, and the Worker relay
 // is created or updated on Cloudflare. Protocols the server cannot run are dropped with a warning;
 // the rest of the tune goes on.
-func (o *TuneOpts) prepareExtras(r *remote.Server, entries []Entry) ([]Entry, error) {
-	if hasEngine(entries, "tunnel") || hasEngine(entries, "awg") {
+func (o *TuneOpts) prepareExtras(r *remote.Server, entries []state.Entry) ([]state.Entry, error) {
+	if state.HasEngine(entries, "tunnel") || state.HasEngine(entries, "awg") {
 		if err := EnsureServerXtune(r, o.Log); err != nil {
 			o.Log("[!] the SSH and DNS tunnels and AmneziaWG need xtune on the server, which failed: " + err.Error() + "; skipping them")
-			entries = filterEntries(entries, func(e Entry) bool { return !e.SSH() && e.Engine() != "awg" })
+			entries = state.FilterEntries(entries, func(e state.Entry) bool { return !e.SSH() && e.Engine() != "awg" })
 		}
 	}
 	entries = o.prepareWorker(r.Conn.Host, entries)
-	if hasEngine(entries, "openvpn") || hasEngine(entries, "ikev2") {
+	if state.HasEngine(entries, "openvpn") || state.HasEngine(entries, "ikev2") {
 		o.Log("[*] installing OpenVPN and strongSwan on the server if needed")
 		if out, err := r.Helper("vpn-install"); err != nil || !strings.HasSuffix(out, "ok") {
 			o.Log(fmt.Sprintf("[!] OpenVPN/strongSwan could not be installed (%v %s); skipping them", err, tail(out, 200)))
-			entries = filterEntries(entries, func(e Entry) bool { return !e.HandshakeOnly() })
+			entries = state.FilterEntries(entries, func(e state.Entry) bool { return !e.HandshakeOnly() })
 		}
 	}
 	return entries, nil
@@ -1159,7 +1161,7 @@ func (o *TuneOpts) prepareExtras(r *remote.Server, entries []Entry) ([]Entry, er
 
 // dropFailedExtras removes the entries whose test service did not start, from the helper's
 // "SPEC STATE" lines.
-func dropFailedExtras(entries []Entry, out string, log func(string)) []Entry {
+func dropFailedExtras(entries []state.Entry, out string, log func(string)) []state.Entry {
 	failed := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
@@ -1168,7 +1170,7 @@ func dropFailedExtras(entries []Entry, out string, log func(string)) []Entry {
 			log("[!] test service " + f[0] + " did not start on the server; skipping it")
 		}
 	}
-	return filterEntries(entries, func(e Entry) bool {
+	return state.FilterEntries(entries, func(e state.Entry) bool {
 		switch e.Engine() {
 		case "tunnel":
 			return !failed["tunnels"]
@@ -1185,20 +1187,20 @@ func dropFailedExtras(entries []Entry, out string, log func(string)) []Entry {
 
 // supported drops entries whose client settings the local Xray cannot run (port hopping needs a
 // recent Xray), so one unsupported knob does not fail the whole test.
-func supported(bin string, st *State, entries []Entry, log func(string)) []Entry {
-	var keep []Entry
+func supported(bin string, st *state.State, entries []state.Entry, log func(string)) []state.Entry {
+	var keep []state.Entry
 	for _, e := range entries {
 		if e.Hop != "" {
-			cfg := ClientConfig(st.Outbound(e, NewUser("t"), Knobs{}, "proxy"))
+			cfg := ClientConfig(Outbound(st, e, state.NewUser("t"), state.Knobs{}, "proxy"))
 			if err := xrayAccepts(bin, cfg); err != nil {
 				log("[!] the local Xray cannot do Hysteria2 port hopping (update it with `xtune xray update`); skipping " + e.ID)
 				continue
 			}
 		}
 		if e.Trojan() { // the server side too: the test instance would not start with an inbound Xray rejects
-			u := NewUser("t")
-			cfg := ClientConfig(st.Outbound(e, u, Knobs{FP: "chrome"}, "proxy"))
-			cfg["inbounds"] = append(cfg["inbounds"].([]J), st.inbound(e, []User{u}))
+			u := state.NewUser("t")
+			cfg := ClientConfig(Outbound(st, e, u, state.Knobs{FP: "chrome"}, "proxy"))
+			cfg["inbounds"] = append(cfg["inbounds"].([]J), inbound(st, e, []state.User{u}))
 			if err := xrayAccepts(bin, cfg); err != nil {
 				log("[!] the local Xray cannot do Trojan over REALITY (update it with `xtune xray update`); skipping " + e.ID)
 				continue
@@ -1211,12 +1213,12 @@ func supported(bin string, st *State, entries []Entry, log func(string)) []Entry
 
 // supportedKnobs drops variants whose client settings the local Xray rejects (HTTP/3 to the CDN
 // needs a recent Xray), checking one variant of each such setting.
-func supportedKnobs(bin string, st *State, vs []*Variant, log func(string)) []*Variant {
+func supportedKnobs(bin string, st *state.State, vs []*Variant, log func(string)) []*Variant {
 	i := slices.IndexFunc(vs, func(v *Variant) bool { return v.K.ALPN == "h3" })
 	if i < 0 {
 		return vs
 	}
-	if err := xrayAccepts(bin, ClientConfig(st.Outbound(vs[i].Entry, NewUser("t"), vs[i].K, "proxy"))); err == nil {
+	if err := xrayAccepts(bin, ClientConfig(Outbound(st, vs[i].Entry, state.NewUser("t"), vs[i].K, "proxy"))); err == nil {
 		return vs
 	}
 	log("[!] the local Xray cannot do XHTTP over HTTP/3 (update it with `xtune xray update`); skipping those variants")
@@ -1249,7 +1251,7 @@ func testCerts(cfg J, dir string) {
 	}
 }
 
-func hasCDN(es []Entry) bool {
+func hasCDN(es []state.Entry) bool {
 	for _, e := range es {
 		if e.CDN() {
 			return true

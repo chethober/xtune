@@ -21,6 +21,9 @@ CI runs vet, tests and builds on Linux, macOS and Windows, checks `gofmt`, runs 
   the `xray-autotune*` units (Xray, test, enforce timer, subscription server) and the `/usr/local/bin/xtune` link. Never modify other software on the server.
 - The same binary is the client and the server tool. Code that changes the server takes a `*remote.Server` (`internal/remote`), so it works
   over SSH and locally; user management stays server-side only.
+- `internal/state` holds the data model (`state.json`, `usage.json`) and nothing that builds configs or changes the
+  server; a field added there must keep both files readable by older releases (`omitempty`, or `json:"-"` for
+  in-memory-only fields).
 - Secrets are never written to argv or to local files; profiles store connection details only. The one exception
   is a backup the user asks for (`xtune backup`), written readable by the owner only.
 - When you add a protocol or knob, add it to the test matrix *and* the share-link generator, with a unit test for the link.

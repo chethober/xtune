@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -21,21 +23,13 @@ import (
 // accounts, relay to the same inbound (xtune cloudflare worker add): subscriptions list a config
 // for each, and the failover config moves to another when one runs out.
 
-// WorkerExtra is another Worker, in another account, relaying to the same inbounds.
-type WorkerExtra struct {
-	Token   string `json:"token"` // that account's API token (Account: Workers Scripts:Edit, Account Analytics:Read)
-	Account string `json:"account"`
-	Name    string `json:"name"`
-	Host    string `json:"host"` // NAME.SUBDOMAIN.workers.dev
-}
-
 const (
 	workerFreeLimit  = 100000 // requests a day on the Workers free plan
 	workerCheckEvery = time.Hour
 )
 
-// dailyLimit is the requests a day the alerts measure against; 0 means no alerts.
-func (w *Worker) dailyLimit() int64 {
+// workerDailyLimit is the requests a day the alerts measure against; 0 means no alerts.
+func workerDailyLimit(w *state.Worker) int64 {
 	switch {
 	case w.Limit < 0:
 		return 0
@@ -48,7 +42,7 @@ func (w *Worker) dailyLimit() int64 {
 // workerRef is one Worker to count, with the token that can read its account.
 type workerRef struct{ token, account, name, host string }
 
-func (st *State) workerRefs() []workerRef {
+func workerRefs(st *state.State) []workerRef {
 	w := st.Worker
 	if w == nil {
 		return nil
@@ -62,11 +56,11 @@ func (st *State) workerRefs() []workerRef {
 
 // linkEntries are the entries clients get: the deployed ones, plus a copy of each workers.dev
 // config for every extra Worker.
-func (st *State) linkEntries() []Entry {
+func linkEntries(st *state.State) []state.Entry {
 	if st.Worker == nil || len(st.Worker.Extra) == 0 {
 		return st.Entries
 	}
-	var out []Entry
+	var out []state.Entry
 	for _, e := range st.Entries {
 		out = append(out, e)
 		if !e.Worker() || e.SNI != st.Worker.Host {
@@ -136,25 +130,25 @@ func cfWorkerRequests(token, account, script string, since, until time.Time) (in
 }
 
 // workerUsageDue reports whether the hourly count is due.
-func workerUsageDue(st *State, us *Usage, now time.Time) bool {
-	return st.Worker != nil && st.Worker.dailyLimit() > 0 && st.Cloudflare.Token != "" &&
+func workerUsageDue(st *state.State, us *state.Usage, now time.Time) bool {
+	return st.Worker != nil && workerDailyLimit(st.Worker) > 0 && st.Cloudflare.Token != "" &&
 		now.Unix()-us.WorkerAt >= int64(workerCheckEvery/time.Second)
 }
 
 // checkWorkerUsage counts today's (UTC) requests per Worker and alerts near the daily limit.
-func checkWorkerUsage(st *State, us *Usage, now time.Time) error {
+func checkWorkerUsage(st *state.State, us *state.Usage, now time.Time) error {
 	us.WorkerAt = now.Unix()
 	day := now.UTC().Truncate(24 * time.Hour)
-	limit := st.Worker.dailyLimit()
-	var use []WorkerUse
+	limit := workerDailyLimit(st.Worker)
+	var use []state.WorkerUse
 	var errs []string
-	for _, w := range st.workerRefs() {
+	for _, w := range workerRefs(st) {
 		n, err := cfWorkerRequests(w.token, w.account, w.name, day, now)
 		if err != nil {
 			errs = append(errs, w.host+": "+err.Error())
 			continue
 		}
-		use = append(use, WorkerUse{Host: w.host, Requests: n})
+		use = append(use, state.WorkerUse{Host: w.host, Requests: n})
 		pct := n * 100 / limit
 		key := "worker/" + w.host + "/" + day.Format("0102")
 		alert(st, us, key+"/80", pct >= 80 && pct < 100, fmt.Sprintf("the Cloudflare Worker %s has used %d%% of its %s requests today (%s); "+
@@ -186,7 +180,7 @@ func fmtCount(n int64) string {
 
 // addExtraWorker creates a Worker in the account token can see and points it at the deployment's
 // worker-ws inbounds.
-func addExtraWorker(r *remote.Server, token string, log func(string)) (*State, *WorkerExtra, error) {
+func addExtraWorker(r *remote.Server, token string, log func(string)) (*state.State, *state.WorkerExtra, error) {
 	if err := cfVerify(token); err != nil {
 		return nil, nil, err
 	}
@@ -210,14 +204,14 @@ func addExtraWorker(r *remote.Server, token string, log func(string)) (*State, *
 			return nil, nil, fmt.Errorf("that account already has a Worker for this server (%s)", x.Host)
 		}
 	}
-	w, err := cfWorkerEnsure(token, &Worker{Account: acc, Name: randLabel(), Routes: st.Worker.Routes}, "", "")
+	w, err := cfWorkerEnsure(token, &state.Worker{Account: acc, Name: randLabel(), Routes: st.Worker.Routes}, "", "")
 	if err != nil {
 		return nil, nil, err
 	}
-	x := &WorkerExtra{Token: token, Account: acc, Name: w.Name, Host: w.Host}
+	x := &state.WorkerExtra{Token: token, Account: acc, Name: w.Name, Host: w.Host}
 	st.Worker.Extra = append(st.Worker.Extra, x)
 	log("Worker " + x.Host + " relays to this server too")
-	return st, x, saveState(r, st)
+	return st, x, state.Save(r, st)
 }
 
 // removeExtraWorker deletes an extra Worker by its hostname.
@@ -232,11 +226,11 @@ func removeExtraWorker(r *remote.Server, host string) error {
 	}
 	for i, x := range st.Worker.Extra {
 		if x.Host == host || x.Name == host {
-			if err := cfWorkerDelete(x.Token, &Worker{Account: x.Account, Name: x.Name}); err != nil {
+			if err := cfWorkerDelete(x.Token, &state.Worker{Account: x.Account, Name: x.Name}); err != nil {
 				return err
 			}
 			st.Worker.Extra = append(st.Worker.Extra[:i], st.Worker.Extra[i+1:]...)
-			return saveState(r, st)
+			return state.Save(r, st)
 		}
 	}
 	return fmt.Errorf("no extra Worker %q (xtune cloudflare worker status)", host)
@@ -253,5 +247,5 @@ func setWorkerLimit(r *remote.Server, n int64) error {
 		return errors.New("no Worker relay")
 	}
 	st.Worker.Limit = n
-	return saveState(r, st)
+	return state.Save(r, st)
 }

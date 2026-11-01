@@ -41,7 +41,7 @@ The first release that promises stability, not just features.
   transport, state, protocols, tuning, TUI, subscription) so the TUI rewrite
   does not fight the rest of the code.
   - [x] server transport (`internal/remote`)
-  - [ ] state
+  - [x] state (`internal/state`): the data model and its storage
   - [ ] protocols
   - [ ] tuning
   - [ ] TUI

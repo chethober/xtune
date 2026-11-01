@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -17,10 +19,10 @@ import (
 // its addresses: enough to rebuild it on another server with the same links and subscriptions.
 
 type Backup struct {
-	Version string `json:"xtuneVersion"`
-	Created int64  `json:"created"`
-	State   *State `json:"state"`
-	Usage   *Usage `json:"usage"`
+	Version string       `json:"xtuneVersion"`
+	Created int64        `json:"created"`
+	State   *state.State `json:"state"`
+	Usage   *state.Usage `json:"usage"`
 }
 
 func TakeBackup(r *remote.Server) (*Backup, error) {
@@ -28,7 +30,7 @@ func TakeBackup(r *remote.Server) (*Backup, error) {
 	if err != nil {
 		return nil, err
 	}
-	us, err := LoadUsage(r)
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return nil, err
 	}
@@ -77,12 +79,12 @@ func readBackup(path string) (*Backup, error) {
 		return nil, fmt.Errorf("%s is not an xtune backup", path)
 	}
 	if b.Usage == nil {
-		b.Usage = &Usage{}
+		b.Usage = &state.Usage{}
 	}
 	return &b, nil
 }
 
-func backupName(st *State, now time.Time) string {
+func backupName(st *state.State, now time.Time) string {
 	host := strings.NewReplacer(":", "_", "/", "_").Replace(st.Addr())
 	return fmt.Sprintf("xtune-backup-%s-%s.json", host, now.Format("20060102-1504"))
 }
@@ -90,8 +92,8 @@ func backupName(st *State, now time.Time) string {
 // seed puts a backup on a server that has no deployment yet: the state (with the new server's
 // address) and the usage. Nothing runs yet; Restore or a tune and deploy follow. probeOut is the
 // helper's probe output for the new server.
-func seed(r *remote.Server, b *Backup, probeOut string, log func(string)) (*State, error) {
-	old, err := LoadState(r)
+func seed(r *remote.Server, b *Backup, probeOut string, log func(string)) (*state.State, error) {
+	old, err := state.Load(r)
 	if err != nil {
 		return nil, err
 	}
@@ -116,17 +118,17 @@ func seed(r *remote.Server, b *Backup, probeOut string, log func(string)) (*Stat
 	if _, err := EnsureServerXray(r, "", log); err != nil {
 		return nil, err
 	}
-	if err := saveState(r, &st); err != nil {
+	if err := state.Save(r, &st); err != nil {
 		return nil, err
 	}
-	if err := saveUsage(r, &us); err != nil {
+	if err := state.SaveUsage(r, &us); err != nil {
 		return nil, err
 	}
 	return &st, nil
 }
 
 // portConflicts lists the backup's ports that are in use on the new server.
-func portConflicts(st *State, probeOut string) []string {
+func portConflicts(st *state.State, probeOut string) []string {
 	used := usedPorts(probeOut)
 	var c []string
 	for _, e := range st.Entries {
@@ -145,7 +147,7 @@ func portConflicts(st *State, probeOut string) []string {
 
 // Restore rebuilds a backup on r with its configs as they were: same ports, SNIs and client
 // settings. Links change only where they contain the server's IP.
-func Restore(r *remote.Server, b *Backup, log func(string)) (*State, error) {
+func Restore(r *remote.Server, b *Backup, log func(string)) (*state.State, error) {
 	out, err := r.Helper("probe")
 	if err != nil {
 		return nil, err
@@ -175,7 +177,7 @@ func installXtune(r *remote.Server, log func(string)) error {
 }
 
 // moveNotes tells the admin what is left to do after a deployment moved to a new server.
-func moveNotes(st *State, oldAddr string, dnsDone bool) []string {
+func moveNotes(st *state.State, oldAddr string, dnsDone bool) []string {
 	ip := st.Host
 	var notes []string
 	if st.Domain != "" && !dnsDone {
@@ -229,7 +231,7 @@ func warnOldVersion(b *Backup, log func(string)) {
 }
 
 // hostsOf lists the addresses a state answers to, for messages.
-func hostsOf(st *State) string {
+func hostsOf(st *state.State) string {
 	hs := []string{st.Host}
 	for _, d := range []string{st.Domain, st.CDNDomain} {
 		if d != "" && !slices.Contains(hs, d) {

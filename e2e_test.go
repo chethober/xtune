@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -34,12 +36,12 @@ func TestCheckEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	ports, _ := freePorts(6)
-	st.Entries = []Entry{{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: ports[0]}, {ID: "ss2022", Kind: "ss2022", Port: ports[1]},
+	st.Entries = []state.Entry{{ID: "venc-tcp", Kind: "vlessenc-tcp", Port: ports[0]}, {ID: "ss2022", Kind: "ss2022", Port: ports[1]},
 		// one-port "range": the client still runs its port-hopping code against the real server
 		{ID: "hy2-hop", Kind: "hysteria2", Port: ports[2], Hop: itoa(ports[2]) + "-" + itoa(ports[2])},
 		{ID: "wg", Kind: "wireguard", Port: ports[3], MTU: 1280},
 		{ID: "ssh", Kind: "ssh", Port: ports[4], Mode: "ws"}, {ID: "ssh-tls", Kind: "ssh-tls", Port: ports[5], SNI: "www.bing.com"}}
-	st.Users = []User{NewUser("ann")}
+	st.Users = []state.User{state.NewUser("ann")}
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
 	}
@@ -108,9 +110,9 @@ func TestSplitEndToEnd(t *testing.T) {
 	caPEM := testCA(t, st) // the server certificate, signed by a CA the client trusts
 
 	ports, _ := freePorts(2)
-	st.Entries = []Entry{{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: ports[0], Path: "/a", Mode: "packet-up"},
+	st.Entries = []state.Entry{{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: ports[0], Path: "/a", Mode: "packet-up"},
 		{ID: "cdn-split", Kind: "cdn-xhttp", Port: ports[1], Path: "/b", Mode: "packet-up", Split: "cdn-up"}}
-	st.Users = []User{NewUser("ann")}
+	st.Users = []state.User{state.NewUser("ann")}
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +146,7 @@ func TestSplitEndToEnd(t *testing.T) {
 	cport, _ := freePorts(len(st.Entries))
 	ccfg := J{"log": J{"loglevel": "warning"}, "inbounds": []J{}, "outbounds": []J{}, "routing": J{"rules": []J{}}}
 	for i, e := range st.Entries {
-		ob := st.Outbound(e, st.Users[0], e.Knobs(), "out"+itoa(i))
+		ob := Outbound(st, e, st.Users[0], e.Knobs(), "out"+itoa(i))
 		ob["streamSettings"].(J)["tlsSettings"].(J)["certificates"] = []J{{"usage": "verify", "certificateFile": filepath.Join(dir, "ca.crt")}}
 		ccfg["outbounds"] = append(ccfg["outbounds"].([]J), ob)
 		ccfg["inbounds"] = append(ccfg["inbounds"].([]J), J{"tag": "in" + itoa(i), "listen": "127.0.0.1", "port": cport[i], "protocol": "socks"})
@@ -174,7 +176,7 @@ func TestSplitEndToEnd(t *testing.T) {
 }
 
 // testCA gives st a certificate for localhost signed by a new CA and returns the CA's PEM.
-func testCA(t *testing.T, st *State) []byte {
+func testCA(t *testing.T, st *state.State) []byte {
 	t.Helper()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	ca := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "xtune test CA"}, IsCA: true,

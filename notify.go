@@ -10,18 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
-
-// Notify sends admin alerts (quota, expiry, Xray down) to Telegram and/or a webhook. The enforce
-// job checks for them every minute and sends each alert once, until its condition clears.
-type Notify struct {
-	TelegramToken string `json:"telegramToken,omitempty"`
-	TelegramChat  string `json:"telegramChat,omitempty"`
-	Webhook       string `json:"webhook,omitempty"` // receives {"text","content","event","server"} as JSON
-}
-
-func (n Notify) On() bool { return n.TelegramToken != "" && n.TelegramChat != "" || n.Webhook != "" }
 
 const expiringSoon = 3 * 24 * time.Hour
 
@@ -29,7 +21,7 @@ const expiringSoon = 3 * 24 * time.Hour
 var telegramAPI = "https://api.telegram.org"
 
 // sendAlert delivers one alert to every configured channel. A variable, so tests can capture alerts.
-var sendAlert = func(n Notify, server, event, text string) error {
+var sendAlert = func(n state.Notify, server, event, text string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	msg := "xtune (" + server + "): " + text
@@ -65,7 +57,7 @@ var sendAlert = func(n Notify, server, event, text string) error {
 }
 
 // alert sends text once while cond holds; when cond is false the alert is re-armed.
-func alert(st *State, us *Usage, key string, cond bool, text string) {
+func alert(st *state.State, us *state.Usage, key string, cond bool, text string) {
 	if !cond {
 		delete(us.Notified, key)
 		return
@@ -87,7 +79,7 @@ func alert(st *State, us *Usage, key string, cond bool, text string) {
 const xrayDownAfter = 3
 
 // notifyXray alerts when the deployed Xray stops answering, and when it is back.
-func notifyXray(st *State, us *Usage, err error) {
+func notifyXray(st *state.State, us *state.Usage, err error) {
 	if err != nil {
 		us.Failures++
 	} else {
@@ -107,7 +99,7 @@ func notifyXray(st *State, us *Usage, err error) {
 }
 
 // notifyUsers alerts at 80% and 100% of a user's quota and before and at their expiry.
-func notifyUsers(st *State, us *Usage, now time.Time) {
+func notifyUsers(st *state.State, us *state.Usage, now time.Time) {
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		used := int64(0)
@@ -139,14 +131,14 @@ func notifyUsers(st *State, us *Usage, now time.Time) {
 // ---------------------------------------------------------------- settings
 
 // SetNotify replaces the alert settings and sends a test alert when any channel is on.
-func SetNotify(r *remote.Server, n Notify) error {
+func SetNotify(r *remote.Server, n state.Notify) error {
 	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
 		return err
 	}
 	st.Notify = n
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		return err
 	}
 	if n.On() {
@@ -155,7 +147,7 @@ func SetNotify(r *remote.Server, n Notify) error {
 	return nil
 }
 
-func (n Notify) describe() string {
+func describeNotify(n state.Notify) string {
 	var on []string
 	if n.TelegramToken != "" && n.TelegramChat != "" {
 		on = append(on, "Telegram chat "+n.TelegramChat)

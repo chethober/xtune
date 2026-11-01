@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 - Internal: the server transport (SSH and local command execution, the state lock and the embedded `helper.sh`)
   moved to `internal/remote`, the first step of splitting the root package before v1.0. No change in behaviour.
+- Internal: the data model and its storage (`State`, `Entry`, `User`, `Usage` and the settings they hold, with
+  reading and writing `state.json` and `usage.json`) moved to `internal/state`. The format of both files is
+  unchanged.
 
 ## [0.10.1] - 2026-10-28
 

@@ -14,6 +14,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -24,54 +26,31 @@ import (
 // sees and changes only the users it added, within a user count and a total quota. Backups,
 // keys, domains and the server's other settings stay on the command line.
 
-type Manage struct {
-	Token     string               `json:"token"`
-	Resellers map[string]*Reseller `json:"resellers,omitempty"`
-}
-
-// A Reseller manages their own users only, within limits. 0 = no limit.
-type Reseller struct {
-	Token    string  `json:"token"`
-	MaxUsers int     `json:"maxUsers,omitempty"`
-	QuotaGB  float64 `json:"quotaGB,omitempty"` // total quota of their users; each then needs a quota
-}
-
-func (r Reseller) String() string {
-	users, quota := "any number of users", "any quota"
-	if r.MaxUsers > 0 {
-		users = fmt.Sprintf("up to %d users", r.MaxUsers)
-	}
-	if r.QuotaGB > 0 {
-		quota = fmt.Sprintf("%g GB in total", r.QuotaGB)
-	}
-	return users + ", " + quota
-}
-
-func orUsage(uu *UserUsage) *UserUsage {
+func orUsage(uu *state.UserUsage) *state.UserUsage {
 	if uu == nil {
-		return &UserUsage{}
+		return &state.UserUsage{}
 	}
 	return uu
 }
 
 // startServices starts the subscription server after a deploy or restore.
-func startServices(r *remote.Server, st *State) error { return restartSub(r, st) }
+func startServices(r *remote.Server, st *state.State) error { return restartSub(r, st) }
 
 // manageURL is the link for a token, or "" when the subscription server is off.
-func (st *State) manageURL(token string) string {
-	if st.botBase() == "" || token == "" {
+func manageURL(st *state.State, token string) string {
+	if botBase(st) == "" || token == "" {
 		return ""
 	}
-	return st.botBase() + "/adm/" + token
+	return botBase(st) + "/adm/" + token
 }
 
 // manager is who a management link belongs to: the admin (reseller "") or a reseller.
 type manager struct {
 	reseller string
-	res      *Reseller
+	res      *state.Reseller
 }
 
-func (st *State) managerByToken(token string) (*manager, bool) {
+func managerByToken(st *state.State, token string) (*manager, bool) {
 	m := st.Manage
 	if m == nil || token == "" {
 		return nil, false
@@ -89,10 +68,10 @@ func (st *State) managerByToken(token string) (*manager, bool) {
 
 func (m *manager) admin() bool { return m.reseller == "" }
 
-func (m *manager) manages(u User) bool { return m.admin() || u.Reseller == m.reseller }
+func (m *manager) manages(u state.User) bool { return m.admin() || u.Reseller == m.reseller }
 
 // room checks a reseller's change against their user count and total quota.
-func (m *manager) room(st *State, name string, l Limits, adding bool) error {
+func (m *manager) room(st *state.State, name string, l Limits, adding bool) error {
 	if m.admin() {
 		return nil
 	}
@@ -196,10 +175,10 @@ type mStatus struct {
 	Plans    []string  `json:"plans"`
 
 	// admin only: the enforce job's background work
-	IPBlocked string      `json:"ipBlocked,omitempty"` // why the server's IP looks blocked
-	Backup    *mBackup    `json:"backup,omitempty"`    // scheduled backups, when on
-	Workers   []WorkerUse `json:"workers,omitempty"`   // Cloudflare Workers' requests today
-	WorkerMax int64       `json:"workerMax,omitempty"` // their daily limit (0 = no alerts)
+	IPBlocked string            `json:"ipBlocked,omitempty"` // why the server's IP looks blocked
+	Backup    *mBackup          `json:"backup,omitempty"`    // scheduled backups, when on
+	Workers   []state.WorkerUse `json:"workers,omitempty"`   // Cloudflare Workers' requests today
+	WorkerMax int64             `json:"workerMax,omitempty"` // their daily limit (0 = no alerts)
 }
 
 type mBackup struct {
@@ -210,13 +189,13 @@ type mBackup struct {
 
 var errManage = errors.New("not found")
 
-func userRow(u User, uu *UserUsage, now time.Time) mUser {
+func userRow(u state.User, uu *state.UserUsage, now time.Time) mUser {
 	uu = orUsage(uu)
-	return mUser{Name: u.Name, Status: userStatus(u, uu, now), Used: uu.Up + uu.Down, Quota: u.Quota, Expires: u.Expires,
+	return mUser{Name: u.Name, Status: state.UserStatus(u, uu, now), Used: uu.Up + uu.Down, Quota: u.Quota, Expires: u.Expires,
 		Devices: u.Devices, Online: len(uu.Online), Plan: u.Plan, Reset: u.Reset, Pool: u.Pool, Reseller: u.Reseller}
 }
 
-func planNamesOf(st *State) []string {
+func planNamesOf(st *state.State) []string {
 	ns := []string{}
 	for n := range st.Plans {
 		ns = append(ns, n)
@@ -231,12 +210,12 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 	if err != nil {
 		return nil, err
 	}
-	us, err := LoadUsage(r)
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return nil, err
 	}
 	// the user a request names, if this link manages them
-	target := func() (*User, error) {
+	target := func() (*state.User, error) {
 		if _, u := st.User(q.Name); u != nil && m.manages(*u) {
 			return u, nil
 		}
@@ -247,7 +226,7 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 		if err != nil {
 			return nil, err
 		}
-		us, err := LoadUsage(r)
+		us, err := state.LoadUsage(r)
 		if err != nil {
 			return nil, err
 		}
@@ -255,9 +234,9 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 		if u == nil {
 			return nil, fmt.Errorf("no user %q", name)
 		}
-		d := mUserDetail{mUser: userRow(*u, us.Users[name], now), Sub: st.SubURL(*u), Links: st.NamedLinks(*u),
-			Daily: orUsage(us.Users[name]).lastDays(now, 30)}
-		for _, p := range st.Profiles(*u) {
+		d := mUserDetail{mUser: userRow(*u, us.Users[name], now), Sub: SubURL(st, *u), Links: NamedLinks(st, *u),
+			Daily: orUsage(us.Users[name]).LastDays(now, 30)}
+		for _, p := range Profiles(st, *u) {
 			d.Files = append(d.Files, p.File)
 		}
 		return d, nil
@@ -303,7 +282,7 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 		if q.Op == "delPlan" {
 			return J{"ok": true}, DeletePlan(r, q.Name)
 		}
-		p := Plan{}
+		p := state.Plan{}
 		if q.QuotaGB != nil {
 			p.QuotaGB = *q.QuotaGB
 		}
@@ -361,7 +340,7 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 	return nil, errManage
 }
 
-func manageStatus(r *remote.Server, st *State, us *Usage, m *manager, now time.Time) mStatus {
+func manageStatus(r *remote.Server, st *state.State, us *state.Usage, m *manager, now time.Time) mStatus {
 	s := mStatus{Role: "admin", Addr: st.Addr(), Version: version, Plans: planNamesOf(st)}
 	for _, u := range st.Users {
 		if !m.manages(u) {
@@ -369,7 +348,7 @@ func manageStatus(r *remote.Server, st *State, us *Usage, m *manager, now time.T
 		}
 		uu := orUsage(us.Users[u.Name])
 		s.Users++
-		if userStatus(u, uu, now) == "active" {
+		if state.UserStatus(u, uu, now) == "active" {
 			s.Active++
 		}
 		if len(uu.Online) > 0 {
@@ -394,17 +373,17 @@ func manageStatus(r *remote.Server, st *State, us *Usage, m *manager, now time.T
 		}
 	}
 	if st.Worker != nil {
-		s.Workers, s.WorkerMax = us.WorkerUse, st.Worker.dailyLimit()
+		s.Workers, s.WorkerMax = us.WorkerUse, workerDailyLimit(st.Worker)
 	}
 	if ss, err := r.Status(); err == nil {
 		s.Xray = orStr(ss.Unit, "?") + " (" + orStr(ss.Xray, "?") + ")"
 		s.Sub = st.Sub.Mode + ", " + orStr(ss.Sub, "?")
 	}
 	quiet := quietEntries(st, us, now)
-	for _, srv := range st.servers() {
+	for _, srv := range peerServers(st) {
 		for _, e := range srv.Entries {
 			c := mConfig{ID: e.ID, State: "idle"}
-			eu := us.Entries[entryKey(e)]
+			eu := us.Entries[state.EntryKey(e)]
 			switch {
 			case srv != st:
 				c.State, c.Server = "follower", srv.Host
@@ -420,8 +399,8 @@ func manageStatus(r *remote.Server, st *State, us *Usage, m *manager, now time.T
 }
 
 // serveManage answers POST /PATH/adm/TOKEN with {"op": ...}.
-func (h subHandler) serveManage(w http.ResponseWriter, req *http.Request, st *State, token string) {
-	m, found := st.managerByToken(token)
+func (h subHandler) serveManage(w http.ResponseWriter, req *http.Request, st *state.State, token string) {
+	m, found := managerByToken(st, token)
 	if h.r == nil || st.Follow != nil || !found {
 		http.NotFound(w, req)
 		return
@@ -449,7 +428,7 @@ func (h subHandler) serveManage(w http.ResponseWriter, req *http.Request, st *St
 
 // ---------------------------------------------------------------- settings
 
-func changeManage(r *remote.Server, fn func(st *State, m *Manage) error) (*State, error) {
+func changeManage(r *remote.Server, fn func(st *state.State, m *state.Manage) error) (*state.State, error) {
 	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
@@ -462,12 +441,12 @@ func changeManage(r *remote.Server, fn func(st *State, m *Manage) error) (*State
 		return nil, errors.New("management links are on the subscription server: turn it on first (xtune sub enable)")
 	}
 	if st.Manage == nil {
-		st.Manage = &Manage{Token: randHex(16)}
+		st.Manage = &state.Manage{Token: randHex(16)}
 	}
 	if err := fn(st, st.Manage); err != nil {
 		return nil, err
 	}
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		return nil, err
 	}
 	if ok, err := ensurePort443(r, st); err != nil {
@@ -480,7 +459,7 @@ func changeManage(r *remote.Server, fn func(st *State, m *Manage) error) (*State
 
 // removeLegacyBot stops and removes the Telegram bot of xtune before v0.7.0. Users it added
 // as a reseller keep working, now managed by the admin.
-func removeLegacyBot(r *remote.Server, st *State) (bool, error) {
+func removeLegacyBot(r *remote.Server, st *state.State) (bool, error) {
 	if len(st.LegacyBot) == 0 {
 		return false, nil
 	}
@@ -508,12 +487,12 @@ func cmdManage(args []string) error {
 	if len(pos) == 0 {
 		pos = []string{"status"}
 	}
-	show := func(st *State, err error) error {
+	show := func(st *state.State, err error) error {
 		if err != nil {
 			return err
 		}
 		fmt.Printf("management link (send it to @chthvpnbot: 🛠 My servers → 🖥 Manage a server; keep it private):\n%s\n",
-			st.manageURL(st.Manage.Token))
+			manageURL(st, st.Manage.Token))
 		return nil
 	}
 	switch pos[0] {
@@ -525,9 +504,9 @@ func cmdManage(args []string) error {
 		printManage(os.Stdout, st)
 		return nil
 	case "link", "on", "enable":
-		return show(changeManage(r, func(*State, *Manage) error { return nil }))
+		return show(changeManage(r, func(*state.State, *state.Manage) error { return nil }))
 	case "token", "rotate":
-		return show(changeManage(r, func(_ *State, m *Manage) error { m.Token = randHex(16); return nil }))
+		return show(changeManage(r, func(_ *state.State, m *state.Manage) error { m.Token = randHex(16); return nil }))
 	case "off", "disable":
 		defer r.Lock()()
 		st, err := requireState(r)
@@ -539,7 +518,7 @@ func cmdManage(args []string) error {
 			st.Users[i].Reseller = ""
 		}
 		fmt.Println("management links: off (resellers' users are now yours)")
-		return saveState(r, st)
+		return state.Save(r, st)
 	case "reseller", "resellers":
 	default:
 		return errors.New(manageHelp)
@@ -562,19 +541,19 @@ func cmdManage(args []string) error {
 	if *users < 0 || *quota < 0 {
 		return errors.New("limits cannot be negative")
 	}
-	link := func(st *State, err error) error {
+	link := func(st *state.State, err error) error {
 		if err != nil {
 			return err
 		}
 		res := st.Manage.Resellers[name]
 		fmt.Printf("reseller %s: %s\n\nmanagement link for them (they send it to @chthvpnbot):\n%s\n", name, res,
-			st.manageURL(res.Token))
+			manageURL(st, res.Token))
 		return nil
 	}
 	set := flagsSet(fs)
 	switch pos[1] {
 	case "add", "limit":
-		return link(changeManage(r, func(_ *State, m *Manage) error {
+		return link(changeManage(r, func(_ *state.State, m *state.Manage) error {
 			res := m.Resellers[name]
 			switch {
 			case res == nil && pos[1] == "limit":
@@ -582,7 +561,7 @@ func cmdManage(args []string) error {
 			case res != nil && pos[1] == "add":
 				return fmt.Errorf("reseller %q already exists (manage reseller limit %s ...)", name, name)
 			case res == nil:
-				res = &Reseller{Token: randHex(16)}
+				res = &state.Reseller{Token: randHex(16)}
 			}
 			if set["users"] {
 				res.MaxUsers = *users
@@ -591,20 +570,20 @@ func cmdManage(args []string) error {
 				res.QuotaGB = *quota
 			}
 			if m.Resellers == nil {
-				m.Resellers = map[string]*Reseller{}
+				m.Resellers = map[string]*state.Reseller{}
 			}
 			m.Resellers[name] = res
 			return nil
 		}))
 	case "link", "show":
-		return link(changeManage(r, func(_ *State, m *Manage) error {
+		return link(changeManage(r, func(_ *state.State, m *state.Manage) error {
 			if m.Resellers[name] == nil {
 				return fmt.Errorf("no reseller %q", name)
 			}
 			return nil
 		}))
 	case "token", "rotate":
-		return link(changeManage(r, func(_ *State, m *Manage) error {
+		return link(changeManage(r, func(_ *state.State, m *state.Manage) error {
 			if m.Resellers[name] == nil {
 				return fmt.Errorf("no reseller %q", name)
 			}
@@ -612,7 +591,7 @@ func cmdManage(args []string) error {
 			return nil
 		}))
 	case "del", "delete", "rm":
-		_, err := changeManage(r, func(st *State, m *Manage) error {
+		_, err := changeManage(r, func(st *state.State, m *state.Manage) error {
 			if m.Resellers[name] == nil {
 				return fmt.Errorf("no reseller %q", name)
 			}
@@ -632,12 +611,12 @@ func cmdManage(args []string) error {
 	return errors.New(manageHelp)
 }
 
-func printManage(w io.Writer, st *State) {
+func printManage(w io.Writer, st *state.State) {
 	if st.Manage == nil {
 		fmt.Fprintln(w, "management links: off (xtune manage link)")
 		return
 	}
-	fmt.Fprintf(w, "management link: %s\n", st.manageURL(st.Manage.Token))
+	fmt.Fprintf(w, "management link: %s\n", manageURL(st, st.Manage.Token))
 	if len(st.Manage.Resellers) == 0 {
 		return
 	}
@@ -656,7 +635,7 @@ func printManage(w io.Writer, st *State) {
 			}
 		}
 		res := st.Manage.Resellers[n]
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", n, owned, res, st.manageURL(res.Token))
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", n, owned, res, manageURL(st, res.Token))
 	}
 	tw.Flush()
 }

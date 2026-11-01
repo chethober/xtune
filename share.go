@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -22,23 +24,23 @@ const testLifetime = 2 * time.Hour // RuntimeMaxSec of the test instance, see he
 // Bundle is what a tester needs to measure the test matrix. It holds no server secrets: the
 // test user only exists on the temporary test instance.
 type Bundle struct {
-	ID      string  `json:"id"`
-	Created int64   `json:"created"`
-	Expires int64   `json:"expires"`
-	Depth   string  `json:"depth"`
-	State   *State  `json:"state"` // public parts only
-	User    User    `json:"user"`
-	Entries []Entry `json:"entries"`
+	ID      string        `json:"id"`
+	Created int64         `json:"created"`
+	Expires int64         `json:"expires"`
+	Depth   string        `json:"depth"`
+	State   *state.State  `json:"state"` // public parts only
+	User    state.User    `json:"user"`
+	Entries []state.Entry `json:"entries"`
 }
 
 // Pending is a finished tune waiting on the server (pending.json) to be deployed.
 type Pending struct {
-	ID       string     `json:"id"`
-	Created  int64      `json:"created"`
-	Network  string     `json:"network,omitempty"`
-	ASN      string     `json:"asn,omitempty"` // the tuning network's, for the per-network rankings
-	State    *State     `json:"state"`
-	Variants []*Variant `json:"variants"`
+	ID       string       `json:"id"`
+	Created  int64        `json:"created"`
+	Network  string       `json:"network,omitempty"`
+	ASN      string       `json:"asn,omitempty"` // the tuning network's, for the per-network rankings
+	State    *state.State `json:"state"`
+	Variants []*Variant   `json:"variants"`
 }
 
 // NetReport is one network's measurements of a bundle.
@@ -54,8 +56,8 @@ type NetReport struct {
 const pendingFile = remote.Dir + "/pending.json"
 
 // publicState is what clients need to connect: no private keys.
-func publicState(st *State) *State {
-	p := st.public()
+func publicState(st *state.State) *state.State {
+	p := peerState(st)
 	p.Entries = nil
 	return p
 }
@@ -246,7 +248,7 @@ func mergeChoice(vs []*Variant, nets []netScores, n int) (chosen []*Variant, unc
 }
 
 // DeployPending deploys the tune waiting on the server, merged with other networks' reports.
-func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (*State, error) {
+func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (*state.State, error) {
 	p, err := loadPending(r)
 	if err != nil {
 		return nil, err

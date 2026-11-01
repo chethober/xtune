@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -18,7 +20,7 @@ import (
 // in the URL (/PATH/metrics/TOKEN) for scrapers that cannot set headers.
 
 // metricsURL is where the metrics are, or "" when they are off.
-func (st *State) metricsURL() string {
+func metricsURL(st *state.State) string {
 	if st.Sub.Metrics == "" || subHost(st) == "" {
 		return ""
 	}
@@ -26,7 +28,7 @@ func (st *State) metricsURL() string {
 }
 
 // metricsAuth checks the token from the header or the URL.
-func metricsAuth(st *State, req *http.Request, parts []string) bool {
+func metricsAuth(st *state.State, req *http.Request, parts []string) bool {
 	if st.Sub.Metrics == "" {
 		return false
 	}
@@ -67,13 +69,13 @@ func (p *promWriter) metric(name, kind, help string, v float64, labels ...string
 }
 
 // writeMetrics is the metrics page in the Prometheus text format.
-func writeMetrics(w io.Writer, st *State, us *Usage, now time.Time) {
+func writeMetrics(w io.Writer, st *state.State, us *state.Usage, now time.Time) {
 	p := &promWriter{w: w, seen: map[string]bool{}}
 	p.metric("xtune_info", "gauge", "xtune version on this server.", 1, "version", version, "server", st.Addr())
 	status := map[string]int{}
 	for _, u := range st.Users {
 		uu := orUsage(us.Users[u.Name])
-		status[userStatus(u, uu, now)]++
+		status[state.UserStatus(u, uu, now)]++
 	}
 	for _, s := range []string{"active", "disabled", "expired", "over quota"} {
 		p.metric("xtune_users", "gauge", "Users by status.", float64(status[s]), "status", s)
@@ -98,14 +100,14 @@ func writeMetrics(w io.Writer, st *State, us *Usage, now time.Time) {
 	}
 	quiet := quietEntries(st, us, now)
 	for _, e := range st.Entries {
-		eu := us.Entries[entryKey(e)]
+		eu := us.Entries[state.EntryKey(e)]
 		if eu == nil {
-			eu = &EntryUsage{}
+			eu = &state.EntryUsage{}
 		}
 		p.metric("xtune_config_traffic_bytes", "counter", "Traffic per deployed config since it was deployed.", float64(eu.Bytes), "config", e.ID, "kind", e.Kind)
 	}
 	for _, e := range st.Entries {
-		if eu := us.Entries[entryKey(e)]; eu != nil && eu.Active > 0 {
+		if eu := us.Entries[state.EntryKey(e)]; eu != nil && eu.Active > 0 {
 			p.metric("xtune_config_last_active_timestamp_seconds", "gauge", "When each config last carried traffic.", float64(eu.Active), "config", e.ID)
 		}
 	}
@@ -148,7 +150,7 @@ func writeMetrics(w io.Writer, st *State, us *Usage, now time.Time) {
 }
 
 // serveMetrics answers GET /PATH/metrics.
-func serveMetrics(w http.ResponseWriter, req *http.Request, st *State, us *Usage, parts []string) {
+func serveMetrics(w http.ResponseWriter, req *http.Request, st *state.State, us *state.Usage, parts []string) {
 	if !metricsAuth(st, req, parts) {
 		http.NotFound(w, req)
 		return
@@ -158,7 +160,7 @@ func serveMetrics(w http.ResponseWriter, req *http.Request, st *State, us *Usage
 }
 
 // SetMetrics turns the metrics on (with a new token when rotate is set, or none yet) or off.
-func SetMetrics(r *remote.Server, on, rotate bool) (*State, error) {
+func SetMetrics(r *remote.Server, on, rotate bool) (*state.State, error) {
 	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
@@ -172,15 +174,15 @@ func SetMetrics(r *remote.Server, on, rotate bool) (*State, error) {
 	case st.Sub.Metrics == "" || rotate:
 		st.Sub.Metrics = randHex(16)
 	}
-	return st, saveState(r, st) // the server reads state.json on every request
+	return st, state.Save(r, st) // the server reads state.json on every request
 }
 
-func printMetrics(w io.Writer, st *State) {
+func printMetrics(w io.Writer, st *state.State) {
 	if st.Sub.Metrics == "" {
 		fmt.Fprintln(w, "metrics: off (xtune sub metrics on)")
 		return
 	}
-	fmt.Fprintf(w, "metrics: %s\ntoken:   %s\n\nPrometheus scrape config:\n", orStr(st.metricsURL(), "(the subscription server is off)"), st.Sub.Metrics)
+	fmt.Fprintf(w, "metrics: %s\ntoken:   %s\n\nPrometheus scrape config:\n", orStr(metricsURL(st), "(the subscription server is off)"), st.Sub.Metrics)
 	fmt.Fprintf(w, "  - job_name: xtune\n    scheme: https\n    metrics_path: /%s/metrics\n    authorization: {credentials: %s}\n", st.Sub.Path, st.Sub.Metrics)
 	if st.Sub.Mode == "cdn" {
 		fmt.Fprintf(w, "    tls_config: {server_name: %s}\n", st.CDNDomain)

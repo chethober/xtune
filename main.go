@@ -19,6 +19,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/term"
 )
@@ -399,7 +401,7 @@ func cmdTune(args []string) error {
 		return err
 	}
 	defer r.Close()
-	old, _ := LoadState(r)
+	old, _ := state.Load(r)
 	o.inherit(old, flagsSet(fs))
 	o.Cloudflare = os.Getenv("XTUNE_CLOUDFLARE_TOKEN")
 	if o.Cloudflare == "" && (old == nil || old.Cloudflare.Token == "") && (o.Zone != "" || slices.Contains(o.Protocols, "worker")) {
@@ -441,7 +443,7 @@ func cmdTune(args []string) error {
 }
 
 // afterDeploy shows the deployment and installs xtune on the server, where users are managed.
-func afterDeploy(r *remote.Server, st *State) {
+func afterDeploy(r *remote.Server, st *state.State) {
 	printDeployment(st)
 	if err := EnsureServerXtune(r, func(s string) { fmt.Println("[*] " + s) }); err != nil {
 		fmt.Println("[!] xtune could not be installed on the server, so users cannot be managed there yet:", err)
@@ -450,7 +452,7 @@ func afterDeploy(r *remote.Server, st *State) {
 	}
 }
 
-func printDeployment(st *State) {
+func printDeployment(st *state.State) {
 	fmt.Printf("\n[+] deployed %d configs (systemd unit xray-autotune), address %s", len(st.Entries), st.Addr())
 	if st.CDNDomain != "" {
 		fmt.Printf(", CDN %s", st.CDNDomain)
@@ -460,12 +462,12 @@ func printDeployment(st *State) {
 		if !u.Enabled {
 			continue
 		}
-		if sub := st.SubURL(u); sub != "" {
+		if sub := SubURL(st, u); sub != "" {
 			fmt.Printf("  %-16s %s  (refresh to get the new configs)\n", u.Name, sub)
 			continue
 		}
 		fmt.Printf("\n# %s\n", u.Name)
-		for _, l := range st.Links(u) {
+		for _, l := range Links(st, u) {
 			fmt.Println(l)
 		}
 	}
@@ -653,7 +655,7 @@ func cmdUsers(args []string) error {
 	if set["plan"] {
 		l.Plan = plan
 	}
-	show := func(st *State, err error) error {
+	show := func(st *state.State, err error) error {
 		switch {
 		case err != nil:
 			return err
@@ -670,7 +672,7 @@ func cmdUsers(args []string) error {
 		if err != nil {
 			return err
 		}
-		us, err := LoadUsage(r)
+		us, err := state.LoadUsage(r)
 		if err != nil {
 			return err
 		}
@@ -723,7 +725,7 @@ func cmdUsers(args []string) error {
 	return fmt.Errorf("unknown users action %q", pos[0])
 }
 
-func printUsers(w io.Writer, st *State, us *Usage) error {
+func printUsers(w io.Writer, st *state.State, us *state.Usage) error {
 	if len(st.Users) == 0 {
 		fmt.Fprintln(w, "no users yet")
 		return nil
@@ -734,7 +736,7 @@ func printUsers(w io.Writer, st *State, us *Usage) error {
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		if uu == nil {
-			uu = &UserUsage{}
+			uu = &state.UserUsage{}
 		}
 		quota, devices, last := "-", fmt.Sprintf("%d/-", len(uu.Online)), "never"
 		if u.Quota > 0 {
@@ -748,13 +750,13 @@ func printUsers(w io.Writer, st *State, us *Usage) error {
 		} else if uu.LastSeen > 0 {
 			last = time.Unix(uu.LastSeen, 0).Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, userStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, state.UserStatus(u, uu, now), fmtBytes(uu.Up+uu.Down),
 			quota, fmtReset(u), fmtExpiry(u.Expires, now), devices, last)
 	}
 	return tw.Flush()
 }
 
-func printLinks(w io.Writer, st *State, name string) error {
+func printLinks(w io.Writer, st *state.State, name string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
@@ -763,27 +765,27 @@ func printLinks(w io.Writer, st *State, name string) error {
 	if !u.Enabled {
 		state = ", DISABLED"
 	}
-	if sub := st.SubURL(*u); sub != "" {
+	if sub := SubURL(st, *u); sub != "" {
 		fmt.Fprintf(w, "# %s%s\nsubscription (page, links, usage):  %s\nfailover config (Xray JSON):        %s/json\n\n", u.Name, state, sub, sub)
 	} else {
 		fmt.Fprintf(w, "# %s (%d configs%s, base64 subscription body below the links)\n", u.Name, len(st.Entries), state)
 	}
-	for _, l := range st.Links(*u) {
+	for _, l := range Links(st, *u) {
 		fmt.Fprintln(w, l)
 	}
-	if st.SubURL(*u) == "" {
-		fmt.Fprintf(w, "\n%s\n", st.Subscription(*u))
+	if SubURL(st, *u) == "" {
+		fmt.Fprintf(w, "\n%s\n", Subscription(st, *u))
 	}
-	if ps := st.Profiles(*u); len(ps) > 0 {
+	if ps := Profiles(st, *u); len(ps) > 0 {
 		fmt.Fprintf(w, "\nFiles for apps without share links (xtune users profiles %s writes them):\n", u.Name)
 		for _, p := range ps {
 			where := p.File
-			if sub := st.SubURL(*u); sub != "" {
+			if sub := SubURL(st, *u); sub != "" {
 				where = sub + "/f/" + url.PathEscape(p.File)
 			}
 			fmt.Fprintf(w, "  %-34s %s\n", p.Name, where)
 		}
-		if st.hasLogin() {
+		if hasLogin(st) {
 			fmt.Fprintf(w, "SSH / VPN login: user name %s, password %s\n", u.Name, tunnelPassword(*u))
 		}
 	}
@@ -791,12 +793,12 @@ func printLinks(w io.Writer, st *State, name string) error {
 }
 
 // writeProfiles writes the user's profile files into dir.
-func writeProfiles(w io.Writer, st *State, name, dir string) error {
+func writeProfiles(w io.Writer, st *state.State, name, dir string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	ps := st.Profiles(*u)
+	ps := Profiles(st, *u)
 	if len(ps) == 0 {
 		return fmt.Errorf("the deployment has no configs that need profile files")
 	}
@@ -856,7 +858,7 @@ func cmdSub(args []string) error {
 		if len(pos) > 1 {
 			sub = pos[1]
 		}
-		var st *State
+		var st *state.State
 		switch sub {
 		case "status":
 			st, err = requireState(r)
@@ -888,14 +890,14 @@ func cmdSub(args []string) error {
 }
 
 // defaultSubMode prefers the CDN: it hides the server's IP and keeps working when the IP is blocked.
-func defaultSubMode(st *State) string {
+func defaultSubMode(st *state.State) string {
 	if st.CDNDomain == "" && st.Domain != "" {
 		return "direct"
 	}
 	return "cdn"
 }
 
-func printSub(w io.Writer, st *State) error {
+func printSub(w io.Writer, st *state.State) error {
 	if st.Sub.Mode == "" {
 		fmt.Fprintln(w, "subscription server: off (xtune sub enable)")
 		return nil
@@ -904,7 +906,7 @@ func printSub(w io.Writer, st *State) error {
 		hostPort(subHost(st), st.Sub.Port), orStr(st.Sub.Lang, "from the browser"))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, u := range st.Users {
-		fmt.Fprintf(tw, "%s\t%s\n", u.Name, st.SubURL(u))
+		fmt.Fprintf(tw, "%s\t%s\n", u.Name, SubURL(st, u))
 	}
 	return tw.Flush()
 }
@@ -989,7 +991,7 @@ func cmdDomains(args []string) error {
 	return nil
 }
 
-func printAddresses(w io.Writer, st *State) {
+func printAddresses(w io.Writer, st *state.State) {
 	fmt.Fprintf(w, "server IP / host: %s\n", st.Host)
 	fmt.Fprintf(w, "direct domain:    %s\n", orStr(st.Domain, "-  (links use the IP)"))
 	fmt.Fprintf(w, "CDN domain:       %s\n", orStr(st.CDNDomain, "-"))

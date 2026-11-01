@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
@@ -32,7 +34,7 @@ func TestAWGParams(t *testing.T) {
 	if st.AWG == nil || st.AWG.Priv == "" {
 		t.Fatal("ensureKeys made no AmneziaWG settings")
 	}
-	if pub := st.public(); pub.AWG == nil || pub.AWG.Priv != "" || pub.AWG.H1 != st.AWG.H1 || st.AWG.Priv == "" {
+	if pub := peerState(st); pub.AWG == nil || pub.AWG.Priv != "" || pub.AWG.H1 != st.AWG.H1 || st.AWG.Priv == "" {
 		t.Errorf("the public state keeps the shared settings and drops the key: %+v", pub.AWG)
 	}
 }
@@ -40,7 +42,7 @@ func TestAWGParams(t *testing.T) {
 func TestAWGAddressesAndPlan(t *testing.T) {
 	probe := "SNI www.a.com 2 0.20\nUSED udp 0.0.0.0:443\nHOP yes"
 	es, _ := planEntries(probe, PlanOpts{Protocols: []string{"awg"}})
-	var awg []Entry
+	var awg []state.Entry
 	for _, e := range es {
 		if e.Kind == "amneziawg" {
 			awg = append(awg, e)
@@ -49,15 +51,15 @@ func TestAWGAddressesAndPlan(t *testing.T) {
 	if len(awg) != 2 || awg[0].Subnet != "10.90.0.0/16" || awg[1].Subnet != "10.91.0.0/16" || awg[0].Proto() != "udp" {
 		t.Fatalf("test entries: %+v", awg)
 	}
-	if es, _ := planEntries(probe, PlanOpts{}); hasEngine(es, "awg") {
+	if es, _ := planEntries(probe, PlanOpts{}); state.HasEngine(es, "awg") {
 		t.Error("AmneziaWG is opt-in")
 	}
-	deployed := []Entry{{Kind: "reality-tcp"}, awg[1]}
+	deployed := []state.Entry{{Kind: "reality-tcp"}, awg[1]}
 	renumberAWG(deployed)
 	if deployed[1].Subnet != "10.80.0.0/16" || awgIface(deployed[1]) != "xtawg80" {
 		t.Errorf("deployed entries leave the test ranges: %+v", deployed[1])
 	}
-	u := User{WGIP: "10.66.3.7"}
+	u := state.User{WGIP: "10.66.3.7"}
 	if a := awgAddr(deployed[1], u); a.String() != "10.80.3.7" {
 		t.Errorf("user address %s", a)
 	}
@@ -68,7 +70,7 @@ func TestAWGAddressesAndPlan(t *testing.T) {
 		t.Errorf("helper specs %v", specs)
 	}
 	// every variant is its own peer: distinct keys and addresses
-	tu := User{Name: "tune", UUID: newUUID(), WGIP: "10.66.0.2"}
+	tu := state.User{Name: "tune", UUID: state.NewUUID(), WGIP: "10.66.0.2"}
 	peers := awgTestPeers(tu)
 	keys, ips := map[string]bool{}, map[string]bool{}
 	for _, p := range peers {
@@ -79,7 +81,7 @@ func TestAWGAddressesAndPlan(t *testing.T) {
 		t.Errorf("test peers: %+v", peers)
 	}
 	for _, k := range awgVariants() {
-		if !slices.ContainsFunc(peers, func(p User) bool { return p.UUID == awgVariantUser(tu, k).UUID }) {
+		if !slices.ContainsFunc(peers, func(p state.User) bool { return p.UUID == awgVariantUser(tu, k).UUID }) {
 			t.Errorf("no test peer for %+v", k)
 		}
 	}
@@ -87,11 +89,11 @@ func TestAWGAddressesAndPlan(t *testing.T) {
 
 func TestAWGProfile(t *testing.T) {
 	st := keyedState(t)
-	u := NewUser("ann")
+	u := state.NewUser("ann")
 	u.WGIP = "10.66.0.9"
-	e := Entry{ID: "awg", Kind: "amneziawg", Port: 51999, Subnet: "10.80.0.0/16", MTU: 1280, Mode: "quic"}
-	st.Entries = []Entry{e}
-	conf := st.AWGConfFile(e, u)
+	e := state.Entry{ID: "awg", Kind: "amneziawg", Port: 51999, Subnet: "10.80.0.0/16", MTU: 1280, Mode: "quic"}
+	st.Entries = []state.Entry{e}
+	conf := AWGConfFile(st, e, u)
 	for _, want := range []string{"Address = 10.80.0.9/32", "MTU = 1280", "Endpoint = 203.0.113.7:51999", "I1 = <b 0xc3",
 		"PublicKey = " + st.AWG.Public, "H4 = " + itoa(int(st.AWG.H4)), "S1 = " + itoa(st.AWG.S1)} {
 		if !strings.Contains(conf, want) {
@@ -99,18 +101,18 @@ func TestAWGProfile(t *testing.T) {
 		}
 	}
 	e.Mode = ""
-	if strings.Contains(st.AWGConfFile(e, u), "I1") {
+	if strings.Contains(AWGConfFile(st, e, u), "I1") {
 		t.Error("the I1 line is only for the quic variant (older apps reject it)")
 	}
-	ps := st.Profiles(u)
-	if len(ps) != 1 || !strings.HasSuffix(ps[0].File, ".conf") || st.Link(e, u, e.Knobs()) != "" {
+	ps := Profiles(st, u)
+	if len(ps) != 1 || !strings.HasSuffix(ps[0].File, ".conf") || Link(st, e, u, e.Knobs()) != "" {
 		t.Errorf("AmneziaWG comes as a profile file: %+v", ps)
 	}
 }
 
 // awgTestServer runs the server side of entry e on a userspace network stack, with an HTTP
 // server answering 204 on the server's tunnel address.
-func awgTestServer(t *testing.T, c AWGConf, e Entry) *device.Device {
+func awgTestServer(t *testing.T, c AWGConf, e state.Entry) *device.Device {
 	t.Helper()
 	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{awgServerAddr(e).Addr()}, nil, 1420)
 	if err != nil {
@@ -141,13 +143,13 @@ func TestAWGEndToEnd(t *testing.T) {
 	st := keyedState(t)
 	st.Host = "127.0.0.1"
 	ports, _ := freeUDPPorts(t, 1)
-	e := Entry{ID: "awg", Kind: "amneziawg", Port: ports[0], Subnet: awgSubnet(0, true)}
-	tu := User{Name: "tune", UUID: newUUID(), Enabled: true, WGIP: "10.66.0.2"}
-	c := st.AWGConf([]Entry{e}, awgTestPeers(tu), "")
+	e := state.Entry{ID: "awg", Kind: "amneziawg", Port: ports[0], Subnet: awgSubnet(0, true)}
+	tu := state.User{Name: "tune", UUID: state.NewUUID(), Enabled: true, WGIP: "10.66.0.2"}
+	c := buildAWGConf(st, []state.Entry{e}, awgTestPeers(tu), "")
 	srv := awgTestServer(t, c, e)
 
 	for _, k := range awgVariants() {
-		d := st.awgDial(e, awgVariantUser(tu, k), k)
+		d := awgDial(st, e, awgVariantUser(tu, k), k)
 		hc := &http.Client{Transport: &http.Transport{DialContext: d.DialContext}, Timeout: 10 * time.Second}
 		resp, err := hc.Post("http://"+awgServerAddr(e).Addr().String()+"/", "text/plain", strings.NewReader(strings.Repeat("x", 100000)))
 		if err != nil || resp.StatusCode != 204 {
@@ -169,8 +171,8 @@ func TestAWGEndToEnd(t *testing.T) {
 	}
 
 	// a peer the server does not have gets nowhere
-	stranger := User{Name: "x", UUID: newUUID(), WGIP: "10.66.0.50"}
-	d := st.awgDial(e, stranger, Knobs{})
+	stranger := state.User{Name: "x", UUID: state.NewUUID(), WGIP: "10.66.0.50"}
+	d := awgDial(st, e, stranger, state.Knobs{})
 	defer d.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -185,11 +187,11 @@ func TestAWGPeerReload(t *testing.T) {
 	st := keyedState(t)
 	st.Host = "127.0.0.1"
 	ports, _ := freeUDPPorts(t, 1)
-	e := Entry{ID: "awg", Kind: "amneziawg", Port: ports[0], Subnet: awgSubnet(0, true)}
-	ann, bob := User{Name: "ann", UUID: newUUID(), Enabled: true, WGIP: "10.66.0.2"}, User{Name: "bob", UUID: newUUID(), Enabled: true, WGIP: "10.66.0.3"}
-	srv := awgTestServer(t, st.AWGConf([]Entry{e}, []User{ann}, ""), e)
-	get := func(u User) error {
-		d := st.awgDial(e, u, Knobs{})
+	e := state.Entry{ID: "awg", Kind: "amneziawg", Port: ports[0], Subnet: awgSubnet(0, true)}
+	ann, bob := state.User{Name: "ann", UUID: state.NewUUID(), Enabled: true, WGIP: "10.66.0.2"}, state.User{Name: "bob", UUID: state.NewUUID(), Enabled: true, WGIP: "10.66.0.3"}
+	srv := awgTestServer(t, buildAWGConf(st, []state.Entry{e}, []state.User{ann}, ""), e)
+	get := func(u state.User) error {
+		d := awgDial(st, e, u, state.Knobs{})
 		defer d.Close()
 		hc := &http.Client{Transport: &http.Transport{DialContext: d.DialContext}, Timeout: 4 * time.Second}
 		resp, err := hc.Get("http://" + awgServerAddr(e).Addr().String() + "/")
@@ -203,7 +205,7 @@ func TestAWGPeerReload(t *testing.T) {
 	}
 	bob2 := bob
 	ann.Enabled = false
-	if err := srv.IpcSet(st.AWGConf([]Entry{e}, []User{ann, bob2}, "").uapiPeers(e)); err != nil {
+	if err := srv.IpcSet(buildAWGConf(st, []state.Entry{e}, []state.User{ann, bob2}, "").uapiPeers(e)); err != nil {
 		t.Fatal(err)
 	}
 	if err := get(bob); err != nil {

@@ -10,6 +10,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -17,36 +19,11 @@ import (
 // be added with one, and renewing a user extends their expiry by its days, starts their usage
 // from zero and enables them again.
 
-type Plan struct {
-	QuotaGB float64 `json:"quotaGB,omitempty"`
-	Days    int     `json:"days,omitempty"`
-	Devices int     `json:"devices,omitempty"`
-	Reset   string  `json:"reset,omitempty"`
-}
-
 // renewDays is how long a renewal extends a user who has no plan.
 const renewDays = 30
 
-func (p Plan) String() string {
-	q, d, dv := "unlimited", "never expires", "any devices"
-	if p.QuotaGB > 0 {
-		q = fmt.Sprintf("%g GB", p.QuotaGB)
-	}
-	if p.Days > 0 {
-		d = fmt.Sprintf("%d days", p.Days)
-	}
-	if p.Devices > 0 {
-		dv = fmt.Sprintf("%d devices", p.Devices)
-	}
-	s := q + ", " + d + ", " + dv
-	if p.Reset != "" {
-		s += ", resets " + p.Reset
-	}
-	return s
-}
-
-// limits are the plan's limits; set fields of over win.
-func (p Plan) limits(name string, over Limits) Limits {
+// planLimits are the plan's limits; set fields of over win.
+func planLimits(p state.Plan, name string, over Limits) Limits {
 	l := Limits{QuotaGB: &p.QuotaGB, Days: &p.Days, Devices: &p.Devices, Reset: &p.Reset, Plan: &name}
 	if over.QuotaGB != nil {
 		l.QuotaGB = over.QuotaGB
@@ -64,7 +41,7 @@ func (p Plan) limits(name string, over Limits) Limits {
 }
 
 // withPlan fills l from the plan it names, if any.
-func (l Limits) withPlan(st *State) (Limits, error) {
+func (l Limits) withPlan(st *state.State) (Limits, error) {
 	if l.Plan == nil || *l.Plan == "" {
 		return l, nil
 	}
@@ -72,10 +49,10 @@ func (l Limits) withPlan(st *State) (Limits, error) {
 	if !ok {
 		return l, fmt.Errorf("no plan %q (%s)", *l.Plan, planNames(st))
 	}
-	return p.limits(*l.Plan, l), nil
+	return planLimits(p, *l.Plan, l), nil
 }
 
-func planNames(st *State) string {
+func planNames(st *state.State) string {
 	if len(st.Plans) == 0 {
 		return "no plans yet: xtune plans add NAME --quota GB --days N"
 	}
@@ -87,7 +64,7 @@ func planNames(st *State) string {
 	return "plans: " + strings.Join(ns, ", ")
 }
 
-func SetPlan(r *remote.Server, name string, p Plan) error {
+func SetPlan(r *remote.Server, name string, p state.Plan) error {
 	if err := validUserName(name); err != nil {
 		return fmt.Errorf("invalid plan name %q", name)
 	}
@@ -103,10 +80,10 @@ func SetPlan(r *remote.Server, name string, p Plan) error {
 		return err
 	}
 	if st.Plans == nil {
-		st.Plans = map[string]Plan{}
+		st.Plans = map[string]state.Plan{}
 	}
 	st.Plans[name] = p
-	return saveState(r, st)
+	return state.Save(r, st)
 }
 
 func DeletePlan(r *remote.Server, name string) error {
@@ -119,22 +96,22 @@ func DeletePlan(r *remote.Server, name string) error {
 		return fmt.Errorf("no plan %q", name)
 	}
 	delete(st.Plans, name)
-	return saveState(r, st) // users keep their limits and the name, which renewals then ignore
+	return state.Save(r, st) // users keep their limits and the name, which renewals then ignore
 }
 
 // Renew extends the user's expiry by their plan's days (or days, or renewDays), from today or
 // from their current expiry if later, starts their usage from zero and enables them. A plan
 // given here becomes theirs, with its limits.
-func Renew(r *remote.Server, name, plan string, days int) (*State, User, error) {
-	var nu User
-	st, err := changeUser(r, name, func(st *State, u *User) error {
+func Renew(r *remote.Server, name, plan string, days int) (*state.State, state.User, error) {
+	var nu state.User
+	st, err := changeUser(r, name, func(st *state.State, u *state.User) error {
 		plan = orStr(plan, u.Plan)
 		p, hasPlan := st.Plans[plan]
 		if plan != "" && !hasPlan && plan != u.Plan {
 			return fmt.Errorf("no plan %q (%s)", plan, planNames(st))
 		}
 		if hasPlan {
-			l := p.limits(plan, Limits{})
+			l := planLimits(p, plan, Limits{})
 			l.Days = nil // extended below, from the current expiry
 			l.apply(u)
 		}
@@ -193,7 +170,7 @@ func cmdPlans(args []string) error {
 		if rs == "none" {
 			rs = ""
 		}
-		if err := SetPlan(r, pos[1], Plan{QuotaGB: *quota, Days: *days, Devices: *devices, Reset: rs}); err != nil {
+		if err := SetPlan(r, pos[1], state.Plan{QuotaGB: *quota, Days: *days, Devices: *devices, Reset: rs}); err != nil {
 			return err
 		}
 	case "del", "delete", "rm":
@@ -214,7 +191,7 @@ func cmdPlans(args []string) error {
 	return nil
 }
 
-func printPlans(st *State) {
+func printPlans(st *state.State) {
 	if len(st.Plans) == 0 {
 		fmt.Println("no plans yet: xtune plans add NAME --quota GB --days N [--devices N] [--reset monthly]")
 		return

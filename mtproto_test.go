@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/state"
 )
 
 // mtprotoClientFrame builds the first 64 bytes a Telegram client sends for user key and DC: a
@@ -27,7 +29,7 @@ func mtprotoClientFrame(key []byte, dc int) (enc []byte, send, recv interface {
 }
 
 func TestMTProtoObfuscationRoundTrip(t *testing.T) {
-	key := mtprotoKey(NewUser("ann"))
+	key := mtprotoKey(state.NewUser("ann"))
 	enc, _, _ := mtprotoClientFrame(key, 3)
 
 	// what the server reads: the same key recovers the DC and a de-obfuscating conn.
@@ -46,19 +48,19 @@ func TestMTProtoObfuscationRoundTrip(t *testing.T) {
 	}
 
 	// a wrong key does not authenticate.
-	if _, _, ok := mtprotoReadHandshake(srv, enc, mtprotoKey(NewUser("bob"))); ok {
+	if _, _, ok := mtprotoReadHandshake(srv, enc, mtprotoKey(state.NewUser("bob"))); ok {
 		t.Error("handshake authenticated with the wrong key")
 	}
 }
 
 func TestMTProtoSecretAndLink(t *testing.T) {
-	u := NewUser("ann")
+	u := state.NewUser("ann")
 	sec := mtprotoSecret(u)
 	if len(sec) != 2+2*mtprotoKeyLen || sec[:2] != "dd" {
 		t.Errorf("secret %q: want dd + %d hex chars", sec, 2*mtprotoKeyLen)
 	}
-	st := &State{Host: "203.0.113.10"}
-	link := st.mtprotoLink(Entry{ID: "mtproto", Port: 443}, u)
+	st := &state.State{Host: "203.0.113.10"}
+	link := mtprotoLink(st, state.Entry{ID: "mtproto", Port: 443}, u)
 	for _, want := range []string{"t.me/proxy", "203.0.113.10", "443", sec} {
 		if !strings.Contains(link, want) {
 			t.Errorf("link %q missing %q", link, want)
@@ -101,7 +103,7 @@ func TestMTProtoRelay(t *testing.T) {
 	ts := &tunnelServer{users: map[string]TunnelUser{}, sessions: map[*tunSession]bool{}, mt: map[*mtSession]bool{},
 		boot: "test", traffic: map[string]*[2]atomic.Int64{}, entries: map[string]*atomic.Int64{}}
 	ts.entries["mt"] = &atomic.Int64{}
-	u := NewUser("ann")
+	u := state.NewUser("ann")
 	ts.setUsers([]TunnelUser{{Name: "ann", MT: mtHex(u)}})
 
 	cliLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -157,4 +159,4 @@ func TestMTProtoRelay(t *testing.T) {
 }
 
 // mtHex is the user's MTProto key in hex, as TunnelConf stores it.
-func mtHex(u User) string { return hex.EncodeToString(mtprotoKey(u)) }
+func mtHex(u state.User) string { return hex.EncodeToString(mtprotoKey(u)) }

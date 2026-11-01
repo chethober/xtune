@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -24,10 +26,6 @@ import (
 // can read and fix the SSL/TLS mode the CDN entry needs, and runs the Worker relay (worker.go).
 // The token needs Zone:Read, DNS:Edit and Zone Settings:Edit on the zones, and for the Worker
 // Account: Workers Scripts:Edit.
-
-type Cloudflare struct {
-	Token string `json:"token,omitempty"`
-}
 
 // cloudflareAPI is a variable so tests can point it at a local server.
 var cloudflareAPI = "https://api.cloudflare.com/client/v4"
@@ -168,7 +166,7 @@ func cfPoint(token, name, ip string, proxied bool) (string, error) {
 
 // CloudflarePoint points the direct domain (DNS only) and the CDN domain (proxied) at ip, and
 // delegates the DNS tunnel's zone to the server.
-func CloudflarePoint(st *State, ip string, log func(string)) error {
+func CloudflarePoint(st *state.State, ip string, log func(string)) error {
 	if st.Cloudflare.Token == "" {
 		return errors.New("no Cloudflare token: xtune cloudflare token")
 	}
@@ -271,7 +269,7 @@ func serverIP(host string) (string, error) {
 	return ips[0].String(), nil
 }
 
-func SetCloudflare(r *remote.Server, cf Cloudflare) error {
+func SetCloudflare(r *remote.Server, cf state.Cloudflare) error {
 	if cf.Token != "" {
 		if err := cfVerify(cf.Token); err != nil {
 			return err
@@ -283,7 +281,7 @@ func SetCloudflare(r *remote.Server, cf Cloudflare) error {
 		return err
 	}
 	st.Cloudflare = cf
-	return saveState(r, st)
+	return state.Save(r, st)
 }
 
 func cmdCloudflare(args []string) error {
@@ -358,13 +356,13 @@ func cmdCloudflare(args []string) error {
 				return err
 			}
 		}
-		if err := SetCloudflare(r, Cloudflare{Token: strings.TrimSpace(tok)}); err != nil {
+		if err := SetCloudflare(r, state.Cloudflare{Token: strings.TrimSpace(tok)}); err != nil {
 			return err
 		}
 		fmt.Println("Cloudflare: token saved. `xtune migrate` and `xtune domains` now update the DNS records")
 		return nil
 	case "off":
-		return SetCloudflare(r, Cloudflare{})
+		return SetCloudflare(r, state.Cloudflare{})
 	case "dns":
 		if ip == "" {
 			if ip, err = serverIP(st.Host); err != nil {
@@ -402,7 +400,7 @@ func cfTokenAsk() (string, error) {
 }
 
 // cfWorkerCmd is `xtune cloudflare worker [status | sync | off]`.
-func cfWorkerCmd(r *remote.Server, st *State, args []string) error {
+func cfWorkerCmd(r *remote.Server, st *state.State, args []string) error {
 	action := "status"
 	if len(args) > 0 {
 		action = args[0]
@@ -424,12 +422,12 @@ func cfWorkerCmd(r *remote.Server, st *State, args []string) error {
 		for _, x := range w.Extra {
 			fmt.Printf("  also Worker %s (account %s)\n", x.Host, x.Account)
 		}
-		if l := w.dailyLimit(); l > 0 {
+		if l := workerDailyLimit(w); l > 0 {
 			fmt.Printf("usage alerts at 80%% and 100%% of %s requests a day (xtune cloudflare worker limit N | none)\n", fmtCount(l))
 		} else {
 			fmt.Println("usage alerts: off")
 		}
-		if us, err := LoadUsage(r); err == nil && us.WorkerAt > 0 {
+		if us, err := state.LoadUsage(r); err == nil && us.WorkerAt > 0 {
 			for _, u := range us.WorkerUse {
 				fmt.Printf("  %s: %s requests today (UTC), as of %s\n", u.Host, fmtCount(u.Requests), time.Unix(us.WorkerAt, 0).Format("15:04"))
 			}
@@ -473,15 +471,15 @@ func cfWorkerCmd(r *remote.Server, st *State, args []string) error {
 			return err
 		}
 		fmt.Printf("Worker %s: %d routes\n", w.Name, len(w.Routes))
-		return saveState(r, st)
+		return state.Save(r, st)
 	case "off": // the Worker configs go with it, so subscriptions stop offering them
 		defer r.Lock()()
-		rest := filterEntries(st.Entries, func(e Entry) bool { return !e.Worker() })
+		rest := state.FilterEntries(st.Entries, func(e state.Entry) bool { return !e.Worker() })
 		if len(rest) == 0 {
 			return errors.New("the Worker configs are the only ones deployed: tune and deploy others first")
 		}
 		for _, x := range w.Extra {
-			if err := cfWorkerDelete(x.Token, &Worker{Account: x.Account, Name: x.Name}); err != nil {
+			if err := cfWorkerDelete(x.Token, &state.Worker{Account: x.Account, Name: x.Name}); err != nil {
 				return err
 			}
 		}
@@ -490,7 +488,7 @@ func cfWorkerCmd(r *remote.Server, st *State, args []string) error {
 		}
 		st.Worker = nil
 		if len(rest) == len(st.Entries) {
-			return saveState(r, st)
+			return state.Save(r, st)
 		}
 		st.Entries = rest
 		return Apply(r, st)
@@ -500,7 +498,7 @@ func cfWorkerCmd(r *remote.Server, st *State, args []string) error {
 
 // pointAfterMove updates the DNS records, from the new server, after a migrate. It reports
 // whether it did, so the admin is not told to do it by hand.
-func pointAfterMove(r *remote.Server, st *State, log func(string)) bool {
+func pointAfterMove(r *remote.Server, st *state.State, log func(string)) bool {
 	if st.Cloudflare.Token == "" || st.Domain == "" && st.CDNDomain == "" && st.DNSDomain == "" {
 		return false
 	}
@@ -527,7 +525,7 @@ func pointAfterMove(r *remote.Server, st *State, log func(string)) bool {
 func (o *TuneOpts) tuneCloudflare(host string) ([]string, error) {
 	dep := o.deployed
 	if dep == nil {
-		dep = &State{}
+		dep = &state.State{}
 	}
 	if o.Cloudflare == "" {
 		o.Cloudflare = dep.Cloudflare.Token

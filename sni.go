@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -67,7 +69,7 @@ type sniChange struct {
 
 // planSNIs probes the deployed targets (several times) and the candidates, and proposes a
 // replacement for each target that failed every probe or is slow next to the best candidate.
-func planSNIs(r *remote.Server, st *State) ([]sniChange, map[string]*sniResult, error) {
+func planSNIs(r *remote.Server, st *state.State) ([]sniChange, map[string]*sniResult, error) {
 	var current []string
 	for _, e := range st.Entries {
 		if e.Reality() && !slices.Contains(current, e.SNI) {
@@ -127,7 +129,7 @@ func planSNIs(r *remote.Server, st *State) ([]sniChange, map[string]*sniResult, 
 }
 
 // applySNIs changes the targets and restarts Xray with them.
-func applySNIs(r *remote.Server, st *State, changes []sniChange) error {
+func applySNIs(r *remote.Server, st *state.State, changes []sniChange) error {
 	for _, c := range changes {
 		for i := range st.Entries {
 			if st.Entries[i].ID == c.ID {
@@ -147,7 +149,7 @@ func describeSNIs(changes []sniChange) string {
 }
 
 // autoSNI is subscriptions delivering the change to users: the subscription server, or a primary's.
-func autoSNI(st *State) bool { return st.Sub.Mode != "" || st.Follow != nil }
+func autoSNI(st *state.State) bool { return st.Sub.Mode != "" || st.Follow != nil }
 
 // checkSNIs is the weekly check, run by the enforce job (which holds the server lock).
 func checkSNIs(r *remote.Server) error {
@@ -177,8 +179,8 @@ func checkSNIs(r *remote.Server) error {
 }
 
 // sniDue reports whether the weekly check is due, and marks it done.
-func sniDue(st *State, us *Usage, now time.Time) bool {
-	if now.Unix()-us.SNIAt < int64(sniEvery/time.Second) || !slices.ContainsFunc(st.Entries, Entry.Reality) {
+func sniDue(st *state.State, us *state.Usage, now time.Time) bool {
+	if now.Unix()-us.SNIAt < int64(sniEvery/time.Second) || !slices.ContainsFunc(st.Entries, state.Entry.Reality) {
 		return false
 	}
 	if us.SNIAt == 0 { // first run after deploy or upgrade: start the week from now

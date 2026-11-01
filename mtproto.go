@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/chethober/xtune/internal/state"
 )
 
 // The MTProto proxy serves Telegram's own proxy protocol, for users who only need Telegram.
@@ -54,23 +56,23 @@ const (
 // de-obfuscated byte stream is identical on each and can be copied straight through.
 var mtprotoConnType = [4]byte{0xdd, 0xdd, 0xdd, 0xdd}
 
-func mtprotoKey(u User) []byte { return secret(u, "mtproto")[:mtprotoKeyLen] }
+func mtprotoKey(u state.User) []byte { return secret(u, "mtproto")[:mtprotoKeyLen] }
 
 // mtprotoSecret is the secret Telegram apps take: the "dd" prefix (padded-intermediate transport,
 // no fake TLS) plus the user's 16-byte key in hex.
-func mtprotoSecret(u User) string { return "dd" + hex.EncodeToString(mtprotoKey(u)) }
+func mtprotoSecret(u state.User) string { return "dd" + hex.EncodeToString(mtprotoKey(u)) }
 
 // mtprotoLink opens the proxy in Telegram and doubles as the page's QR code.
-func (st *State) mtprotoLink(e Entry, u User) string {
+func mtprotoLink(st *state.State, e state.Entry, u state.User) string {
 	q := url.Values{"server": {st.Addr()}, "port": {fmt.Sprint(e.Port)}, "secret": {mtprotoSecret(u)}}
 	return "https://t.me/proxy?" + q.Encode()
 }
 
 // MTProtoInfo is what to type into Telegram's proxy settings by hand.
-func (st *State) MTProtoInfo(e Entry, u User) string {
+func MTProtoInfo(st *state.State, e state.Entry, u state.User) string {
 	return fmt.Sprintf("%s for %s\n\nTelegram > Settings > Data and Storage > Proxy > Add proxy > MTProto\n\n"+
 		"Server: %s\nPort: %d\nSecret: %s\n\nOr open: %s\n",
-		e.ID, u.Name, st.Addr(), e.Port, mtprotoSecret(u), st.mtprotoLink(e, u))
+		e.ID, u.Name, st.Addr(), e.Port, mtprotoSecret(u), mtprotoLink(st, e, u))
 }
 
 // ---------------------------------------------------------------- obfuscation
@@ -184,7 +186,7 @@ func mtprotoFrame(dc int) []byte {
 // proxy accepts it and opens the onward path to a Telegram data centre. Like the VPNs, only the
 // handshake is measured, not throughput: the proxy relays to Telegram alone, so there is no test
 // target to download through.
-func (st *State) mtprotoHandshake(ctx context.Context, e Entry, u User) (time.Duration, error) {
+func mtprotoHandshake(st *state.State, ctx context.Context, e state.Entry, u state.User) (time.Duration, error) {
 	t0 := time.Now()
 	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", hostPort(st.Addr(), e.Port))
 	if err != nil {

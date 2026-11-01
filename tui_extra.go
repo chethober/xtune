@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/charmbracelet/huh"
 	"github.com/chethober/xtune/internal/remote"
 )
@@ -26,7 +28,7 @@ func (t *tui) check() error {
 	network = strings.TrimSpace(network)
 	netw := detectNetwork(&network, func(s string) { fmt.Println(s) })
 	var res []CheckResult
-	var st *State
+	var st *state.State
 	if err := guarded(nil, func() error {
 		var e error
 		res, st, e = Check(t.r, bin, 5, 10, "xtune-results", func(s string) { fmt.Println(s) })
@@ -183,7 +185,7 @@ func (t *tui) warp() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(titleStyle.Render("\nWARP") + "  " + st.Warp.describe())
+	fmt.Println(titleStyle.Render("\nWARP") + "  " + describeWarp(st.Warp))
 	fmt.Println(dimStyle.Render("Many services refuse datacenter IPs or whole countries. With WARP, Xray reaches them\n" +
 		"through Cloudflare's free WARP network instead of this server's IP."))
 	choice := "ai"
@@ -221,7 +223,7 @@ func (t *tui) warp() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(okStyle.Render("WARP: " + st.Warp.describe()))
+	fmt.Println(okStyle.Render("WARP: " + describeWarp(st.Warp)))
 	pause()
 	return nil
 }
@@ -231,7 +233,7 @@ func (t *tui) notify() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(titleStyle.Render("\nAlerts") + "  " + st.Notify.describe())
+	fmt.Println(titleStyle.Render("\nAlerts") + "  " + describeNotify(st.Notify))
 	fmt.Println(dimStyle.Render("Sent once each: a user at 80% and 100% of their quota, 3 days before and at expiry,\n" +
 		"and when the deployed Xray stops answering."))
 	n := st.Notify
@@ -277,12 +279,12 @@ func (t *tui) notify() error {
 		pause()
 		return nil
 	case "off":
-		n = Notify{}
+		n = state.Notify{}
 	}
 	if err := SetNotify(t.r, n); err != nil {
 		return err
 	}
-	fmt.Println(okStyle.Render("alerts: " + n.describe()))
+	fmt.Println(okStyle.Render("alerts: " + describeNotify(n)))
 	pause()
 	return nil
 }

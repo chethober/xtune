@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -37,9 +39,9 @@ func localXray(t *testing.T) string {
 	return b
 }
 
-func testStateWithCert(t *testing.T) *State {
+func testStateWithCert(t *testing.T) *state.State {
 	st := testState()
-	if err := st.makeCert(); err != nil {
+	if err := makeCert(st); err != nil {
 		t.Fatal(err)
 	}
 	return st
@@ -50,7 +52,7 @@ func testStateWithCert(t *testing.T) *State {
 func TestPlanEntriesHop(t *testing.T) {
 	probe := "SNI www.a.com 2 0.20\nUSED udp 0.0.0.0:20500\nHOP yes"
 	entries, _ := PlanEntries(probe, false)
-	var hop *Entry
+	var hop *state.Entry
 	for i := range entries {
 		if entries[i].Hop != "" {
 			hop = &entries[i]
@@ -72,16 +74,16 @@ func TestPlanEntriesHop(t *testing.T) {
 	if es, _ := PlanEntries("SNI www.a.com 2 0.20\nHOP no", false); len(es) != len(entries)-1 {
 		t.Error("hop entry planned without forwarding support")
 	}
-	specs := strings.Join(portSpecs([]Entry{*hop}), " ")
+	specs := strings.Join(portSpecs([]state.Entry{*hop}), " ")
 	if specs != fmt.Sprintf("%d/udp hop:%s:%d", hop.Port, hop.Hop, hop.Port) {
 		t.Errorf("helper specs: %s", specs)
 	}
 	st := testState()
-	l := st.Link(*hop, NewUser("a"), Knobs{})
+	l := Link(st, *hop, state.NewUser("a"), state.Knobs{})
 	if q := mustQuery(t, l); q.Get("mport") != hop.Hop {
 		t.Errorf("hysteria2 link lacks the hop range: %s", l)
 	}
-	ob, _ := json.Marshal(st.Outbound(*hop, NewUser("a"), Knobs{}, "p"))
+	ob, _ := json.Marshal(Outbound(st, *hop, state.NewUser("a"), state.Knobs{}, "p"))
 	if !strings.Contains(string(ob), `"udphop"`) || !strings.Contains(string(ob), `"remotePorts":"`+hop.Hop+`"`) {
 		t.Errorf("outbound lacks udphop: %s", ob)
 	}
@@ -92,9 +94,9 @@ func TestPlanEntriesHop(t *testing.T) {
 func TestSplitCDNVariant(t *testing.T) {
 	st := testState()
 	st.CDNDomain, st.Domain = "cdn.example.com", "direct.example.com"
-	cdn := Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
+	cdn := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
 	n := 0
-	for _, v := range ExpandVariants([]Entry{cdn, {ID: "r-xhttp", Kind: "reality-xhttp", Port: 1, SNI: "a.b.com", Path: "/x"}}, "smart") {
+	for _, v := range ExpandVariants([]state.Entry{cdn, {ID: "r-xhttp", Kind: "reality-xhttp", Port: 1, SNI: "a.b.com", Path: "/x"}}, "smart") {
 		if v.K.Split != "" {
 			n++
 			if !v.Entry.CDN() || !strings.Contains(v.Label, "split=cdn-up") {
@@ -105,8 +107,8 @@ func TestSplitCDNVariant(t *testing.T) {
 	if n != 2 {
 		t.Errorf("want 2 split variants (packet-up, stream-up), got %d", n)
 	}
-	k := Knobs{FP: "chrome", Frag: "none", Mode: "packet-up", Split: "cdn-up"}
-	ss := st.Outbound(cdn, NewUser("a"), k, "p")["streamSettings"].(J)
+	k := state.Knobs{FP: "chrome", Frag: "none", Mode: "packet-up", Split: "cdn-up"}
+	ss := Outbound(st, cdn, state.NewUser("a"), k, "p")["streamSettings"].(J)
 	down := ss["xhttpSettings"].(J)["extra"].(J)["downloadSettings"].(J)
 	if down["address"] != "direct.example.com" || down["port"] != 2053 || down["tlsSettings"].(J)["pinnedPeerCertSha256"] != "ff" {
 		t.Errorf("download half should go straight to the server, pinned: %v", down)
@@ -114,15 +116,15 @@ func TestSplitCDNVariant(t *testing.T) {
 	if ss["tlsSettings"].(J)["serverName"] != "cdn.example.com" {
 		t.Error("upload half should stay on the CDN")
 	}
-	q := mustQuery(t, st.Link(cdn, NewUser("a"), k))
+	q := mustQuery(t, Link(st, cdn, state.NewUser("a"), k))
 	var extra J
 	if err := json.Unmarshal([]byte(q.Get("extra")), &extra); err != nil || extra["downloadSettings"] == nil {
 		t.Errorf("link extra: %q %v", q.Get("extra"), err)
 	}
-	if q := mustQuery(t, st.Link(cdn, NewUser("a"), Knobs{Mode: "auto"})); q.Get("extra") != "" {
+	if q := mustQuery(t, Link(st, cdn, state.NewUser("a"), state.Knobs{Mode: "auto"})); q.Get("extra") != "" {
 		t.Error("extra on an unsplit link")
 	}
-	if e := (Entry{Kind: "cdn-xhttp", Split: "cdn-up", Mode: "stream-up"}); e.Knobs().Split != "cdn-up" {
+	if e := (state.Entry{Kind: "cdn-xhttp", Split: "cdn-up", Mode: "stream-up"}); e.Knobs().Split != "cdn-up" {
 		t.Error("deployed entries must keep their split setting")
 	}
 }
@@ -132,39 +134,39 @@ func TestXrayAcceptsNewConfigs(t *testing.T) {
 	bin := localXray(t)
 	st := testStateWithCert(t)
 	st.CDNDomain = "cdn.example.com"
-	u := NewUser("a")
+	u := state.NewUser("a")
 	u.UUID = "11111111-2222-4333-8444-555555555555"
-	hop := Entry{ID: "hy2-hop", Kind: "hysteria2", Port: 30000, Hop: "21000-21999"}
-	cdn := Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
+	hop := state.Entry{ID: "hy2-hop", Kind: "hysteria2", Port: 30000, Hop: "21000-21999"}
+	cdn := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
 	for name, cfg := range map[string]J{
-		"hop":   ClientConfig(st.Outbound(hop, u, Knobs{}, "proxy")),
-		"split": ClientConfig(st.Outbound(cdn, u, Knobs{FP: "chrome", Mode: "packet-up", Split: "cdn-up"}, "proxy")),
+		"hop":   ClientConfig(Outbound(st, hop, u, state.Knobs{}, "proxy")),
+		"split": ClientConfig(Outbound(st, cdn, u, state.Knobs{FP: "chrome", Mode: "packet-up", Split: "cdn-up"}, "proxy")),
 	} {
 		if err := xrayAccepts(bin, cfg); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// a full server config with WARP, the API and every inbound kind
-	st.Warp = &Warp{PrivateKey: "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY=", Address4: "172.16.0.2", Address6: "2606:4700::1",
+	st.Warp = &state.Warp{PrivateKey: "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY=", Address4: "172.16.0.2", Address6: "2606:4700::1",
 		PeerKey: "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", Endpoint: "engage.cloudflareclient.com:2408", Reserved: []int{1, 2, 3}}
 	st.APIPort = 41234
 	priv, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	st.RealityPriv = base64.RawURLEncoding.EncodeToString(priv.Bytes())
 	st.RealityPub = base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes())
-	st.SSKey = ssKey()
+	st.SSKey = state.NewSSKey()
 	dir := t.TempDir()
 	os.WriteFile(dir+"/hy.crt", []byte(st.CertPEM), 0o600)
 	os.WriteFile(dir+"/hy.key", []byte(st.KeyPEM), 0o600)
-	entries := []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 30001, SNI: "www.microsoft.com"}, cdn, hop,
+	entries := []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 30001, SNI: "www.microsoft.com"}, cdn, hop,
 		{ID: "ss2022", Kind: "ss2022", Port: 30002}}
-	u.SSKey = ssKey()
-	cfg := st.ServerConfig(entries, []User{u})
+	u.SSKey = state.NewSSKey()
+	cfg := ServerConfig(st, entries, []state.User{u})
 	testCerts(cfg, dir)
 	if err := xrayAccepts(bin, cfg); err != nil {
 		t.Errorf("server config: %v", err)
 	}
 	st.Entries = entries
-	if err := xrayAccepts(bin, st.FailoverConfig(u)); err != nil {
+	if err := xrayAccepts(bin, FailoverConfig(st, u)); err != nil {
 		t.Errorf("failover config: %v", err)
 	}
 }
@@ -172,7 +174,7 @@ func TestXrayAcceptsNewConfigs(t *testing.T) {
 // ---------------------------------------------------------------- check user, resets
 
 func TestCheckUserIsHiddenAndLive(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
+	r, fs := deployed(t, state.NewUser("ann"))
 	st, err := ensureCheckUser(r)
 	if err != nil || st.Check == nil {
 		t.Fatal(err)
@@ -185,7 +187,7 @@ func TestCheckUserIsHiddenAndLive(t *testing.T) {
 		t.Error("check user re-created")
 	}
 	var b strings.Builder
-	us, _ := LoadUsage(r)
+	us, _ := state.LoadUsage(r)
 	printUsers(&b, again, us)
 	if strings.Contains(b.String(), checkUserName) {
 		t.Error("check user listed with the users")
@@ -203,14 +205,14 @@ func TestCheckUserIsHiddenAndLive(t *testing.T) {
 }
 
 func TestMonthlyReset(t *testing.T) {
-	ann := NewUser("ann")
+	ann := state.NewUser("ann")
 	ann.Quota = 1000
 	r, fs := deployed(t, ann)
 	monthly := "monthly"
 	if _, err := SetLimits(r, "ann", Limits{Reset: &monthly}); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := LoadState(r)
+	st, _ := state.Load(r)
 	_, u := st.User("ann")
 	if want := time.Now().AddDate(0, 1, 0).Unix(); u.ResetAt < want-5 || u.ResetAt > want+5 {
 		t.Fatalf("next reset %d, want about %d", u.ResetAt, want)
@@ -223,23 +225,23 @@ func TestMonthlyReset(t *testing.T) {
 		t.Fatal("ann should be over quota")
 	}
 	// the period ends: usage starts from zero and ann is back
-	st, _ = LoadState(r)
+	st, _ = state.Load(r)
 	_, u = st.User("ann")
 	past := time.Now().Add(-time.Hour)
 	u.ResetAt = past.Unix()
-	saveState(r, st)
+	state.Save(r, st)
 	fs.stats = ""
 	if err := Enforce(r); err != nil {
 		t.Fatal(err)
 	}
-	us, _ := LoadUsage(r)
+	us, _ := state.LoadUsage(r)
 	if uu := us.Users["ann"]; uu.Up+uu.Down != 0 {
 		t.Errorf("usage not reset: %+v", uu)
 	}
 	if fs.live["r-tcp"]["ann"] == "" {
 		t.Error("ann not live again after the reset")
 	}
-	st, _ = LoadState(r)
+	st, _ = state.Load(r)
 	if _, u = st.User("ann"); u.ResetAt != nextReset("monthly", past).Unix() {
 		t.Errorf("next reset should be one period on: %v", time.Unix(u.ResetAt, 0))
 	}
@@ -259,18 +261,18 @@ func TestMonthlyReset(t *testing.T) {
 func captureAlerts(t *testing.T) *[]string {
 	var got []string
 	old := sendAlert
-	sendAlert = func(_ Notify, _, event, text string) error { got = append(got, event+": "+text); return nil }
+	sendAlert = func(_ state.Notify, _, event, text string) error { got = append(got, event+": "+text); return nil }
 	t.Cleanup(func() { sendAlert = old })
 	return &got
 }
 
 func TestAlerts(t *testing.T) {
 	got := captureAlerts(t)
-	ann, bob := NewUser("ann"), NewUser("bob")
+	ann, bob := state.NewUser("ann"), state.NewUser("bob")
 	ann.Quota = 1000
 	bob.Expires = time.Now().Add(24 * time.Hour).Unix()
 	r, fs := deployed(t, ann, bob)
-	if err := SetNotify(r, Notify{Webhook: "https://hooks.example.com/x"}); err != nil {
+	if err := SetNotify(r, state.Notify{Webhook: "https://hooks.example.com/x"}); err != nil {
 		t.Fatal(err)
 	}
 	*got = nil
@@ -287,7 +289,7 @@ func TestAlerts(t *testing.T) {
 	if len(*got) != 1 || !strings.HasPrefix((*got)[0], "ann:quota:") {
 		t.Fatalf("over-quota alert: %v", *got)
 	}
-	us, _ := LoadUsage(r)
+	us, _ := state.LoadUsage(r)
 	if us.Notified["ann:quota80"] != 0 {
 		t.Error("80% alert should be re-armed once over quota")
 	}
@@ -295,9 +297,9 @@ func TestAlerts(t *testing.T) {
 	*got = nil
 	saved := fs.live
 	fs.live = map[string]map[string]string{"x": {}} // inbounds gone: API calls on tags fail, statsquery still answers
-	st, _ := LoadState(r)
+	st, _ := state.Load(r)
 	st.APIPort = 1
-	saveState(r, st)
+	state.Save(r, st)
 	failing := &failAPI{fakeServer: fs}
 	r.Transport = failing
 	Enforce(r)
@@ -337,13 +339,13 @@ func TestTelegramAlertFormat(t *testing.T) {
 	old := telegramAPI
 	telegramAPI = srv.URL
 	defer func() { telegramAPI = old }()
-	if err := sendAlert(Notify{TelegramToken: "123:abc", TelegramChat: "42"}, "vpn.example.com", "test", "hello"); err != nil {
+	if err := sendAlert(state.Notify{TelegramToken: "123:abc", TelegramChat: "42"}, "vpn.example.com", "test", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	if path != "/bot123:abc/sendMessage" || form.Get("chat_id") != "42" || form.Get("text") != "xtune (vpn.example.com): hello" {
 		t.Errorf("telegram request %s %v", path, form)
 	}
-	if d := (Notify{Webhook: "https://hooks.example.com/secret/path"}).describe(); strings.Contains(d, "secret") {
+	if d := describeNotify((state.Notify{Webhook: "https://hooks.example.com/secret/path"})); strings.Contains(d, "secret") {
 		t.Errorf("describe leaks the webhook path: %s", d)
 	}
 }
@@ -367,14 +369,14 @@ func TestJalali(t *testing.T) {
 func TestPersianPage(t *testing.T) {
 	st := testState()
 	st.CDNDomain = "cdn.example.com"
-	st.Sub = SubConfig{Mode: "cdn", Port: 2096, Path: "p"}
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
-	ann := NewUser("ann")
+	st.Sub = state.SubConfig{Mode: "cdn", Port: 2096, Path: "p"}
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
+	ann := state.NewUser("ann")
 	ann.Quota, ann.Expires = 10<<30, time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC).Unix()
 	ann.Reset, ann.ResetAt = "monthly", time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC).Unix()
-	st.Users = []User{ann}
-	us := &Usage{Users: map[string]*UserUsage{"ann": {Down: 3 << 30}}}
-	h := subHandler{load: func() (*State, *Usage, error) { return st, us, nil }}
+	st.Users = []state.User{ann}
+	us := &state.Usage{Users: map[string]*state.UserUsage{"ann": {Down: 3 << 30}}}
+	h := subHandler{load: func() (*state.State, *state.Usage, error) { return st, us, nil }}
 	get := func(q, accept string) string {
 		req := httptest.NewRequest("GET", "/p/"+ann.SubToken+q, nil)
 		req.Header.Set("Accept", "text/html")
@@ -408,12 +410,12 @@ func TestPersianPage(t *testing.T) {
 
 func TestUsersJSONAndQR(t *testing.T) {
 	st := testState()
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
-	ann := NewUser("ann")
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
+	ann := state.NewUser("ann")
 	ann.Quota = 5
-	st.Users = []User{ann}
+	st.Users = []state.User{ann}
 	var b bytes.Buffer
-	if err := printUsersJSON(&b, st, &Usage{Users: map[string]*UserUsage{"ann": {Up: 1, Down: 2, Online: []string{"1.2.3.4"}}}}); err != nil {
+	if err := printUsersJSON(&b, st, &state.Usage{Users: map[string]*state.UserUsage{"ann": {Up: 1, Down: 2, Online: []string{"1.2.3.4"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	var us []userJSON
@@ -437,16 +439,16 @@ func TestUsersJSONAndQR(t *testing.T) {
 // ---------------------------------------------------------------- backup / restore
 
 func TestBackupRestoreKeepsIdentity(t *testing.T) {
-	ann := NewUser("ann")
+	ann := state.NewUser("ann")
 	r, _ := deployed(t, ann)
-	st, _ := LoadState(r)
-	st.Domain, st.Sub = "vpn.example.com", SubConfig{Mode: "cdn", Port: 2096, Path: "pp"}
+	st, _ := state.Load(r)
+	st.Domain, st.Sub = "vpn.example.com", state.SubConfig{Mode: "cdn", Port: 2096, Path: "pp"}
 	st.CDNDomain = "cdn.example.com"
-	saveState(r, st)
-	us, _ := LoadUsage(r)
-	us.of("ann").Down = 777
-	us.of("ann").Online = []string{"9.9.9.9"}
-	saveUsage(r, us)
+	state.Save(r, st)
+	us, _ := state.LoadUsage(r)
+	us.Of("ann").Down = 777
+	us.Of("ann").Online = []string{"9.9.9.9"}
+	state.SaveUsage(r, us)
 
 	b, err := TakeBackup(r)
 	if err != nil {
@@ -480,12 +482,12 @@ func TestBackupRestoreKeepsIdentity(t *testing.T) {
 	if err != nil && !strings.Contains(err.Error(), "xtune could not be installed") {
 		t.Fatal(err)
 	}
-	got, _ = LoadState(nr)
+	got, _ = state.Load(nr)
 	if got == nil || got.Host != "198.51.100.9" || got.RealityPriv != st.RealityPriv || got.Users[0].SubToken != ann.SubToken ||
 		got.Sub.Path != "pp" || got.Domain != "vpn.example.com" {
 		t.Fatalf("restored state: %+v", got)
 	}
-	nus, _ := LoadUsage(nr)
+	nus, _ := state.LoadUsage(nr)
 	if nus.Users["ann"].Down != 777 || len(nus.Users["ann"].Online) != 0 {
 		t.Errorf("usage not carried over, or online IPs kept: %+v", nus.Users["ann"])
 	}
@@ -518,11 +520,11 @@ func TestParseTarget(t *testing.T) {
 
 func TestMergeChoiceCoversEveryNetwork(t *testing.T) {
 	v := func(id, label string) *Variant {
-		return &Variant{Entry: Entry{ID: id, Kind: "reality-tcp"}, K: Knobs{FP: "chrome", Frag: "none"}, Label: label}
+		return &Variant{Entry: state.Entry{ID: id, Kind: "reality-tcp"}, K: state.Knobs{FP: "chrome", Frag: "none"}, Label: label}
 	}
 	a, a2, b, c := v("a", "a"), v("a", "a fp=firefox"), v("b", "b"), v("c", "c")
 	a2.K.FP = "firefox"
-	cdn := &Variant{Entry: Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp"}, Label: "cdn"}
+	cdn := &Variant{Entry: state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp"}, Label: "cdn"}
 	nets := []netScores{
 		{Name: "mci", Score: map[string]float64{"a": 100, "a fp=firefox": 102, "b": 10, "cdn": 5}},
 		{Name: "irancell", Score: map[string]float64{"c": 50, "cdn": 1}},
@@ -548,13 +550,13 @@ func TestShareAndDeployPending(t *testing.T) {
 	fs := newFake()
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := testState()
-	st.Users = []User{NewUser("ann")}
-	tu := NewUser("tune")
-	e1 := Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}
-	e2 := Entry{ID: "hy2", Kind: "hysteria2", Port: 8443}
-	vs := []*Variant{{Entry: e1, K: Knobs{FP: "chrome", Frag: "none"}, Label: "r-tcp:443", Score: 50, Ok: 5},
-		{Entry: e2, K: Knobs{Frag: "none"}, Label: "hy2:8443", Score: 0}}
-	b, err := Share(r, &TuneResult{State: st, User: tu, Entries: []Entry{e1, e2}, All: vs}, "smart", "mci")
+	st.Users = []state.User{state.NewUser("ann")}
+	tu := state.NewUser("tune")
+	e1 := state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}
+	e2 := state.Entry{ID: "hy2", Kind: "hysteria2", Port: 8443}
+	vs := []*Variant{{Entry: e1, K: state.Knobs{FP: "chrome", Frag: "none"}, Label: "r-tcp:443", Score: 50, Ok: 5},
+		{Entry: e2, K: state.Knobs{Frag: "none"}, Label: "hy2:8443", Score: 0}}
+	b, err := Share(r, &TuneResult{State: st, User: tu, Entries: []state.Entry{e1, e2}, All: vs}, "smart", "mci")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +651,7 @@ func TestWarpRegistrationAndConfig(t *testing.T) {
 	old := warpAPI
 	warpAPI = srv.URL
 	defer func() { warpAPI = old }()
-	r, fs := deployed(t, NewUser("ann"))
+	r, fs := deployed(t, state.NewUser("ann"))
 	st, err := SetWarp(r, true, nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -676,12 +678,12 @@ func TestWarpRegistrationAndConfig(t *testing.T) {
 // ---------------------------------------------------------------- doctor
 
 func TestDoctor(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
-	st, _ := LoadState(r)
+	r, fs := deployed(t, state.NewUser("ann"))
+	st, _ := state.Load(r)
 	st.Domain, st.CDNDomain = "vpn.example.com", "cdn.example.com"
-	st.Entries = append(st.Entries, Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"},
-		Entry{ID: "hy2-hop", Kind: "hysteria2", Port: 30000, Hop: "21000-21999"})
-	saveState(r, st)
+	st.Entries = append(st.Entries, state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"},
+		state.Entry{ID: "hy2-hop", Kind: "hysteria2", Port: 30000, Hop: "21000-21999"})
+	state.Save(r, st)
 	fs.helper = map[string]string{
 		"status": "ARCH x86_64\nXRAY v26.10.10\nUNIT active\nSTATE yes\nTIMER active\nFW ufw\nXTUNE " + version,
 		"doctor": fmt.Sprintf("TIME %d\nNTP yes\nHOPRULES 0\nUSED tcp 0.0.0.0:443\nUSED tcp 0.0.0.0:30001\nUSED tcp 0.0.0.0:2053", time.Now().Unix()-300),

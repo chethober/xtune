@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -27,28 +29,10 @@ import (
 // even when nobody ran `xtune backup` in time. The passphrase is on the server too (the server
 // holds every secret anyway); it protects the copies elsewhere, so the admin keeps it apart.
 
-// BackupPlan is the schedule and where the backups go.
-type BackupPlan struct {
-	Every    int64     `json:"every"`              // seconds between backups
-	Pass     string    `json:"pass"`               // passphrase the backups are sealed with
-	Telegram bool      `json:"telegram,omitempty"` // send to the alert chat (xtune notify telegram)
-	S3       *S3Target `json:"s3,omitempty"`
-}
-
-// S3Target is a bucket on an S3-compatible service, addressed path-style.
-type S3Target struct {
-	Endpoint  string `json:"endpoint"` // https://ACCOUNT.r2.cloudflarestorage.com
-	Region    string `json:"region"`   // "auto" for R2
-	Bucket    string `json:"bucket"`
-	Prefix    string `json:"prefix,omitempty"`
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-}
-
 // backupRetry is how soon a failed scheduled backup is tried again.
 const backupRetry = time.Hour
 
-func (b *BackupPlan) describe() string {
+func describeBackups(b *state.BackupPlan) string {
 	if b == nil {
 		return "off"
 	}
@@ -64,7 +48,7 @@ func (b *BackupPlan) describe() string {
 
 // backupDue reports whether the scheduled backup should run now: its period is over, or the last
 // attempt failed and an hour has passed.
-func backupDue(st *State, us *Usage, now time.Time) bool {
+func backupDue(st *state.State, us *state.Usage, now time.Time) bool {
 	b := st.Backups
 	if b == nil || b.Every <= 0 || st.Follow != nil { // a follower's users and keys come from its primary
 		return false
@@ -77,7 +61,7 @@ func backupDue(st *State, us *Usage, now time.Time) bool {
 }
 
 // runScheduledBackup sends a sealed backup to every target and records how it went.
-func runScheduledBackup(st *State, us *Usage, now time.Time) error {
+func runScheduledBackup(st *state.State, us *state.Usage, now time.Time) error {
 	us.BackupAt = now.Unix()
 	err := sendBackup(st, &Backup{Version: version, Created: now.Unix(), State: st, Usage: us}, now)
 	if err != nil {
@@ -89,7 +73,7 @@ func runScheduledBackup(st *State, us *Usage, now time.Time) error {
 }
 
 // sendBackup seals b and delivers it to the plan's targets.
-func sendBackup(st *State, b *Backup, now time.Time) error {
+func sendBackup(st *state.State, b *Backup, now time.Time) error {
 	p := st.Backups
 	if p == nil || !p.Telegram && p.S3 == nil {
 		return errors.New("no backup target set")
@@ -108,7 +92,7 @@ func sendBackup(st *State, b *Backup, now time.Time) error {
 		}
 	}
 	if p.S3 != nil {
-		if err := s3Put(*p.S3, p.S3.key(name), data, now); err != nil {
+		if err := s3Put(*p.S3, s3Key(*p.S3, name), data, now); err != nil {
 			errs = append(errs, "s3: "+err.Error())
 		}
 	}
@@ -119,7 +103,7 @@ func sendBackup(st *State, b *Backup, now time.Time) error {
 }
 
 // telegramSendFile sends a document to the alert chat.
-func telegramSendFile(n Notify, name string, data []byte, caption string) error {
+func telegramSendFile(n state.Notify, name string, data []byte, caption string) error {
 	if n.TelegramToken == "" || n.TelegramChat == "" {
 		return errors.New("Telegram alerts are not set up (xtune notify telegram --chat ID)")
 	}
@@ -149,12 +133,12 @@ func telegramSendFile(n Notify, name string, data []byte, caption string) error 
 
 // ---------------------------------------------------------------- S3
 
-func (t S3Target) key(name string) string {
+func s3Key(t state.S3Target, name string) string {
 	return strings.Trim(strings.Trim(t.Prefix, "/")+"/"+name, "/")
 }
 
 // parseS3 reads https://ENDPOINT/BUCKET[/PREFIX].
-func parseS3(raw, region, access, secret string) (*S3Target, error) {
+func parseS3(raw, region, access, secret string) (*state.S3Target, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return nil, fmt.Errorf("%q: want https://ENDPOINT/BUCKET[/PREFIX]", raw)
@@ -166,7 +150,7 @@ func parseS3(raw, region, access, secret string) (*S3Target, error) {
 	if access == "" || secret == "" {
 		return nil, errors.New("S3 needs an access key and a secret key (XTUNE_S3_ACCESS_KEY, XTUNE_S3_SECRET_KEY)")
 	}
-	return &S3Target{Endpoint: "https://" + u.Host, Region: orStr(region, "auto"), Bucket: bucket, Prefix: prefix,
+	return &state.S3Target{Endpoint: "https://" + u.Host, Region: orStr(region, "auto"), Bucket: bucket, Prefix: prefix,
 		AccessKey: access, SecretKey: secret}, nil
 }
 
@@ -218,7 +202,7 @@ func sigV4(method, path, query string, headers map[string]string, payloadHash, r
 }
 
 // s3Put uploads body to key in the bucket.
-func s3Put(t S3Target, key string, body []byte, now time.Time) error {
+func s3Put(t state.S3Target, key string, body []byte, now time.Time) error {
 	u, err := url.Parse(t.Endpoint)
 	if err != nil {
 		return err
@@ -250,7 +234,7 @@ func s3Put(t S3Target, key string, body []byte, now time.Time) error {
 
 // SetBackupPlan replaces the schedule (nil turns it off) and, when on, sends a first backup now so
 // a wrong token or key shows at once.
-func SetBackupPlan(r *remote.Server, p *BackupPlan) (*State, error) {
+func SetBackupPlan(r *remote.Server, p *state.BackupPlan) (*state.State, error) {
 	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
@@ -263,7 +247,7 @@ func SetBackupPlan(r *remote.Server, p *BackupPlan) (*State, error) {
 		return nil, errors.New("backups to Telegram go to the alert chat: set it up first (xtune notify telegram --chat ID)")
 	}
 	st.Backups = p
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		return nil, err
 	}
 	if p == nil {
@@ -285,13 +269,13 @@ func BackupNow(r *remote.Server) error {
 	return backupNowLocked(r, st)
 }
 
-func backupNowLocked(r *remote.Server, st *State) error {
-	us, err := LoadUsage(r)
+func backupNowLocked(r *remote.Server, st *state.State) error {
+	us, err := state.LoadUsage(r)
 	if err != nil {
 		return err
 	}
 	err = runScheduledBackup(st, us, time.Now())
-	if serr := saveUsage(r, us); err == nil {
+	if serr := state.SaveUsage(r, us); err == nil {
 		err = serr
 	}
 	return err
@@ -326,11 +310,11 @@ func cmdBackupSchedule(args []string) error {
 		if err != nil {
 			return err
 		}
-		us, err := LoadUsage(r)
+		us, err := state.LoadUsage(r)
 		if err != nil {
 			return err
 		}
-		fmt.Println("scheduled backups:", st.Backups.describe())
+		fmt.Println("scheduled backups:", describeBackups(st.Backups))
 		if us.LastBackup > 0 {
 			fmt.Println("last delivered:   ", time.Unix(us.LastBackup, 0).Format("2006-01-02 15:04"))
 		}
@@ -358,7 +342,7 @@ func cmdBackupSchedule(args []string) error {
 	if err != nil {
 		return err
 	}
-	p := &BackupPlan{Every: int64(every.Seconds()), Telegram: *tg}
+	p := &state.BackupPlan{Every: int64(every.Seconds()), Telegram: *tg}
 	if old := st.Backups; old != nil { // changing the period or a target keeps the passphrase
 		p.Pass = old.Pass
 		if !set["telegram"] {
@@ -402,7 +386,7 @@ func cmdBackupSchedule(args []string) error {
 	if _, err := SetBackupPlan(r, p); err != nil {
 		return fmt.Errorf("the schedule is saved, but the first backup failed (retried every hour): %w", err)
 	}
-	fmt.Println("scheduled backups:", p.describe())
+	fmt.Println("scheduled backups:", describeBackups(p))
 	fmt.Println("[+] the first backup was sent")
 	if newPass {
 		fmt.Printf("\nBackup passphrase: %s\nWrite it down somewhere other than this server: restoring needs it\n"+

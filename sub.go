@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/crypto/acme/autocert"
 	"rsc.io/qr"
@@ -27,7 +29,7 @@ import (
 // It is reached through the CDN domain (TLS ends at the CDN, which accepts the self-signed origin
 // certificate) or on the direct domain with a Let's Encrypt certificate.
 
-func subHost(st *State) string {
+func subHost(st *state.State) string {
 	switch st.Sub.Mode {
 	case "cdn":
 		return st.CDNDomain
@@ -38,7 +40,7 @@ func subHost(st *State) string {
 }
 
 // SubURL is the user's public subscription link, or "" when the server is off.
-func (st *State) SubURL(u User) string {
+func SubURL(st *state.State, u state.User) string {
 	h := subHost(st)
 	if h == "" || u.SubToken == "" {
 		return ""
@@ -47,7 +49,7 @@ func (st *State) SubURL(u User) string {
 }
 
 // botBase is where the connect and management links point: port 443 when the server listens there.
-func (st *State) botBase() string {
+func botBase(st *state.State) string {
 	h := subHost(st)
 	if h == "" {
 		return ""
@@ -63,7 +65,7 @@ func (st *State) botBase() string {
 
 // ensurePort443 makes the subscription server also listen on 443 when nothing else uses it, so
 // serverless bots can reach the connect and management links. It reports whether 443 is reachable.
-func ensurePort443(r *remote.Server, st *State) (bool, error) {
+func ensurePort443(r *remote.Server, st *state.State) (bool, error) {
 	if st.Sub.Port == 443 || st.Sub.Port443 {
 		return true, nil
 	}
@@ -80,7 +82,7 @@ func ensurePort443(r *remote.Server, st *State) (bool, error) {
 		}
 	}
 	st.Sub.Port443 = true
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		return false, err
 	}
 	return true, restartSub(r, st)
@@ -91,7 +93,7 @@ const port443Note = "note: @chthvpnbot can only reach ports 80 and 443, and port
 
 // EnableSub turns the subscription server on, or moves it to another mode or port. Port 0 picks a
 // free CDN-compatible port. Existing links keep working as long as the mode and port stay the same.
-func EnableSub(r *remote.Server, mode string, port int) (*State, error) {
+func EnableSub(r *remote.Server, mode string, port int) (*state.State, error) {
 	defer r.Lock()()
 	st, err := requireState(r)
 	if err != nil {
@@ -150,7 +152,7 @@ func EnableSub(r *remote.Server, mode string, port int) (*State, error) {
 		st.Sub.Path = randHex(8)
 	}
 	st.Sub.Mode, st.Sub.Port = mode, port
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		return nil, err
 	}
 	return st, restartSub(r, st)
@@ -174,7 +176,7 @@ func DisableSub(r *remote.Server) error {
 		return err
 	}
 	st.Sub.Mode = ""
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		return err
 	}
 	_, err = r.Helper("sub-disable")
@@ -182,7 +184,7 @@ func DisableSub(r *remote.Server) error {
 }
 
 // restartSub (re)starts the subscription server so it picks up a new mode, port or domain.
-func restartSub(r *remote.Server, st *State) error {
+func restartSub(r *remote.Server, st *state.State) error {
 	if st.Sub.Mode == "" {
 		return nil
 	}
@@ -253,27 +255,27 @@ func Serve() error {
 }
 
 // readLocal reads state and usage straight from disk, so every request sees current users.
-func readLocal() (*State, *Usage, error) {
+func readLocal() (*state.State, *state.Usage, error) {
 	b, err := os.ReadFile(remote.Dir + "/state.json")
 	if err != nil {
 		return nil, nil, err
 	}
-	var st State
+	var st state.State
 	if err := json.Unmarshal(b, &st); err != nil {
 		return nil, nil, err
 	}
-	us := &Usage{Users: map[string]*UserUsage{}}
+	us := &state.Usage{Users: map[string]*state.UserUsage{}}
 	if b, err := os.ReadFile(remote.Dir + "/usage.json"); err == nil {
 		json.Unmarshal(b, us)
 	}
 	if us.Users == nil {
-		us.Users = map[string]*UserUsage{}
+		us.Users = map[string]*state.UserUsage{}
 	}
 	return &st, us, nil
 }
 
 type subHandler struct {
-	load func() (*State, *Usage, error)
+	load func() (*state.State, *state.Usage, error)
 	r    *remote.Server // for followers' reports
 }
 
@@ -339,7 +341,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	var u *User
+	var u *state.User
 	for i := range st.Users {
 		if t := st.Users[i].SubToken; t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(parts[1])) == 1 {
 			u = &st.Users[i]
@@ -351,21 +353,21 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	uu := us.Users[u.Name]
 	if uu == nil {
-		uu = &UserUsage{}
+		uu = &state.UserUsage{}
 	}
 	// the de-facto standard headers clients use to show usage and expiry
 	hd.Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", uu.Up, uu.Down, u.Quota, u.Expires))
 	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte("xtune - "+u.Name)))
 	hd.Set("Profile-Update-Interval", "6")
-	hd.Set("Profile-Web-Page-Url", st.SubURL(*u))
+	hd.Set("Profile-Web-Page-Url", SubURL(st, *u))
 	now := time.Now()
 	view, netName := st, ""
 	if len(st.Networks) > 0 { // the requester's network's best configs first
-		view, netName = st.forNetwork(asnOf(requesterIP(req, st), now), now)
+		view, netName = forNetwork(st, asnOf(requesterIP(req, st), now), now)
 	}
 	switch {
 	case len(parts) == 4: // a profile file
-		for _, p := range st.Profiles(*u) {
+		for _, p := range Profiles(st, *u) {
 			if p.File == parts[3] {
 				hd.Set("Content-Type", p.Type)
 				hd.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", p.File))
@@ -376,7 +378,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 	case len(parts) == 3:
 		hd.Set("Content-Type", "application/json")
-		b, _ := json.MarshalIndent(view.FailoverConfig(*u), "", "  ")
+		b, _ := json.MarshalIndent(FailoverConfig(view, *u), "", "  ")
 		w.Write(b)
 	case strings.Contains(req.Header.Get("Accept"), "text/html"):
 		hd.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "+
@@ -389,7 +391,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		subPage.Execute(w, p)
 	default:
 		hd.Set("Content-Type", "text/plain; charset=utf-8")
-		io.WriteString(w, view.Subscription(*u))
+		io.WriteString(w, Subscription(view, *u))
 	}
 }
 
@@ -418,7 +420,7 @@ type histBar struct {
 	Title string // date and amount, shown on hover
 }
 
-func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page {
+func pageData(st *state.State, u state.User, uu *state.UserUsage, now time.Time, lang string) page {
 	T := pageText[lang]
 	num := func(s string) string { // Persian digits for the page's numbers
 		if lang == "fa" {
@@ -426,14 +428,14 @@ func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page
 		}
 		return s
 	}
-	status := userStatus(u, uu, now)
+	status := state.UserStatus(u, uu, now)
 	label := T[status]
 	if status == "expired" { // T["expired"] is the dated form, "expired %s"
 		label = T["expiredState"]
 	}
 	p := page{Lang: lang, Dir: "ltr", T: T, Name: u.Name, Status: label, Used: num(fmtBytes(uu.Up + uu.Down)),
 		Quota: T["unlimited"], Expires: T["never"], Devices: num(fmt.Sprintf(T["online"], len(uu.Online))),
-		SubURL: st.SubURL(u), LastSeen: T["never"]}
+		SubURL: SubURL(st, u), LastSeen: T["never"]}
 	if lang == "fa" {
 		p.Dir = "rtl"
 	}
@@ -468,14 +470,14 @@ func pageData(st *State, u User, uu *UserUsage, now time.Time, lang string) page
 		c.Scale = 6
 		p.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(c.PNG()))
 	}
-	p.Links = st.NamedLinks(u)
-	for _, f := range st.Profiles(u) {
+	p.Links = NamedLinks(st, u)
+	for _, f := range Profiles(st, u) {
 		p.Files = append(p.Files, pageLink{Name: f.Name, URL: p.SubURL + "/f/" + url.PathEscape(f.File)})
 	}
-	if st.hasLogin() {
+	if hasLogin(st) {
 		p.Login = u.Name + " / " + tunnelPassword(u)
 	}
-	days := uu.lastDays(now, 30)
+	days := uu.LastDays(now, 30)
 	top := slices.Max(days)
 	for i, v := range days {
 		if top == 0 {
@@ -581,5 +583,5 @@ func SetSubLang(r *remote.Server, lang string) error {
 		return err
 	}
 	st.Sub.Lang = lang
-	return saveState(r, st) // the server reads state.json on every request
+	return state.Save(r, st) // the server reads state.json on every request
 }

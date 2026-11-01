@@ -21,17 +21,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
 // keyedState is testState with the keys of the newer protocols.
-func keyedState(t *testing.T) *State {
+func keyedState(t *testing.T) *state.State {
 	t.Helper()
 	st := testState()
-	if err := st.makeCert(); err != nil {
+	if err := makeCert(st); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ensureKeys(); err != nil {
+	if _, err := ensureKeys(st); err != nil {
 		t.Fatal(err)
 	}
 	return st
@@ -70,25 +72,25 @@ func TestPlanEntriesProtocols(t *testing.T) {
 		if e.Kind == "openvpn-udp" && e.Port != 1194 {
 			t.Errorf("OpenVPN UDP should take its standard port: %d", e.Port)
 		}
-		if e.Kind == "dnstt" && !slices.Contains(portSpecs([]Entry{e}), "hop:53-53:"+itoa(e.Port)) {
-			t.Errorf("DNS tunnel needs port 53 forwarded: %v", portSpecs([]Entry{e}))
+		if e.Kind == "dnstt" && !slices.Contains(portSpecs([]state.Entry{e}), "hop:53-53:"+itoa(e.Port)) {
+			t.Errorf("DNS tunnel needs port 53 forwarded: %v", portSpecs([]state.Entry{e}))
 		}
 	}
-	if es, _ := planEntries(strings.Replace(probe, "HOP yes", "HOP no", 1), PlanOpts{Protocols: []string{"dnstt"}, DNS: true}); hasEngine(es, "tunnel") {
+	if es, _ := planEntries(strings.Replace(probe, "HOP yes", "HOP no", 1), PlanOpts{Protocols: []string{"dnstt"}, DNS: true}); state.HasEngine(es, "tunnel") {
 		t.Error("a DNS tunnel without NAT to forward port 53")
 	}
 	es, _ = planEntries("SNI www.a.com 2 0.20", PlanOpts{Protocols: []string{"ikev2"}})
-	if !slices.ContainsFunc(es, func(e Entry) bool { return e.Kind == "ikev2" && e.Port == 500 }) ||
+	if !slices.ContainsFunc(es, func(e state.Entry) bool { return e.Kind == "ikev2" && e.Port == 500 }) ||
 		!slices.Contains(portSpecs(es), "4500/udp") {
 		t.Errorf("IKEv2 on 500 with NAT traversal on 4500: %v", portSpecs(es))
 	}
-	if es, _ := PlanEntries(probe, false); hasEngine(es, "tunnel") || !slices.ContainsFunc(es, func(e Entry) bool { return e.Kind == "wireguard" }) {
+	if es, _ := PlanEntries(probe, false); state.HasEngine(es, "tunnel") || !slices.ContainsFunc(es, func(e state.Entry) bool { return e.Kind == "wireguard" }) {
 		t.Error("the default matrix has WireGuard and no opt-in protocols")
 	}
 }
 
 func TestDeployChoiceKeepsOptInFamilies(t *testing.T) {
-	v := func(id, kind string) *Variant { return &Variant{Entry: Entry{ID: id, Kind: kind}, Ok: 3} }
+	v := func(id, kind string) *Variant { return &Variant{Entry: state.Entry{ID: id, Kind: kind}, Ok: 3} }
 	best := []*Variant{v("r-tcp", "reality-tcp"), v("wg", "wireguard"), v("ssh-tls", "ssh-tls"), v("hy2", "hysteria2"),
 		v("ssh", "ssh"), v("ovpn-tcp", "openvpn-tcp"), v("ovpn-udp", "openvpn-udp"), v("dnstt", "dnstt")}
 	var ids []string
@@ -102,28 +104,28 @@ func TestDeployChoiceKeepsOptInFamilies(t *testing.T) {
 
 func TestWireGuard(t *testing.T) {
 	st := keyedState(t)
-	wg := Entry{ID: "wg", Kind: "wireguard", Port: 51820}
-	st.Entries = []Entry{wg, {ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
-	st.Users = []User{NewUser("a"), NewUser("b")}
-	st.Check = &User{Name: checkUserName, UUID: newUUID(), Enabled: true}
-	st.assignWGIPs()
+	wg := state.Entry{ID: "wg", Kind: "wireguard", Port: 51820}
+	st.Entries = []state.Entry{wg, {ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}}
+	st.Users = []state.User{state.NewUser("a"), state.NewUser("b")}
+	st.Check = &state.User{Name: checkUserName, UUID: state.NewUUID(), Enabled: true}
+	st.AssignWGIPs()
 	ips := map[string]bool{}
 	for _, u := range append(st.Users, *st.Check) {
-		if ips[u.WGIP] || !wgSubnet.Contains(mustAddr(t, u.WGIP)) {
-			t.Fatalf("address %q reused or outside %s", u.WGIP, wgSubnet)
+		if ips[u.WGIP] || !state.WgSubnet.Contains(mustAddr(t, u.WGIP)) {
+			t.Fatalf("address %q reused or outside %s", u.WGIP, state.WgSubnet)
 		}
 		ips[u.WGIP] = true
 	}
 	before := st.Users[1].WGIP
-	st.Users = append(st.Users[1:], NewUser("c"), NewUser("d"))
-	st.assignWGIPs()
+	st.Users = append(st.Users[1:], state.NewUser("c"), state.NewUser("d"))
+	st.AssignWGIPs()
 	if st.Users[0].WGIP != before || st.Users[1].WGIP == before || st.Users[1].WGIP == st.Users[2].WGIP || st.Users[2].WGIP == st.Check.WGIP {
 		t.Errorf("addresses must stay put and new ones be free: %+v", st.Users)
 	}
 	st.Users = st.Users[:2]
 
 	a := st.Users[0]
-	cfg := st.ServerConfig(st.Entries, st.Users)
+	cfg := ServerConfig(st, st.Entries, st.Users)
 	var in J
 	for _, ib := range cfg["inbounds"].([]J) {
 		if ib["protocol"] == "wireguard" {
@@ -134,7 +136,7 @@ func TestWireGuard(t *testing.T) {
 	if len(peers) != 2 || peers[0]["email"] != a.Name || peers[0]["allowedIPs"].([]string)[0] != a.WGIP+"/32" {
 		t.Fatalf("server peers: %v", peers)
 	}
-	ob := st.Outbound(wg, a, Knobs{MTU: 1280}, "proxy")
+	ob := Outbound(st, wg, a, state.Knobs{MTU: 1280}, "proxy")
 	set := ob["settings"].(J)
 	priv, _ := base64.StdEncoding.DecodeString(set["secretKey"].(string))
 	k, err := ecdh.X25519().NewPrivateKey(priv)
@@ -144,18 +146,18 @@ func TestWireGuard(t *testing.T) {
 	if set["mtu"] != 1280 || set["peers"].([]J)[0]["publicKey"] != st.WGPub {
 		t.Errorf("client outbound: %v", set)
 	}
-	l, err := url.Parse(st.Link(wg, a, Knobs{}))
+	l, err := url.Parse(Link(st, wg, a, state.Knobs{}))
 	if err != nil || l.Scheme != "wireguard" || l.Query().Get("publickey") != st.WGPub || l.Query().Get("address") != a.WGIP+"/32" {
 		t.Errorf("link: %v %v", l, err)
 	}
-	if c := st.WGConf(wg, a); !strings.Contains(c, "Address = "+a.WGIP+"/32") || !strings.Contains(c, "Endpoint = 203.0.113.7:51820") {
+	if c := WGConf(st, wg, a); !strings.Contains(c, "Address = "+a.WGIP+"/32") || !strings.Contains(c, "Endpoint = 203.0.113.7:51820") {
 		t.Errorf("WireGuard app config:\n%s", c)
 	}
-	if fc := st.FailoverConfig(a); !strings.Contains(mustJSON(t, fc), `"protocol":"wireguard"`) {
+	if fc := FailoverConfig(st, a); !strings.Contains(mustJSON(t, fc), `"protocol":"wireguard"`) {
 		t.Error("the failover config should include WireGuard")
 	}
 	if bin := FindLocalXray(""); bin != "" { // Xray itself agrees with both ends
-		if err := xrayAccepts(bin, st.ServerConfig([]Entry{wg}, st.Users)); err != nil {
+		if err := xrayAccepts(bin, ServerConfig(st, []state.Entry{wg}, st.Users)); err != nil {
 			t.Errorf("server config: %v", err)
 		}
 		if err := xrayAccepts(bin, ClientConfig(ob)); err != nil {
@@ -186,8 +188,8 @@ func TestWireGuardUserChangesRestart(t *testing.T) {
 	fs := newFake()
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := keyedState(t)
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "wg", Kind: "wireguard", Port: 51820}}
-	st.Users = []User{NewUser("ann")}
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"}, {ID: "wg", Kind: "wireguard", Port: 51820}}
+	st.Users = []state.User{state.NewUser("ann")}
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
 	}
@@ -214,14 +216,14 @@ func TestTunnelServer(t *testing.T) {
 	st := keyedState(t)
 	st.Host, st.DNSDomain = "127.0.0.1", "t.example.com"
 	ports, _ := freePorts(3)
-	st.Entries = []Entry{{ID: "ssh", Kind: "ssh", Port: ports[0]}, {ID: "ssh-tls", Kind: "ssh-tls", Port: ports[1], SNI: "www.a.com"},
+	st.Entries = []state.Entry{{ID: "ssh", Kind: "ssh", Port: ports[0]}, {ID: "ssh-tls", Kind: "ssh-tls", Port: ports[1], SNI: "www.a.com"},
 		{ID: "dnstt", Kind: "dnstt", Port: ports[2]}}
-	ann, bob := NewUser("ann"), NewUser("bob")
+	ann, bob := state.NewUser("ann"), state.NewUser("bob")
 	bob.Devices = 1
 	dir := t.TempDir()
 	conf, stats := filepath.Join(dir, "tunnels.json"), filepath.Join(dir, "stats.json")
-	write := func(users ...User) {
-		if err := writeJSON(conf, st.TunnelConf(st.Entries, users, stats)); err != nil {
+	write := func(users ...state.User) {
+		if err := writeJSON(conf, buildTunnelConf(st, st.Entries, users, stats)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -234,8 +236,8 @@ func TestTunnelServer(t *testing.T) {
 		t.Fatal("tunnel server did not start")
 	}
 
-	get := func(e Entry, u User, k Knobs) (string, error) {
-		v := &Variant{Entry: e, K: k, dial: st.tunnelDial(e, u, k)}
+	get := func(e state.Entry, u state.User, k state.Knobs) (string, error) {
+		v := &Variant{Entry: e, K: k, dial: tunnelDial(st, e, u, k)}
 		resp, err := v.client(20 * time.Second).Get(web.URL)
 		if err != nil {
 			return "", err
@@ -245,24 +247,24 @@ func TestTunnelServer(t *testing.T) {
 		return string(b), err
 	}
 	for _, c := range []struct {
-		e Entry
-		k Knobs
+		e state.Entry
+		k state.Knobs
 	}{
-		{st.Entries[0], Knobs{}}, {st.Entries[0], Knobs{Mode: "ws"}}, {st.Entries[1], Knobs{}}, {st.Entries[1], Knobs{Mode: "ws"}},
-		{st.Entries[2], Knobs{Resolver: "udp:127.0.0.1:" + itoa(ports[2])}},
+		{st.Entries[0], state.Knobs{}}, {st.Entries[0], state.Knobs{Mode: "ws"}}, {st.Entries[1], state.Knobs{}}, {st.Entries[1], state.Knobs{Mode: "ws"}},
+		{st.Entries[2], state.Knobs{Resolver: "udp:127.0.0.1:" + itoa(ports[2])}},
 	} {
 		if body, err := get(c.e, ann, c.k); err != nil || body != "hello" {
 			t.Errorf("%s %+v: %q %v", c.e.ID, c.k, body, err)
 		}
 	}
 	impostor := ann
-	impostor.UUID = newUUID()
-	if _, err := get(st.Entries[0], impostor, Knobs{}); err == nil {
+	impostor.UUID = state.NewUUID()
+	if _, err := get(st.Entries[0], impostor, state.Knobs{}); err == nil {
 		t.Error("a wrong password got through")
 	}
 
 	// bob holds a connection open; taking him off the list disconnects it
-	held, err := st.tunnelDial(st.Entries[0], bob, Knobs{})(context.Background(), "tcp", strings.TrimPrefix(web.URL, "http://"))
+	held, err := tunnelDial(st, st.Entries[0], bob, state.Knobs{})(context.Background(), "tcp", strings.TrimPrefix(web.URL, "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +282,7 @@ func TestTunnelServer(t *testing.T) {
 	if _, err := held.Read(make([]byte, 1)); err == nil || isTimeout(err) {
 		t.Errorf("bob's session should have been closed: %v", err)
 	}
-	if _, err := get(st.Entries[0], bob, Knobs{}); err == nil {
+	if _, err := get(st.Entries[0], bob, state.Knobs{}); err == nil {
 		t.Error("a removed user logged in")
 	}
 }
@@ -356,14 +358,14 @@ func TestCollectExtraAndKick(t *testing.T) {
 	fs := newFake()
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := keyedState(t)
-	st.Entries = []Entry{{ID: "ssh", Kind: "ssh", Port: 2222}, {ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, {ID: "ikev2", Kind: "ikev2", Port: 500}}
+	st.Entries = []state.Entry{{ID: "ssh", Kind: "ssh", Port: 2222}, {ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, {ID: "ikev2", Kind: "ikev2", Port: 500}}
 	stats := func(boot string, up, down int64) {
 		b, _ := json.Marshal(tunnelStats{Boot: boot, Users: map[string][2]int64{"ann": {up, down}}, Entries: map[string]int64{"ssh": up + down},
 			Online: map[string][]string{"ann": {"192.0.2.1"}}, Written: time.Now().Unix()})
 		fs.files[tunnelStatsFile] = string(b)
 	}
 	fs.helper = map[string]string{"vpn-sessions": "### ovpn ovpn-udp\n" + ovpnStatus + "### ike\n" + swanRaw}
-	us := &Usage{}
+	us := &state.Usage{}
 	now := time.Now()
 	stats("b1", 100, 200)
 	byTag := map[string]int64{}
@@ -388,7 +390,7 @@ func TestCollectExtraAndKick(t *testing.T) {
 		t.Errorf("after a restart: %+v", a)
 	}
 
-	if err := kickInactive(r, []User{{Name: "ann"}}, sessions); err != nil {
+	if err := kickInactive(r, []state.User{{Name: "ann"}}, sessions); err != nil {
 		t.Fatal(err)
 	}
 	if last := fs.calls[len(fs.calls)-1]; last != "vpn-kick ike:7" {
@@ -399,7 +401,7 @@ func TestCollectExtraAndKick(t *testing.T) {
 func TestVPNConfigsAndAuth(t *testing.T) {
 	st := keyedState(t)
 	st.Domain = "vpn.example.com"
-	if err := st.ensureVPNCert(); err != nil {
+	if err := ensureVPNCert(st); err != nil {
 		t.Fatal(err)
 	}
 	ca, _ := parseCertPEM(st.VPNCA)
@@ -409,10 +411,10 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 	if _, err := cert.Verify(x509.VerifyOptions{DNSName: "vpn.example.com", Roots: pool}); err != nil {
 		t.Errorf("server certificate: %v", err)
 	}
-	ann, off := NewUser("ann"), NewUser("off")
+	ann, off := state.NewUser("ann"), state.NewUser("off")
 	off.Enabled = false
-	udp, tcp, ike := Entry{ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, Entry{ID: "ovpn-tcp", Kind: "openvpn-tcp", Port: 8443}, Entry{ID: "ikev2", Kind: "ikev2", Port: 500}
-	files := st.vpnFiles([]Entry{udp, tcp, ike}, []User{ann, off}, "/v")
+	udp, tcp, ike := state.Entry{ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, state.Entry{ID: "ovpn-tcp", Kind: "openvpn-tcp", Port: 8443}, state.Entry{ID: "ikev2", Kind: "ikev2", Port: 500}
+	files := vpnFiles(st, []state.Entry{udp, tcp, ike}, []state.User{ann, off}, "/v")
 	for _, want := range []string{"port 1194\n", "proto udp\n", "server 10.68.0.0 255.255.240.0", "status /v/ovpn-udp.status", "vpn-auth /v/users.json\" via-file", "<cert>"} {
 		if !strings.Contains(files["/v/ovpn-udp.conf"], want) {
 			t.Errorf("OpenVPN UDP config lacks %q", want)
@@ -425,7 +427,7 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 	if !strings.Contains(sw, "id = ann\n    secret = \""+tunnelPassword(ann)+"\"") || strings.Contains(sw, "id = off") || !strings.Contains(sw, "id = vpn.example.com") {
 		t.Errorf("swanctl config:\n%s", sw)
 	}
-	if specs := vpnSpecs([]Entry{udp, ike}); strings.Join(specs, " ") != "openvpn:ovpn-udp net:10.68.0.0/20 ikev2 net:10.69.0.0/16" {
+	if specs := vpnSpecs([]state.Entry{udp, ike}); strings.Join(specs, " ") != "openvpn:ovpn-udp net:10.68.0.0/20 ikev2 net:10.69.0.0/16" {
 		t.Errorf("helper specs: %v", specs)
 	}
 
@@ -443,7 +445,7 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 		t.Error("a wrong password or a disabled user got in")
 	}
 	ann.Devices = 1 // ann is already on from 198.51.100.4
-	uj, _ := json.Marshal(vpnUsers([]User{ann}))
+	uj, _ := json.Marshal(vpnUsers([]state.User{ann}))
 	os.WriteFile(filepath.Join(dir, "users.json"), uj, 0o600)
 	os.WriteFile(filepath.Join(dir, "ovpn-udp.status"), []byte(ovpnStatus), 0o600)
 	t.Setenv("untrusted_ip", "192.0.2.50")
@@ -455,17 +457,17 @@ func TestVPNConfigsAndAuth(t *testing.T) {
 		t.Errorf("the same device again: %v", err)
 	}
 
-	st.Entries = []Entry{udp, ike}
-	for _, p := range st.Profiles(ann) {
+	st.Entries = []state.Entry{udp, ike}
+	for _, p := range Profiles(st, ann) {
 		if p.Body == "" || p.File == "" {
 			t.Errorf("empty profile %+v", p)
 		}
 	}
-	if mc := st.MobileConfig(ann); !strings.Contains(mc, "<string>IKEv2</string>") || !strings.Contains(mc, tunnelPassword(ann)) {
+	if mc := MobileConfig(st, ann); !strings.Contains(mc, "<string>IKEv2</string>") || !strings.Contains(mc, tunnelPassword(ann)) {
 		t.Error("Apple profile")
 	}
 	var sswan J
-	if err := json.Unmarshal([]byte(st.SswanProfile(ann)), &sswan); err != nil || sswan["type"] != "ikev2-eap" {
+	if err := json.Unmarshal([]byte(SswanProfile(st, ann)), &sswan); err != nil || sswan["type"] != "ikev2-eap" {
 		t.Errorf("strongSwan profile: %v %v", sswan, err)
 	}
 }
@@ -512,9 +514,9 @@ func TestHandshakeProbes(t *testing.T) {
 	st.Host = "127.0.0.1"
 	udpPort := pc.LocalAddr().(*net.UDPAddr).Port
 	tcpPort := ln.Addr().(*net.TCPAddr).Port
-	for _, e := range []Entry{{Kind: "openvpn-udp", Port: udpPort}, {Kind: "ikev2", Port: udpPort}, {Kind: "openvpn-tcp", Port: tcpPort}} {
+	for _, e := range []state.Entry{{Kind: "openvpn-udp", Port: udpPort}, {Kind: "ikev2", Port: udpPort}, {Kind: "openvpn-tcp", Port: tcpPort}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if _, err := st.vpnHandshake(ctx, e); err != nil {
+		if _, err := vpnHandshake(st, ctx, e); err != nil {
 			t.Errorf("%s: %v", e.Kind, err)
 		}
 		cancel()
@@ -522,7 +524,7 @@ func TestHandshakeProbes(t *testing.T) {
 	dead, _ := freePorts(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := st.vpnHandshake(ctx, Entry{Kind: "ikev2", Port: dead[0]}); err == nil {
+	if _, err := vpnHandshake(st, ctx, state.Entry{Kind: "ikev2", Port: dead[0]}); err == nil {
 		t.Error("an unanswered handshake succeeded")
 	}
 
@@ -546,15 +548,15 @@ func TestHandshakeProbes(t *testing.T) {
 func TestProfilesOnSubscriptionPage(t *testing.T) {
 	st := keyedState(t)
 	st.Domain = "vpn.example.com"
-	st.ensureVPNCert()
+	ensureVPNCert(st)
 	st.DNSDomain = "t.example.com"
-	st.Sub = SubConfig{Mode: "direct", Port: 8443, Path: "p4th"}
-	st.Entries = []Entry{{ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, {ID: "ikev2", Kind: "ikev2", Port: 500},
+	st.Sub = state.SubConfig{Mode: "direct", Port: 8443, Path: "p4th"}
+	st.Entries = []state.Entry{{ID: "ovpn-udp", Kind: "openvpn-udp", Port: 1194}, {ID: "ikev2", Kind: "ikev2", Port: 500},
 		{ID: "dnstt", Kind: "dnstt", Port: 5300, Resolver: "udp:8.8.8.8:53"}, {ID: "ssh", Kind: "ssh", Port: 2222}}
-	ann := NewUser("ann")
-	st.Users = []User{ann}
-	us := &Usage{Users: map[string]*UserUsage{}}
-	h := subHandler{load: func() (*State, *Usage, error) { return st, us, nil }}
+	ann := state.NewUser("ann")
+	st.Users = []state.User{ann}
+	us := &state.Usage{Users: map[string]*state.UserUsage{}}
+	h := subHandler{load: func() (*state.State, *state.Usage, error) { return st, us, nil }}
 	get := func(path, accept string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", path, nil)
 		req.Header.Set("Accept", accept)
@@ -581,8 +583,8 @@ func TestProfilesOnSubscriptionPage(t *testing.T) {
 		t.Errorf("the subscription lists only share links: %q", raw)
 	}
 	// TLS and WebSocket SSH have no link scheme: a settings file says how to connect
-	st.Entries = []Entry{{ID: "ssh-tls", Kind: "ssh-tls", Port: 2083, SNI: "www.a.com", Mode: "ws"}}
-	if l := st.Link(st.Entries[0], ann, st.Entries[0].Knobs()); l != "" {
+	st.Entries = []state.Entry{{ID: "ssh-tls", Kind: "ssh-tls", Port: 2083, SNI: "www.a.com", Mode: "ws"}}
+	if l := Link(st, st.Entries[0], ann, st.Entries[0].Knobs()); l != "" {
 		t.Errorf("an ssh:// link for SSH over TLS: %s", l)
 	}
 	info := get(base+"/f/ann-ssh-tls.txt", "").Body.String()
@@ -603,7 +605,7 @@ func TestParseResolvers(t *testing.T) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	vs := ExpandVariants([]Entry{{ID: "dnstt", Kind: "dnstt", Port: 5300}}, "smart", "udp:10.0.0.1:53", "udp:8.8.8.8:53")
+	vs := ExpandVariants([]state.Entry{{ID: "dnstt", Kind: "dnstt", Port: 5300}}, "smart", "udp:10.0.0.1:53", "udp:8.8.8.8:53")
 	if vs[0].K.Resolver != "udp:10.0.0.1:53" {
 		t.Errorf("given resolvers come first: %s", vs[0].K.Resolver)
 	}
@@ -625,12 +627,12 @@ func TestWireGuardHarnessPeers(t *testing.T) {
 		t.Skip("no local xray")
 	}
 	st := keyedState(t)
-	u := NewUser("tune")
+	u := state.NewUser("tune")
 	u.WGIP = "10.66.0.2"
-	e := Entry{ID: "wg", Kind: "wireguard", Port: 51820}
+	e := state.Entry{ID: "wg", Kind: "wireguard", Port: 51820}
 	key := func(testPeers bool) string {
 		dir := t.TempDir()
-		v := &Variant{Entry: e, K: Knobs{MTU: 1280}}
+		v := &Variant{Entry: e, K: state.Knobs{MTU: 1280}}
 		h, err := startHarness(bin, st, u, []*Variant{v}, dir, testPeers)
 		if err != nil {
 			t.Fatal(err)
@@ -646,14 +648,14 @@ func TestWireGuardHarnessPeers(t *testing.T) {
 		return ""
 	}
 	own, _ := wgUserKey(u)
-	alias, _ := wgUserKey(wgVariantUser(u, Knobs{MTU: 1280}))
+	alias, _ := wgUserKey(wgVariantUser(u, state.Knobs{MTU: 1280}))
 	if got := key(false); got != own {
 		t.Error("a check must connect with the user's own key")
 	}
 	if got := key(true); got != alias || alias == own {
 		t.Error("a tune's MTU variant must connect as its own test peer")
 	}
-	peers := wgTestPeers(u, []Entry{e})
+	peers := wgTestPeers(u, []state.Entry{e})
 	if len(peers) != 2 || peers[1].WGIP == u.WGIP {
 		t.Errorf("test peers: %+v", peers)
 	}
@@ -662,10 +664,10 @@ func TestWireGuardHarnessPeers(t *testing.T) {
 // The MTU test peers are WireGuard keys only: their UUIDs are not valid for VLESS, Hysteria and the rest.
 func TestWireGuardTestPeersOnlyOnWireGuard(t *testing.T) {
 	st := keyedState(t)
-	u := NewUser("tune")
+	u := state.NewUser("tune")
 	u.WGIP = "10.66.0.2"
-	entries := []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "wg", Kind: "wireguard", Port: 51820}}
-	cfg := st.ServerConfig(entries, wgTestPeers(u, entries))
+	entries := []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "wg", Kind: "wireguard", Port: 51820}}
+	cfg := ServerConfig(st, entries, wgTestPeers(u, entries))
 	for _, ib := range cfg["inbounds"].([]J) {
 		b, _ := json.Marshal(ib)
 		alias := strings.Contains(string(b), "/mtu1280") || strings.Contains(string(b), "tune-mtu1280")

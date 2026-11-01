@@ -17,6 +17,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -26,14 +28,6 @@ import (
 // the ASN of whoever asks for a subscription and lists that network's best configs first, with
 // the clean IP that worked best there for the CDN and Worker configs. Configs blocked there go
 // last, not away: phones move between networks.
-
-// NetRank is how the deployed configs did from one network.
-type NetRank struct {
-	Name    string             `json:"name,omitempty"` // the ISP, as the ASN registry names it
-	Updated int64              `json:"updated"`
-	Scores  map[string]float64 `json:"scores"`          // by entryKey; 0 = blocked there
-	Addrs   map[string]string  `json:"addrs,omitempty"` // by entryKey: CDN and Worker configs' clean IP there
-}
 
 // netRankFresh is how long a network's ranking is used.
 const netRankFresh = 30 * 24 * time.Hour
@@ -146,7 +140,7 @@ func checkScore(c CheckResult) float64 {
 
 // variantRank scores the deployed entries from a tune's variants: each entry's own (with the
 // knobs it was deployed with), and for CDN and Worker entries the clean IP that beat it.
-func variantRank(entries []Entry, vs []*Variant) (map[string]float64, map[string]string) {
+func variantRank(entries []state.Entry, vs []*Variant) (map[string]float64, map[string]string) {
 	scores, addrs := map[string]float64{}, map[string]string{}
 	for _, e := range entries {
 		best := -1.0
@@ -155,15 +149,15 @@ func variantRank(entries []Entry, vs []*Variant) (map[string]float64, map[string
 				continue
 			}
 			if v.K == e.Knobs() {
-				scores[entryKey(e)] = v.Score
+				scores[state.EntryKey(e)] = v.Score
 			}
 			if v.K.Addr != "" && v.Score > best {
 				best = v.Score
-				addrs[entryKey(e)] = v.K.Addr
+				addrs[state.EntryKey(e)] = v.K.Addr
 			}
 		}
-		if a, ok := addrs[entryKey(e)]; ok && (best <= scores[entryKey(e)] || a == e.Addr) {
-			delete(addrs, entryKey(e))
+		if a, ok := addrs[state.EntryKey(e)]; ok && (best <= scores[state.EntryKey(e)] || a == e.Addr) {
+			delete(addrs, state.EntryKey(e))
 		}
 	}
 	return scores, addrs
@@ -171,14 +165,14 @@ func variantRank(entries []Entry, vs []*Variant) (map[string]float64, map[string
 
 // labelRank does the same from a report's results, which name variants by label: the deployed
 // variant of each entry is known by its label in the pending tune.
-func labelRank(entries []Entry, deployed map[string]string, rs []CheckResult) (map[string]float64, map[string]string) {
+func labelRank(entries []state.Entry, deployed map[string]string, rs []CheckResult) (map[string]float64, map[string]string) {
 	scores, addrs := map[string]float64{}, map[string]string{}
 	by := map[string]float64{}
 	for _, r := range rs {
 		by[r.Label] = r.Score
 	}
 	for _, e := range entries {
-		k := entryKey(e)
+		k := state.EntryKey(e)
 		own, ok := by[deployed[e.ID]]
 		if !ok {
 			continue
@@ -209,11 +203,11 @@ func RecordNetwork(r *remote.Server, n Network, scores map[string]float64, addrs
 		return err
 	}
 	if st.Networks == nil {
-		st.Networks = map[string]*NetRank{}
+		st.Networks = map[string]*state.NetRank{}
 	}
 	nr := st.Networks[n.ASN]
 	if nr == nil {
-		nr = &NetRank{Scores: map[string]float64{}}
+		nr = &state.NetRank{Scores: map[string]float64{}}
 		st.Networks[n.ASN] = nr
 	}
 	nr.Name, nr.Updated = orStr(n.Name, nr.Name), time.Now().Unix()
@@ -226,17 +220,17 @@ func RecordNetwork(r *remote.Server, n Network, scores map[string]float64, addrs
 	if len(nr.Addrs) == 0 {
 		nr.Addrs = nil
 	}
-	st.forgetStaleRanks()
-	return saveState(r, st)
+	forgetStaleRanks(st)
+	return state.Save(r, st)
 }
 
 // recordCheck stores a check's results as its network's ranking.
-func recordCheck(r *remote.Server, n Network, st *State, res []CheckResult) error {
+func recordCheck(r *remote.Server, n Network, st *state.State, res []CheckResult) error {
 	scores := map[string]float64{}
 	for _, c := range res {
 		for _, e := range st.Entries {
 			if e.ID == c.ID {
-				scores[entryKey(e)] = checkScore(c)
+				scores[state.EntryKey(e)] = checkScore(c)
 			}
 		}
 	}
@@ -244,10 +238,10 @@ func recordCheck(r *remote.Server, n Network, st *State, res []CheckResult) erro
 }
 
 // forgetStaleRanks drops scores of configs no longer deployed, and networks with none left.
-func (st *State) forgetStaleRanks() {
+func forgetStaleRanks(st *state.State) {
 	keys := map[string]bool{}
 	for _, e := range st.Entries {
-		keys[entryKey(e)] = true
+		keys[state.EntryKey(e)] = true
 	}
 	for asn, nr := range st.Networks {
 		for k := range nr.Scores {
@@ -267,7 +261,7 @@ func (st *State) forgetStaleRanks() {
 // forNetwork is the deployment as a client on network asn should see it: its configs best first
 // there, with that network's clean IPs. It returns st itself, and "", when there is no fresh
 // ranking for asn.
-func (st *State) forNetwork(asn string, now time.Time) (*State, string) {
+func forNetwork(st *state.State, asn string, now time.Time) (*state.State, string) {
 	nr := st.Networks[asn]
 	if nr == nil || now.Sub(time.Unix(nr.Updated, 0)) > netRankFresh {
 		return st, ""
@@ -276,12 +270,12 @@ func (st *State) forNetwork(asn string, now time.Time) (*State, string) {
 	cp.Entries = slices.Clone(st.Entries)
 	for i := range cp.Entries {
 		e := &cp.Entries[i]
-		if a := nr.Addrs[entryKey(*e)]; a != "" && (e.CDN() || e.Worker()) {
+		if a := nr.Addrs[state.EntryKey(*e)]; a != "" && (e.CDN() || e.Worker()) {
 			e.Addr = a
 		}
 	}
-	rank := func(e Entry) float64 {
-		s, ok := nr.Scores[entryKey(e)]
+	rank := func(e state.Entry) float64 {
+		s, ok := nr.Scores[state.EntryKey(e)]
 		switch {
 		case !ok:
 			return -1 // not measured there: after the ones that work, before the blocked ones
@@ -368,7 +362,7 @@ func asnOf(ip net.IP, now time.Time) string {
 }
 
 // requesterIP is who asked: through the CDN, the address Cloudflare saw.
-func requesterIP(req *http.Request, st *State) net.IP {
+func requesterIP(req *http.Request, st *state.State) net.IP {
 	if st.Sub.Mode == "cdn" {
 		if ip := net.ParseIP(strings.TrimSpace(req.Header.Get("CF-Connecting-IP"))); ip != nil {
 			return ip
@@ -424,12 +418,12 @@ func cmdNetworks(args []string) error {
 			}
 			delete(st.Networks, asn)
 		}
-		return saveState(r, st)
+		return state.Save(r, st)
 	}
 	return fmt.Errorf("unknown networks action %q (list, del ASN, clear)", action)
 }
 
-func printNetworks(w io.Writer, st *State, now time.Time) {
+func printNetworks(w io.Writer, st *state.State, now time.Time) {
 	if len(st.Networks) == 0 {
 		fmt.Fprintln(w, "no networks ranked yet: tune, check (xtune check --every 6h) and measure from your users' networks")
 		return
@@ -443,16 +437,16 @@ func printNetworks(w io.Writer, st *State, now time.Time) {
 	fmt.Fprintf(tw, "ASN\tNETWORK\tMEASURED\tCONFIGS, BEST FIRST\n")
 	for _, a := range asns {
 		nr := st.Networks[a]
-		ranked, _ := st.forNetwork(a, time.Unix(nr.Updated, 0))
+		ranked, _ := forNetwork(st, a, time.Unix(nr.Updated, 0))
 		var ids []string
 		for _, e := range ranked.Entries {
-			s, ok := nr.Scores[entryKey(e)]
+			s, ok := nr.Scores[state.EntryKey(e)]
 			switch {
 			case !ok:
 				continue
 			case s == 0:
 				ids = append(ids, e.ID+" (blocked)")
-			case e.Addr != "" && nr.Addrs[entryKey(e)] == e.Addr:
+			case e.Addr != "" && nr.Addrs[state.EntryKey(e)] == e.Addr:
 				ids = append(ids, fmt.Sprintf("%s via %s", e.ID, e.Addr))
 			default:
 				ids = append(ids, e.ID)

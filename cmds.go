@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 )
 
@@ -180,7 +182,7 @@ func checkOnce(c connFlags, network string, probes, secs int, out string) error 
 	}
 	netw := detectNetwork(&network, logf)
 	var res []CheckResult
-	var st *State
+	var st *state.State
 	if err := guarded(nil, func() error { // nil: a shared test running on the server must survive Ctrl+C here
 		var e error
 		res, st, e = Check(r, bin, probes, secs, out, logf)
@@ -296,7 +298,7 @@ func cmdRestore(args []string) error {
 	return nil
 }
 
-func printNotes(r *remote.Server, st *State, oldAddr string) {
+func printNotes(r *remote.Server, st *state.State, oldAddr string) {
 	if oldAddr == st.Host {
 		oldAddr = ""
 	}
@@ -378,7 +380,7 @@ func cmdMigrate(args []string) error {
 // MoveTo rebuilds a backup on r, a server without a deployment. With tune, the new server is
 // tuned from here first and the best n configs deployed; without, the configs are kept as they
 // were (their ports must be free).
-func MoveTo(r *remote.Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string) (*State, error) {
+func MoveTo(r *remote.Server, b *Backup, tune bool, n int, o TuneOpts, xrayFlag string) (*state.State, error) {
 	log := func(s string) { o.Log("[*] " + s) }
 	if !tune {
 		return Restore(r, b, log)
@@ -469,7 +471,7 @@ func cmdNotify(args []string) error {
 	}
 	switch action {
 	case "status":
-		fmt.Println("alerts:", n.describe())
+		fmt.Println("alerts:", describeNotify(n))
 		return nil
 	case "telegram":
 		if *chat == "" {
@@ -494,7 +496,7 @@ func cmdNotify(args []string) error {
 		}
 		n.Webhook = u
 	case "off":
-		n = Notify{}
+		n = state.Notify{}
 	case "test":
 		if !n.On() {
 			return errors.New("alerts are off: set up telegram or a webhook first")
@@ -506,7 +508,7 @@ func cmdNotify(args []string) error {
 	if err := SetNotify(r, n); err != nil {
 		return err
 	}
-	fmt.Println("alerts:", n.describe())
+	fmt.Println("alerts:", describeNotify(n))
 	return nil
 }
 
@@ -526,7 +528,7 @@ func cmdWarp(args []string) error {
 	if len(pos) > 0 {
 		action = pos[0]
 	}
-	var st *State
+	var st *state.State
 	switch action {
 	case "status":
 		if st, err = requireState(r); err != nil {
@@ -550,7 +552,7 @@ func cmdWarp(args []string) error {
 	default:
 		return fmt.Errorf("unknown warp action %q", action)
 	}
-	fmt.Println("WARP:", st.Warp.describe())
+	fmt.Println("WARP:", describeWarp(st.Warp))
 	return nil
 }
 
@@ -572,30 +574,30 @@ type userJSON struct {
 	Sub      string   `json:"subscription,omitempty"`
 }
 
-func printUsersJSON(w io.Writer, st *State, us *Usage) error {
+func printUsersJSON(w io.Writer, st *state.State, us *state.Usage) error {
 	out := []userJSON{}
 	now := time.Now()
 	for _, u := range st.Users {
 		uu := us.Users[u.Name]
 		if uu == nil {
-			uu = &UserUsage{}
+			uu = &state.UserUsage{}
 		}
-		out = append(out, userJSON{Name: u.Name, Status: userStatus(u, uu, now), Enabled: u.Enabled, Up: uu.Up, Down: uu.Down,
+		out = append(out, userJSON{Name: u.Name, Status: state.UserStatus(u, uu, now), Enabled: u.Enabled, Up: uu.Up, Down: uu.Down,
 			Quota: u.Quota, Reset: u.Reset, ResetAt: u.ResetAt, Expires: u.Expires, Devices: u.Devices,
-			Online: append([]string{}, uu.Online...), LastSeen: uu.LastSeen, Sub: st.SubURL(u)})
+			Online: append([]string{}, uu.Online...), LastSeen: uu.LastSeen, Sub: SubURL(st, u)})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
 
-func printLinksJSON(w io.Writer, st *State, name string) error {
+func printLinksJSON(w io.Writer, st *state.State, name string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	out := J{"name": u.Name, "enabled": u.Enabled, "links": st.Links(*u)}
-	if sub := st.SubURL(*u); sub != "" {
+	out := J{"name": u.Name, "enabled": u.Enabled, "links": Links(st, *u)}
+	if sub := SubURL(st, *u); sub != "" {
 		out["subscription"], out["failover"] = sub, sub+"/json"
 	}
 	enc := json.NewEncoder(w)
@@ -604,16 +606,16 @@ func printLinksJSON(w io.Writer, st *State, name string) error {
 }
 
 // printLinksQR shows the subscription link as a QR code, or every link when there is none.
-func printLinksQR(w io.Writer, st *State, name string) error {
+func printLinksQR(w io.Writer, st *state.State, name string) error {
 	_, u := st.User(name)
 	if u == nil {
 		return fmt.Errorf("no user %q", name)
 	}
-	if sub := st.SubURL(*u); sub != "" {
+	if sub := SubURL(st, *u); sub != "" {
 		fmt.Fprintf(w, "%s: subscription\n", u.Name)
 		return printQR(w, sub)
 	}
-	for _, l := range st.NamedLinks(*u) {
+	for _, l := range NamedLinks(st, *u) {
 		fmt.Fprintf(w, "\n%s: %s\n", u.Name, l.Name)
 		if err := printQR(w, l.URL); err != nil {
 			return err
@@ -622,7 +624,7 @@ func printLinksQR(w io.Writer, st *State, name string) error {
 	return nil
 }
 
-func fmtReset(u User) string {
+func fmtReset(u state.User) string {
 	if u.Reset == "" || u.ResetAt == 0 {
 		return "-"
 	}

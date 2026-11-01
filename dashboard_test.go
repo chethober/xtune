@@ -4,35 +4,37 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chethober/xtune/internal/state"
 )
 
 func TestSnapshotDash(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	st := keyedState(t)
 	st.Host = "203.0.113.10"
-	st.Entries = []Entry{
+	st.Entries = []state.Entry{
 		{ID: "r-tcp", Kind: "reality-tcp", Port: 443},
 		{ID: "hy2", Kind: "hysteria2", Port: 8443},
 		{ID: "ss2022", Kind: "ss2022", Port: 23456},
 	}
-	ann, bob, carol := NewUser("ann"), NewUser("bob"), NewUser("carol")
+	ann, bob, carol := state.NewUser("ann"), state.NewUser("bob"), state.NewUser("carol")
 	ann.Quota = 100
 	bob.Quota = 100
 	bob.Devices = 2
 	carol.Enabled = false
-	st.Users = []User{ann, bob, carol}
+	st.Users = []state.User{ann, bob, carol}
 
-	us := &Usage{Users: map[string]*UserUsage{
+	us := &state.Usage{Users: map[string]*state.UserUsage{
 		"ann":   {Up: 10, Down: 10, Online: []string{"1.2.3.4"}}, // 20% of quota, online
 		"bob":   {Up: 60, Down: 40, Online: []string{"5.6.7.8"}}, // 100% of quota, online
 		"carol": {Up: 1, Down: 1},
-	}, Entries: map[string]*EntryUsage{
+	}, Entries: map[string]*state.EntryUsage{
 		// r-tcp carried traffic just now: busy, so the quiet check is live
-		entryKey(st.Entries[0]): {Bytes: 5_000_000, Active: now.Unix() - 60, First: now.Unix() - 7200},
+		state.EntryKey(st.Entries[0]): {Bytes: 5_000_000, Active: now.Unix() - 60, First: now.Unix() - 7200},
 		// hy2 last carried traffic 3 hours ago: quiet (> quietAfter)
-		entryKey(st.Entries[1]): {Bytes: 1_000_000, Active: now.Unix() - 3*3600, First: now.Unix() - 7200},
+		state.EntryKey(st.Entries[1]): {Bytes: 1_000_000, Active: now.Unix() - 3*3600, First: now.Unix() - 7200},
 		// ss2022 freshly deployed, no traffic yet: idle (not quiet until quietAfter passes)
-		entryKey(st.Entries[2]): {First: now.Unix() - 60},
+		state.EntryKey(st.Entries[2]): {First: now.Unix() - 60},
 	}}
 
 	d := snapshotDash(st, us, now)

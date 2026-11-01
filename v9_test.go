@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chethober/xtune/internal/state"
+
 	"github.com/chethober/xtune/internal/remote"
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -37,13 +39,13 @@ func TestPageLanguages(t *testing.T) {
 		}
 	}
 	st := testStateWithCert(t)
-	st.Sub = SubConfig{Mode: "cdn", Port: 2053, Path: "p"}
+	st.Sub = state.SubConfig{Mode: "cdn", Port: 2053, Path: "p"}
 	st.CDNDomain = "cdn.example.com"
-	u := NewUser("bob")
+	u := state.NewUser("bob")
 	u.Expires = time.Now().Add(-time.Hour).Unix()
 	for lang, want := range map[string]string{"ru": "истекла", "zh": "已到期", "en": ">expired<"} {
 		var b strings.Builder
-		if err := subPage.Execute(&b, pageData(st, u, &UserUsage{}, time.Now(), lang)); err != nil {
+		if err := subPage.Execute(&b, pageData(st, u, &state.UserUsage{}, time.Now(), lang)); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(b.String(), want) || strings.Contains(b.String(), "%s") {
@@ -64,14 +66,14 @@ func TestPageLanguages(t *testing.T) {
 
 func TestMetrics(t *testing.T) {
 	st := testStateWithCert(t)
-	st.Sub = SubConfig{Mode: "cdn", Port: 2053, Path: "p", Metrics: "tok"}
+	st.Sub = state.SubConfig{Mode: "cdn", Port: 2053, Path: "p", Metrics: "tok"}
 	st.CDNDomain = "cdn.example.com"
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}}
-	st.Users = []User{{Name: "a\"b", Enabled: true, Quota: 1 << 30, SubToken: "t1"}, {Name: "c", Enabled: false, SubToken: "t2"}}
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}}
+	st.Users = []state.User{{Name: "a\"b", Enabled: true, Quota: 1 << 30, SubToken: "t1"}, {Name: "c", Enabled: false, SubToken: "t2"}}
 	now := time.Now()
-	us := &Usage{Users: map[string]*UserUsage{"a\"b": {Up: 5, Down: 7, Online: []string{"1.2.3.4"}}}, Updated: now.Unix(),
-		Entries: map[string]*EntryUsage{"r-tcp/443": {Bytes: 99, Active: now.Unix()}}}
-	h := subHandler{load: func() (*State, *Usage, error) { return st, us, nil }}
+	us := &state.Usage{Users: map[string]*state.UserUsage{"a\"b": {Up: 5, Down: 7, Online: []string{"1.2.3.4"}}}, Updated: now.Unix(),
+		Entries: map[string]*state.EntryUsage{"r-tcp/443": {Bytes: 99, Active: now.Unix()}}}
+	h := subHandler{load: func() (*state.State, *state.Usage, error) { return st, us, nil }}
 	get := func(path, auth string) (int, string) {
 		req := httptest.NewRequest("GET", path, nil)
 		if auth != "" {
@@ -133,8 +135,8 @@ func TestParseS3(t *testing.T) {
 	if err != nil || s.Bucket != "bkt" || s.Prefix != "xtune/a" || s.Region != "auto" || s.Endpoint != "https://acc.r2.cloudflarestorage.com" {
 		t.Errorf("%+v %v", s, err)
 	}
-	if s.key("f.json") != "xtune/a/f.json" {
-		t.Errorf("key %s", s.key("f.json"))
+	if s3Key(*s, "f.json") != "xtune/a/f.json" {
+		t.Errorf("key %s", s3Key(*s, "f.json"))
 	}
 	for _, bad := range []string{"http://x/b", "https://x/", "nope"} {
 		if _, err := parseS3(bad, "", "ak", "sk"); err == nil {
@@ -175,11 +177,11 @@ func TestScheduledBackup(t *testing.T) {
 	defer func() { telegramAPI = old }()
 
 	st := testStateWithCert(t)
-	st.Users = []User{NewUser("bob")}
-	st.Notify = Notify{TelegramToken: "T", TelegramChat: "1"}
-	st.Backups = &BackupPlan{Every: 86400, Pass: "correct horse", Telegram: true,
-		S3: &S3Target{Endpoint: srv.URL, Region: "auto", Bucket: "bkt", Prefix: "x", AccessKey: "ak", SecretKey: "sk"}}
-	us := &Usage{Users: map[string]*UserUsage{}}
+	st.Users = []state.User{state.NewUser("bob")}
+	st.Notify = state.Notify{TelegramToken: "T", TelegramChat: "1"}
+	st.Backups = &state.BackupPlan{Every: 86400, Pass: "correct horse", Telegram: true,
+		S3: &state.S3Target{Endpoint: srv.URL, Region: "auto", Bucket: "bkt", Prefix: "x", AccessKey: "ak", SecretKey: "sk"}}
+	us := &state.Usage{Users: map[string]*state.UserUsage{}}
 	now := time.Now()
 	if !backupDue(st, us, now) {
 		t.Fatal("a new schedule should back up at once")
@@ -211,7 +213,7 @@ func TestScheduledBackup(t *testing.T) {
 	if backupDue(st, us, later.Add(30*time.Minute)) || !backupDue(st, us, later.Add(61*time.Minute)) {
 		t.Error("a failed backup should be retried after an hour")
 	}
-	st.Follow = &Follow{URL: "https://p/x/peer/s"}
+	st.Follow = &state.Follow{URL: "https://p/x/peer/s"}
 	if backupDue(st, us, later.Add(48*time.Hour)) {
 		t.Error("followers do not back up")
 	}
@@ -293,7 +295,7 @@ func TestCleanIPVariants(t *testing.T) {
 	cfProbe = func(ctx context.Context, ip string, port int, sni string) (string, error) { return "FRA", nil }
 	st := testState()
 	st.CDNDomain = "cdn.example.com"
-	entries := []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "www.a.com", Primary: true},
+	entries := []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "www.a.com", Primary: true},
 		{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"},
 		{ID: "worker", Kind: "worker-ws", Port: 30000, Path: "/w", SNI: "w.x.workers.dev"}}
 	vs := ExpandVariants(entries, "smart")
@@ -312,25 +314,25 @@ func TestCleanIPVariants(t *testing.T) {
 		}
 	}
 	// links and configs dial the IP and keep the domain as SNI and Host
-	u := NewUser("bob")
+	u := state.NewUser("bob")
 	e := entries[1]
-	k := Knobs{FP: "chrome", Frag: "none", Mode: "auto", Addr: "104.16.1.1"}
-	l := st.Link(e, u, k)
+	k := state.Knobs{FP: "chrome", Frag: "none", Mode: "auto", Addr: "104.16.1.1"}
+	l := Link(st, e, u, k)
 	pu, _ := url.Parse(l)
 	if pu.Hostname() != "104.16.1.1" || pu.Query().Get("sni") != "cdn.example.com" || pu.Query().Get("host") != "cdn.example.com" {
 		t.Errorf("clean-IP link %s", l)
 	}
-	ob := st.Outbound(e, u, k, "p")
+	ob := Outbound(st, e, u, k, "p")
 	if a := ob["settings"].(J)["vnext"].([]J)[0]["address"]; a != "104.16.1.1" {
 		t.Errorf("outbound dials %v", a)
 	}
-	if st.dialAddr(entries[0], Knobs{Addr: "104.16.1.1"}) != st.Addr() {
+	if dialAddr(st, entries[0], state.Knobs{Addr: "104.16.1.1"}) != st.Addr() {
 		t.Error("a clean IP must not apply to direct configs")
 	}
 	// deploying keeps the domain: the clean IP reaches the network it was found on through the rankings
 	viaIP := &Variant{Entry: e, K: k, Score: 30, Ok: 5, N: 5}
-	plain := &Variant{Entry: e, K: Knobs{FP: "chrome", Frag: "none", Mode: "auto"}, Score: 4, Ok: 5, N: 5}
-	frag := &Variant{Entry: e, K: Knobs{FP: "chrome", Frag: "frag-mild", Mode: "auto"}, Score: 6, Ok: 5, N: 5}
+	plain := &Variant{Entry: e, K: state.Knobs{FP: "chrome", Frag: "none", Mode: "auto"}, Score: 4, Ok: 5, N: 5}
+	frag := &Variant{Entry: e, K: state.Knobs{FP: "chrome", Frag: "frag-mild", Mode: "auto"}, Score: 6, Ok: 5, N: 5}
 	all := []*Variant{viaIP, plain, frag}
 	if got := domainVariant(viaIP, all); got != frag {
 		t.Errorf("deploy should take the best variant through the domain: %+v", got.K)
@@ -338,27 +340,27 @@ func TestCleanIPVariants(t *testing.T) {
 	if got := domainVariant(plain, all); got != plain {
 		t.Error("a domain variant is deployed as it is")
 	}
-	blocked := []*Variant{viaIP, {Entry: e, K: Knobs{FP: "firefox", Frag: "frag-aggr"}}, {Entry: e, K: Knobs{FP: "chrome", Frag: "none"}}}
+	blocked := []*Variant{viaIP, {Entry: e, K: state.Knobs{FP: "firefox", Frag: "frag-aggr"}}, {Entry: e, K: state.Knobs{FP: "chrome", Frag: "none"}}}
 	if got := domainVariant(viaIP, blocked); got.K.Addr != "" || got.K.Frag != "none" {
 		t.Errorf("nothing through the domain from here: its plainest settings, got %+v", got.K)
 	}
 	ent := e
 	ent.FP, ent.Frag, ent.Mode = frag.K.FP, frag.K.Frag, frag.K.Mode
-	if _, addrs := variantRank([]Entry{ent}, all); addrs[entryKey(ent)] != "104.16.1.1" {
+	if _, addrs := variantRank([]state.Entry{ent}, all); addrs[state.EntryKey(ent)] != "104.16.1.1" {
 		t.Errorf("the tuning network's ranking should carry the clean IP: %v", addrs)
 	}
-	if e2 := (Entry{Addr: "1.1.1.1"}); e2.Knobs().Addr != "1.1.1.1" {
+	if e2 := (state.Entry{Addr: "1.1.1.1"}); e2.Knobs().Addr != "1.1.1.1" {
 		t.Error("Entry.Knobs drops Addr")
 	}
 }
 
 // ---------------------------------------------------------------- per-network rankings
 
-func rankedState() *State {
+func rankedState() *state.State {
 	st := testState()
 	st.CDNDomain = "cdn.example.com"
-	st.Sub = SubConfig{Mode: "cdn", Port: 2053, Path: "p"}
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"},
+	st.Sub = state.SubConfig{Mode: "cdn", Port: 2053, Path: "p"}
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "a.com"},
 		{ID: "hy2", Kind: "hysteria2", Port: 8443},
 		{ID: "ss2022", Kind: "ss2022", Port: 30001},
 		{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2096, Path: "/p", FP: "chrome", Frag: "none", Mode: "auto"}}
@@ -368,10 +370,10 @@ func rankedState() *State {
 func TestForNetwork(t *testing.T) {
 	st := rankedState()
 	now := time.Now()
-	st.Networks = map[string]*NetRank{"AS12880": {Name: "TCI", Updated: now.Unix(),
+	st.Networks = map[string]*state.NetRank{"AS12880": {Name: "TCI", Updated: now.Unix(),
 		Scores: map[string]float64{"r-tcp/443": 0, "hy2/8443": 5, "cdn-xhttp/2096": 40},
 		Addrs:  map[string]string{"cdn-xhttp/2096": "104.17.3.4", "r-tcp/443": "9.9.9.9"}}}
-	v, name := st.forNetwork("AS12880", now)
+	v, name := forNetwork(st, "AS12880", now)
 	var ids []string
 	for _, e := range v.Entries {
 		ids = append(ids, e.ID)
@@ -386,10 +388,10 @@ func TestForNetwork(t *testing.T) {
 	if st.Entries[0].ID != "r-tcp" || st.Entries[3].Addr != "" {
 		t.Error("forNetwork changed the deployment itself")
 	}
-	if same, n := st.forNetwork("AS1", now); same != st || n != "" {
+	if same, n := forNetwork(st, "AS1", now); same != st || n != "" {
 		t.Error("an unranked network should get the deployment as is")
 	}
-	if same, _ := st.forNetwork("AS12880", now.Add(31*24*time.Hour)); same != st {
+	if same, _ := forNetwork(st, "AS12880", now.Add(31*24*time.Hour)); same != st {
 		t.Error("a stale ranking should not be used")
 	}
 }
@@ -406,11 +408,13 @@ func TestSubServesRankedConfigs(t *testing.T) {
 		return "AS3320", nil
 	}
 	st := rankedState()
-	u := NewUser("bob")
-	st.Users = []User{u}
-	st.Networks = map[string]*NetRank{"AS12880": {Name: "TCI", Updated: time.Now().Unix(),
+	u := state.NewUser("bob")
+	st.Users = []state.User{u}
+	st.Networks = map[string]*state.NetRank{"AS12880": {Name: "TCI", Updated: time.Now().Unix(),
 		Scores: map[string]float64{"r-tcp/443": 0, "cdn-xhttp/2096": 40}, Addrs: map[string]string{"cdn-xhttp/2096": "104.17.3.4"}}}
-	h := subHandler{load: func() (*State, *Usage, error) { return st, &Usage{Users: map[string]*UserUsage{}}, nil }}
+	h := subHandler{load: func() (*state.State, *state.Usage, error) {
+		return st, &state.Usage{Users: map[string]*state.UserUsage{}}, nil
+	}}
 	get := func(ip, path, accept string) string {
 		req := httptest.NewRequest("GET", "/p/"+u.SubToken+path, nil)
 		req.Header.Set("CF-Connecting-IP", ip)
@@ -496,17 +500,17 @@ func TestCymruQuery(t *testing.T) {
 }
 
 func TestRanksFromTunesAndReports(t *testing.T) {
-	cdn := Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2096, FP: "chrome", Frag: "none", Mode: "auto"}
-	rt := Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443, FP: "chrome", Frag: "none"}
-	vs := []*Variant{{Entry: cdn, K: cdn.Knobs(), Score: 3}, {Entry: cdn, K: Knobs{FP: "chrome", Frag: "none", Mode: "auto", Addr: "104.1.1.1"}, Score: 30},
-		{Entry: rt, K: rt.Knobs(), Score: 20}, {Entry: rt, K: Knobs{FP: "firefox", Frag: "none"}, Score: 25}}
-	scores, addrs := variantRank([]Entry{cdn, rt}, vs)
+	cdn := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2096, FP: "chrome", Frag: "none", Mode: "auto"}
+	rt := state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443, FP: "chrome", Frag: "none"}
+	vs := []*Variant{{Entry: cdn, K: cdn.Knobs(), Score: 3}, {Entry: cdn, K: state.Knobs{FP: "chrome", Frag: "none", Mode: "auto", Addr: "104.1.1.1"}, Score: 30},
+		{Entry: rt, K: rt.Knobs(), Score: 20}, {Entry: rt, K: state.Knobs{FP: "firefox", Frag: "none"}, Score: 25}}
+	scores, addrs := variantRank([]state.Entry{cdn, rt}, vs)
 	if scores["cdn-xhttp/2096"] != 3 || scores["r-tcp/443"] != 20 || addrs["cdn-xhttp/2096"] != "104.1.1.1" || len(addrs) != 1 {
 		t.Errorf("tune ranks %v %v", scores, addrs)
 	}
 	rs := []CheckResult{{ID: "cdn-xhttp", Label: "cdn L", Score: 10}, {ID: "cdn-xhttp", Label: "cdn L ip=104.2.2.2", Score: 15},
 		{ID: "r-tcp", Label: "rt L", Score: 0}}
-	scores, addrs = labelRank([]Entry{cdn, rt}, map[string]string{"cdn-xhttp": "cdn L", "r-tcp": "rt L"}, rs)
+	scores, addrs = labelRank([]state.Entry{cdn, rt}, map[string]string{"cdn-xhttp": "cdn L", "r-tcp": "rt L"}, rs)
 	if scores["cdn-xhttp/2096"] != 10 || scores["r-tcp/443"] != 0 || addrs["cdn-xhttp/2096"] != "104.2.2.2" {
 		t.Errorf("report ranks %v %v", scores, addrs)
 	}
@@ -519,7 +523,7 @@ func TestRecordNetwork(t *testing.T) {
 	fs := newFake()
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := rankedState()
-	if err := saveState(r, st); err != nil {
+	if err := state.Save(r, st); err != nil {
 		t.Fatal(err)
 	}
 	n := Network{ASN: "AS44244", Name: "Irancell"}
@@ -530,7 +534,7 @@ func TestRecordNetwork(t *testing.T) {
 	if err := recordCheck(r, n, st, []CheckResult{{ID: "hy2", Ok: 5, N: 5, Warm: 100, Down: 10}}); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := LoadState(r)
+	got, _ := state.Load(r)
 	nr := got.Networks["AS44244"]
 	if nr == nil || nr.Scores["r-tcp/443"] != 9 || nr.Scores["hy2/8443"] == 0 || nr.Addrs["cdn-xhttp/2096"] != "104.1.1.1" {
 		t.Fatalf("ranking %+v", nr)
@@ -551,35 +555,35 @@ func TestRecordNetwork(t *testing.T) {
 // ---------------------------------------------------------------- device limits across servers
 
 func TestDeviceLimitsAcrossServers(t *testing.T) {
-	ann := NewUser("ann")
+	ann := state.NewUser("ann")
 	ann.Devices = 1
 	r, fs := deployed(t, ann)
-	st, _ := LoadState(r)
+	st, _ := state.Load(r)
 	now := time.Now()
-	st.Peers = &PeerHub{Secret: "s", Servers: map[string]*PeerServer{
+	st.Peers = &state.PeerHub{Secret: "s", Servers: map[string]*state.PeerServer{
 		"de": {Seen: now.Unix(), Online: map[string][]string{"ann": {"198.51.100.9"}}},
 		"nl": {Seen: now.Add(-time.Hour).Unix(), Online: map[string][]string{"ann": {"198.51.100.77"}}}, // stale: not counted
 	}}
 	// ann's phone has been on the follower for a while; her laptop just came on the primary
-	us := &Usage{Users: map[string]*UserUsage{"ann": {Online: []string{"198.51.100.1"}}},
+	us := &state.Usage{Users: map[string]*state.UserUsage{"ann": {Online: []string{"198.51.100.1"}}},
 		Online: map[string]int64{"ann|198.51.100.9": now.Add(-10 * time.Minute).Unix()}}
 	if err := applyDeviceLimits(r, st, us, map[string][]string{}, now); err != nil {
 		t.Fatal(err)
 	}
-	if got := us.blocksFor("ann", now); len(got) != 1 || got[0] != "198.51.100.1" {
+	if got := blocksFor(us, "ann", now); len(got) != 1 || got[0] != "198.51.100.1" {
 		t.Errorf("the newcomer on the primary should be blocked, not the established follower device: %v (sib %v)", got, fs.sib)
 	}
 	// the other way round: the primary's device is established, a new one shows up on the follower
-	us = &Usage{Users: map[string]*UserUsage{"ann": {Online: []string{"198.51.100.1"}}}}
+	us = &state.Usage{Users: map[string]*state.UserUsage{"ann": {Online: []string{"198.51.100.1"}}}}
 	if err := applyDeviceLimits(r, st, us, map[string][]string{"ann": {"198.51.100.1"}}, now); err != nil {
 		t.Fatal(err)
 	}
-	if got := us.blocksFor("ann", now); len(got) != 1 || got[0] != "198.51.100.9" {
+	if got := blocksFor(us, "ann", now); len(got) != 1 || got[0] != "198.51.100.9" {
 		t.Errorf("the follower's newcomer should be blocked: %v", got)
 	}
 	// the primary tells the follower: limits and blocks travel in its reply
-	saveState(r, st)
-	saveUsage(r, us)
+	state.Save(r, st)
+	state.SaveUsage(r, us)
 	rep, err := acceptPeer(r, peerReport{Name: "de", State: testState(), Online: map[string][]string{"ann": {"198.51.100.9"}}}, now)
 	if err != nil {
 		t.Fatal(err)
@@ -587,12 +591,12 @@ func TestDeviceLimitsAcrossServers(t *testing.T) {
 	if len(rep.Users) != 1 || rep.Users[0].Devices != 1 || !slices.Contains(rep.Users[0].Block, "198.51.100.9") {
 		t.Errorf("reply %+v", rep.Users)
 	}
-	got, _ := LoadState(r)
+	got, _ := state.Load(r)
 	if ips := got.Peers.Servers["de"].Online["ann"]; len(ips) != 1 {
 		t.Errorf("the follower's online IPs were not kept: %v", got.Peers.Servers["de"])
 	}
 	// one IP on two servers is one device
-	us = &Usage{Users: map[string]*UserUsage{"ann": {Online: []string{"198.51.100.9"}}}}
+	us = &state.Usage{Users: map[string]*state.UserUsage{"ann": {Online: []string{"198.51.100.9"}}}}
 	st.Peers.Servers["de"].Online["ann"] = []string{"198.51.100.9"}
 	applyDeviceLimits(r, st, us, map[string][]string{"ann": {"198.51.100.9"}}, now)
 	if len(us.Blocks) != 0 {
@@ -611,9 +615,9 @@ func TestFollowerTakesLimitsAndBlocks(t *testing.T) {
 	}))
 	defer srv.Close()
 	st := testState()
-	st.Follow = &Follow{URL: srv.URL, Name: "de"}
-	st.Users = []User{{Name: "bob", UUID: "u", SSKey: "k", Enabled: true}}
-	us := &Usage{Users: map[string]*UserUsage{"bob": {Online: []string{"203.0.113.9"}}}}
+	st.Follow = &state.Follow{URL: srv.URL, Name: "de"}
+	st.Users = []state.User{{Name: "bob", UUID: "u", SSKey: "k", Enabled: true}}
+	us := &state.Usage{Users: map[string]*state.UserUsage{"bob": {Online: []string{"203.0.113.9"}}}}
 	changed, err := syncPrimary(st, us)
 	if err != nil || !changed {
 		t.Fatalf("a new device limit is a change: %v %v", changed, err)
@@ -692,11 +696,11 @@ func TestExtraWorkers(t *testing.T) {
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	st := testState()
 	st.Cloudflare.Token = "tokA"
-	st.Entries = []Entry{{ID: "worker", Kind: "worker-ws", Port: 30000, Path: "/w", SNI: "main.sub-acc1.workers.dev"},
+	st.Entries = []state.Entry{{ID: "worker", Kind: "worker-ws", Port: 30000, Path: "/w", SNI: "main.sub-acc1.workers.dev"},
 		{ID: "worker-dom", Kind: "worker-ws", Port: 30001, Path: "/d", SNI: "x.example.com"}}
-	st.Worker = &Worker{Account: "acc1", Name: "main", Host: "main.sub-acc1.workers.dev", Domain: "x.example.com",
+	st.Worker = &state.Worker{Account: "acc1", Name: "main", Host: "main.sub-acc1.workers.dev", Domain: "x.example.com",
 		Routes: map[string]string{"/w": "203.0.113.7:30000", "/d": "203.0.113.7:30001"}}
-	saveState(r, st)
+	state.Save(r, st)
 	if _, _, err := addExtraWorker(r, "tokA", func(string) {}); err == nil {
 		t.Error("a second Worker in the same account adds no requests")
 	}
@@ -708,8 +712,8 @@ func TestExtraWorkers(t *testing.T) {
 		t.Fatalf("extra Worker %+v, scripts %v", x, cf.scripts)
 	}
 	// clients get a copy of the workers.dev config through it, not of the custom-domain one
-	u := NewUser("bob")
-	links := st.NamedLinks(u)
+	u := state.NewUser("bob")
+	links := NamedLinks(st, u)
 	var names []string
 	for _, l := range links {
 		names = append(names, l.Name)
@@ -717,7 +721,7 @@ func TestExtraWorkers(t *testing.T) {
 	if strings.Join(names, ",") != "worker,worker-2,worker-dom" || !strings.Contains(links[1].URL, "sni="+x.Host) {
 		t.Errorf("links %v", names)
 	}
-	if obs := st.FailoverConfig(u)["outbounds"].([]J); obs[1]["tag"] != "proxy-worker-2" {
+	if obs := FailoverConfig(st, u)["outbounds"].([]J); obs[1]["tag"] != "proxy-worker-2" {
 		t.Errorf("failover outbounds: %v", obs[1]["tag"])
 	}
 	// moving the inbound moves both Workers
@@ -728,11 +732,11 @@ func TestExtraWorkers(t *testing.T) {
 	if cf.scripts["acc2/"+x.Name]["/w"] != "203.0.113.7:30500" || cf.scripts["acc1/main"]["/w"] != "203.0.113.7:30500" {
 		t.Errorf("routes after a move: %v", cf.scripts)
 	}
-	saveState(r, st)
+	state.Save(r, st)
 	if err := removeExtraWorker(r, x.Host); err != nil || !slices.Contains(cf.deleted, "acc2/"+x.Name) {
 		t.Errorf("remove: %v %v", err, cf.deleted)
 	}
-	if got, _ := LoadState(r); len(got.Worker.Extra) != 0 {
+	if got, _ := state.Load(r); len(got.Worker.Extra) != 0 {
 		t.Error("the extra Worker is still listed")
 	}
 }
@@ -758,15 +762,15 @@ func TestWorkerUsageAlerts(t *testing.T) {
 	defer func() { cfGraphQLAPI = old }()
 	var sent []string
 	oldSend := sendAlert
-	sendAlert = func(n Notify, server, event, text string) error { sent = append(sent, event); return nil }
+	sendAlert = func(n state.Notify, server, event, text string) error { sent = append(sent, event); return nil }
 	defer func() { sendAlert = oldSend }()
 
 	st := testState()
-	st.Notify = Notify{Webhook: "https://hook"}
+	st.Notify = state.Notify{Webhook: "https://hook"}
 	st.Cloudflare.Token = "tok"
-	st.Worker = &Worker{Account: "a", Name: "main", Host: "main.workers.dev",
-		Extra: []*WorkerExtra{{Token: "tok2", Account: "b", Name: "spare", Host: "spare.workers.dev"}}}
-	us := &Usage{}
+	st.Worker = &state.Worker{Account: "a", Name: "main", Host: "main.workers.dev",
+		Extra: []*state.WorkerExtra{{Token: "tok2", Account: "b", Name: "spare", Host: "spare.workers.dev"}}}
+	us := &state.Usage{}
 	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
 	if !workerUsageDue(st, us, now) {
 		t.Fatal("the first count is due at once")
@@ -811,13 +815,13 @@ func TestWorkerUsageAlerts(t *testing.T) {
 
 // ---------------------------------------------------------------- autopilot
 
-func blockedSetup(now time.Time) (*State, *Usage) {
+func blockedSetup(now time.Time) (*state.State, *state.Usage) {
 	st := testState()
 	st.CDNDomain = "cdn.example.com"
-	st.Entries = []Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "hy2", Kind: "hysteria2", Port: 8443},
+	st.Entries = []state.Entry{{ID: "r-tcp", Kind: "reality-tcp", Port: 443}, {ID: "hy2", Kind: "hysteria2", Port: 8443},
 		{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053}}
 	old := now.Add(-5 * time.Hour).Unix()
-	us := &Usage{Users: map[string]*UserUsage{}, Entries: map[string]*EntryUsage{
+	us := &state.Usage{Users: map[string]*state.UserUsage{}, Entries: map[string]*state.EntryUsage{
 		"r-tcp/443": {First: old, Active: now.Add(-3 * time.Hour).Unix()}, "hy2/8443": {First: old},
 		"cdn-xhttp/2053": {First: old, Active: now.Add(-time.Minute).Unix()}}}
 	return st, us
@@ -839,7 +843,7 @@ func TestIPBlocked(t *testing.T) {
 		t.Error("nothing in use at all is an idle server, not a blocked one")
 	}
 	// a recent check from some network
-	st.Networks = map[string]*NetRank{"AS1": {Name: "TCI", Updated: now.Add(-time.Hour).Unix(),
+	st.Networks = map[string]*state.NetRank{"AS1": {Name: "TCI", Updated: now.Add(-time.Hour).Unix(),
 		Scores: map[string]float64{"r-tcp/443": 0, "hy2/8443": 0, "cdn-xhttp/2053": 12}}}
 	if b, why := ipBlocked(st, us, now); !b || !strings.Contains(why, "TCI") {
 		t.Errorf("check signal: %v %q", b, why)
@@ -854,7 +858,7 @@ func TestIPBlocked(t *testing.T) {
 		t.Error("a check from before the last move says nothing about the new IP")
 	}
 	st.Entries = st.Entries[:2]
-	if b, _ := ipBlocked(st, &Usage{}, now); b {
+	if b, _ := ipBlocked(st, &state.Usage{}, now); b {
 		t.Error("without a relayed config there is nothing to compare with")
 	}
 }
@@ -892,16 +896,19 @@ func TestAutopilotRotates(t *testing.T) {
 	defer func() { doAPI, doWait = oldAPI, oldWait }()
 	var sent []string
 	oldSend := sendAlert
-	sendAlert = func(n Notify, server, event, text string) error { sent = append(sent, event+": "+text); return nil }
+	sendAlert = func(n state.Notify, server, event, text string) error {
+		sent = append(sent, event+": "+text)
+		return nil
+	}
 	defer func() { sendAlert = oldSend }()
 
 	fs := newFake()
 	r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
 	now := time.Now()
 	st, us := blockedSetup(now)
-	st.Notify = Notify{Webhook: "https://hook"}
-	st.Sub = SubConfig{Mode: "cdn", Port: 2096, Path: "p"}
-	st.Autopilot = &Autopilot{Provider: "digitalocean", Token: "dotok", Droplet: 77, Owned: "198.51.100.50"}
+	st.Notify = state.Notify{Webhook: "https://hook"}
+	st.Sub = state.SubConfig{Mode: "cdn", Port: 2096, Path: "p"}
+	st.Autopilot = &state.Autopilot{Provider: "digitalocean", Token: "dotok", Droplet: 77, Owned: "198.51.100.50"}
 	// the traffic signal alone alerts and asks for a check, but does not move the server
 	runAutopilot(r, st, us, now)
 	if st.ClientIP != "" || len(calls) != 0 || len(sent) != 1 || !strings.Contains(sent[0], "xtune check --host 203.0.113.7") {
@@ -910,7 +917,7 @@ func TestAutopilotRotates(t *testing.T) {
 	sent = nil
 	delete(us.Notified, "ip-blocked")
 	// a check from some network confirms it
-	st.Networks = map[string]*NetRank{"AS1": {Name: "TCI", Updated: now.Unix(),
+	st.Networks = map[string]*state.NetRank{"AS1": {Name: "TCI", Updated: now.Unix(),
 		Scores: map[string]float64{"r-tcp/443": 0, "hy2/8443": 0, "cdn-xhttp/2053": 9}}}
 	runAutopilot(r, st, us, now)
 	if st.ClientIP != next || st.Addr() != next || st.Autopilot.Owned != next || us.RotatedAt != now.Unix() {
@@ -928,17 +935,17 @@ func TestAutopilotRotates(t *testing.T) {
 	if b, _ := ipBlocked(st, us, now.Add(time.Minute)); b {
 		t.Error("right after a move the configs start over")
 	}
-	if got, _ := LoadState(r); got == nil || got.ClientIP != next {
+	if got, _ := state.Load(r); got == nil || got.ClientIP != next {
 		t.Error("the new address was not saved")
 	}
-	link := st.Link(st.Entries[0], NewUser("bob"), Knobs{})
+	link := Link(st, st.Entries[0], state.NewUser("bob"), state.Knobs{})
 	if !strings.Contains(link, "@"+next+":443") {
 		t.Errorf("links should use the new address: %s", link)
 	}
 	// blocked again the same day: alerts, does not move
 	st2, us2 := blockedSetup(now)
 	st2.Notify, st2.Autopilot = st.Notify, st.Autopilot
-	st2.Networks = map[string]*NetRank{"AS1": {Updated: now.Unix(), Scores: map[string]float64{"r-tcp/443": 0, "cdn-xhttp/2053": 9}}}
+	st2.Networks = map[string]*state.NetRank{"AS1": {Updated: now.Unix(), Scores: map[string]float64{"r-tcp/443": 0, "cdn-xhttp/2053": 9}}}
 	us2.RotatedAt = now.Add(-time.Hour).Unix()
 	sent = nil
 	runAutopilot(r, st2, us2, now)
@@ -946,7 +953,7 @@ func TestAutopilotRotates(t *testing.T) {
 		t.Errorf("within a day of a move: %q %v", st2.ClientIP, sent)
 	}
 	// a migrated backup does not take the reserved IP along
-	b := &Backup{State: st, Usage: &Usage{}}
+	b := &Backup{State: st, Usage: &state.Usage{}}
 	nfs := newFake()
 	nfs.helper = map[string]string{"status": "ARCH x86_64\nXRAY v26.10.10\nXTUNE dev"}
 	nr := &remote.Server{Transport: nfs, Conn: remote.Conn{Host: "192.0.2.10"}}
@@ -963,25 +970,25 @@ func TestAutopilotRotates(t *testing.T) {
 
 func TestTrojanReality(t *testing.T) {
 	st := testState()
-	u := User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555"}
-	e := Entry{ID: "trojan", Kind: "trojan-reality", Port: 8443, SNI: "www.a.com"}
-	if !e.Reality() || e.Net() != "tcp" || !e.Xray() || e.family() != "trojan" {
+	u := state.User{Name: "bob", UUID: "11111111-2222-4333-8444-555555555555"}
+	e := state.Entry{ID: "trojan", Kind: "trojan-reality", Port: 8443, SNI: "www.a.com"}
+	if !e.Reality() || e.Net() != "tcp" || !e.Xray() || e.Family() != "trojan" {
 		t.Errorf("kind: reality=%v net=%q", e.Reality(), e.Net())
 	}
-	ib := st.inbound(e, []User{u})
+	ib := inbound(st, e, []state.User{u})
 	ss := ib["streamSettings"].(J)
 	if ib["protocol"] != "trojan" || ss["network"] != "tcp" || ss["security"] != "reality" ||
 		ib["settings"].(J)["clients"].([]J)[0]["password"] != u.UUID {
 		t.Errorf("inbound %v", ib)
 	}
-	ob := st.Outbound(e, u, Knobs{FP: "firefox", Frag: "frag-mild"}, "p")
+	ob := Outbound(st, e, u, state.Knobs{FP: "firefox", Frag: "frag-mild"}, "p")
 	srv := ob["settings"].(J)["servers"].([]J)[0]
 	oss := ob["streamSettings"].(J)
 	if ob["protocol"] != "trojan" || srv["password"] != u.UUID || srv["port"] != 8443 ||
 		oss["realitySettings"].(J)["fingerprint"] != "firefox" || oss["sockopt"].(J)["dialerProxy"] != "frag-mild" {
 		t.Errorf("outbound %v", ob)
 	}
-	l := st.Link(e, u, Knobs{FP: "chrome"})
+	l := Link(st, e, u, state.Knobs{FP: "chrome"})
 	pu, _ := url.Parse(l)
 	q := pu.Query()
 	if pu.Scheme != "trojan" || pu.User.Username() != u.UUID || q.Get("security") != "reality" || q.Get("pbk") != "pub" ||
@@ -989,31 +996,31 @@ func TestTrojanReality(t *testing.T) {
 		t.Errorf("link %s", l)
 	}
 	es, _ := planEntries("SNI www.a.com 2 0.20", PlanOpts{Protocols: []string{"trojan"}})
-	if !slices.ContainsFunc(es, Entry.Trojan) {
+	if !slices.ContainsFunc(es, state.Entry.Trojan) {
 		t.Error("--protocols trojan adds no Trojan entry")
 	}
-	if es, _ := planEntries("SNI www.a.com 2 0.20", PlanOpts{}); slices.ContainsFunc(es, Entry.Trojan) {
+	if es, _ := planEntries("SNI www.a.com 2 0.20", PlanOpts{}); slices.ContainsFunc(es, state.Entry.Trojan) {
 		t.Error("Trojan is opt-in")
 	}
 }
 
 func TestTrojanUsersStayLive(t *testing.T) {
-	r, fs := deployed(t, NewUser("ann"))
-	st, _ := LoadState(r)
-	st.Entries = append(st.Entries, Entry{ID: "trojan", Kind: "trojan-reality", Port: 8443, SNI: "a.com"})
+	r, fs := deployed(t, state.NewUser("ann"))
+	st, _ := state.Load(r)
+	st.Entries = append(st.Entries, state.Entry{ID: "trojan", Kind: "trojan-reality", Port: 8443, SNI: "a.com"})
 	if err := Apply(r, st); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := AddUser(r, "bob", Limits{}); err != nil {
 		t.Fatal(err)
 	}
-	st, _ = LoadState(r)
+	st, _ = state.Load(r)
 	_, bob := st.User("bob")
 	if fs.live["trojan"]["bob"] != bob.UUID {
 		t.Fatalf("bob not on the Trojan inbound: %v", fs.live["trojan"])
 	}
 	before := fs.rmus
-	if err := reconcile(r, st, st.activeUsers(&Usage{}, time.Now())); err != nil {
+	if err := reconcile(r, st, activeUsers(st, &state.Usage{}, time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if fs.rmus != before {
@@ -1024,9 +1031,9 @@ func TestTrojanUsersStayLive(t *testing.T) {
 func TestCDNOverHTTP3(t *testing.T) {
 	st := testState()
 	st.CDNDomain = "cdn.example.com"
-	e := Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
+	e := state.Entry{ID: "cdn-xhttp", Kind: "cdn-xhttp", Port: 2053, Path: "/p"}
 	var h3 []*Variant
-	for _, v := range ExpandVariants([]Entry{e}, "smart") {
+	for _, v := range ExpandVariants([]state.Entry{e}, "smart") {
 		if v.K.ALPN == "h3" {
 			h3 = append(h3, v)
 		}
@@ -1034,28 +1041,28 @@ func TestCDNOverHTTP3(t *testing.T) {
 	if len(h3) != 2 || !strings.HasSuffix(h3[0].Label, " h3") || h3[0].K.Frag != "none" {
 		t.Fatalf("h3 variants %+v", h3)
 	}
-	u := NewUser("bob")
-	tls := st.Outbound(e, u, h3[0].K, "p")["streamSettings"].(J)["tlsSettings"].(J)
+	u := state.NewUser("bob")
+	tls := Outbound(st, e, u, h3[0].K, "p")["streamSettings"].(J)["tlsSettings"].(J)
 	if a := tls["alpn"].([]string); len(a) != 1 || a[0] != "h3" || tls["fingerprint"] != nil || tls["serverName"] != "cdn.example.com" {
 		t.Errorf("h3 tls %v", tls)
 	}
-	q := mustQuery(t, st.Link(e, u, h3[0].K))
+	q := mustQuery(t, Link(st, e, u, h3[0].K))
 	if q.Get("alpn") != "h3" || q.Has("fp") || q.Get("sni") != "cdn.example.com" {
 		t.Errorf("h3 link %v", q)
 	}
-	if q := mustQuery(t, st.Link(e, u, Knobs{FP: "chrome"})); q.Get("alpn") != "h2,http/1.1" {
+	if q := mustQuery(t, Link(st, e, u, state.Knobs{FP: "chrome"})); q.Get("alpn") != "h2,http/1.1" {
 		t.Errorf("TCP link lost its ALPN: %v", q)
 	}
 	// the server side does not change: the CDN reaches the origin over TCP
-	ib := st.inbound(e, []User{u})
+	ib := inbound(st, e, []state.User{u})
 	if a := ib["streamSettings"].(J)["tlsSettings"].(J)["alpn"].([]string); a[0] != "h2" {
 		t.Errorf("origin ALPN %v", a)
 	}
 	v := &Variant{Entry: e, K: h3[0].K}
-	if simplicity(v) <= simplicity(&Variant{Entry: e, K: Knobs{FP: "chrome", Frag: "none", Mode: "auto"}}) {
+	if simplicity(v) <= simplicity(&Variant{Entry: e, K: state.Knobs{FP: "chrome", Frag: "none", Mode: "auto"}}) {
 		t.Error("HTTP/3 should win only when it measurably helps")
 	}
-	if (Entry{ALPN: "h3"}).Knobs().ALPN != "h3" {
+	if (state.Entry{ALPN: "h3"}).Knobs().ALPN != "h3" {
 		t.Error("Entry.Knobs drops ALPN")
 	}
 }
@@ -1076,7 +1083,7 @@ func TestRankingUpdatesAnOldServer(t *testing.T) {
 		fs := newFake()
 		fs.helper = map[string]string{"status": "ARCH x86_64\nXTUNE " + tc.server + "\nXTUNE_SHA 00"}
 		r := &remote.Server{Transport: fs, Conn: remote.Conn{Host: "203.0.113.7"}}
-		saveState(r, rankedState())
+		state.Save(r, rankedState())
 		err := RecordNetwork(r, Network{ASN: "AS1"}, map[string]float64{"r-tcp/443": 3}, nil)
 		if got := installed(fs); got != tc.update {
 			t.Errorf("server xtune %s: updated=%v (err %v, calls %v)", tc.server, got, err, fs.calls)
@@ -1085,18 +1092,18 @@ func TestRankingUpdatesAnOldServer(t *testing.T) {
 }
 
 func TestManageStatusReportsJobs(t *testing.T) {
-	r, _ := deployed(t, NewUser("ann"))
+	r, _ := deployed(t, state.NewUser("ann"))
 	now := time.Now()
 	st, us := blockedSetup(now)
-	st.Backups = &BackupPlan{Every: 86400}
+	st.Backups = &state.BackupPlan{Every: 86400}
 	us.BackupAt, us.LastBackup, us.BackupErr = now.Unix(), now.Add(-time.Hour).Unix(), "s3: HTTP 403"
-	st.Worker = &Worker{Host: "w.workers.dev"}
-	us.WorkerUse = []WorkerUse{{Host: "w.workers.dev", Requests: 42}}
+	st.Worker = &state.Worker{Host: "w.workers.dev"}
+	us.WorkerUse = []state.WorkerUse{{Host: "w.workers.dev", Requests: 42}}
 	s := manageStatus(r, st, us, &manager{}, now)
 	if s.IPBlocked == "" || s.Backup == nil || s.Backup.Error != "s3: HTTP 403" || len(s.Workers) != 1 || s.WorkerMax != workerFreeLimit {
 		t.Errorf("admin status %+v %+v", s, s.Backup)
 	}
-	rs := manageStatus(r, st, us, &manager{reseller: "rex", res: &Reseller{}}, now)
+	rs := manageStatus(r, st, us, &manager{reseller: "rex", res: &state.Reseller{}}, now)
 	if rs.IPBlocked != "" || rs.Backup != nil || rs.Workers != nil {
 		t.Error("resellers get users, not the server's jobs")
 	}
