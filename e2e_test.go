@@ -75,7 +75,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	json.Unmarshal([]byte(fs.files[remote.Dir+"/tunnels.json"]), &tc)
 	tc.Stats = filepath.Join(dir, "tunnels-stats.json")
 	writeJSON(filepath.Join(dir, "tunnels.json"), tc)
-	go runTunnels(filepath.Join(dir, "tunnels.json"), nil)
+	serveTunnels(t, filepath.Join(dir, "tunnels.json"), nil)
 	time.Sleep(time.Second)
 
 	res, _, err := Check(r, bin, 3, 4, dir, func(s string) { t.Log(s) })
