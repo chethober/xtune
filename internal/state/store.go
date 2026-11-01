@@ -2,7 +2,6 @@ package state
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/chethober/xtune/internal/remote"
@@ -17,11 +16,7 @@ func Load(r *remote.Server) (*State, error) {
 	if strings.TrimSpace(out) == "" {
 		return nil, nil
 	}
-	var st State
-	if err := json.Unmarshal([]byte(out), &st); err != nil {
-		return nil, fmt.Errorf("parse state.json: %w", err)
-	}
-	return &st, nil
+	return Decode([]byte(out))
 }
 
 // Save writes state.json and the certificate. Users get a subscription token and a
@@ -33,6 +28,7 @@ func Save(r *remote.Server, st *State) error {
 		}
 	}
 	st.AssignWGIPs()
+	st.Schema = Schema
 	stJSON, _ := json.MarshalIndent(st, "", " ")
 	for _, f := range []struct{ path, body string }{
 		{remote.Dir + "/state.json", string(stJSON)},

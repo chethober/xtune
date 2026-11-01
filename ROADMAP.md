@@ -33,7 +33,7 @@ The first release that promises stability, not just features.
 
 ### Stability
 
-- [ ] A versioned state-file schema, with tested migrations from every 0.x
+- [x] A versioned state-file schema, with tested migrations from every 0.x
   release.
 - [ ] A frozen set of CLI flags and `--json` output shapes, with a documented
   deprecation policy.

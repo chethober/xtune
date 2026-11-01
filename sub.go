@@ -260,18 +260,17 @@ func readLocal() (*state.State, *state.Usage, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	var st state.State
-	if err := json.Unmarshal(b, &st); err != nil {
+	st, err := state.Decode(b)
+	if err != nil {
 		return nil, nil, err
 	}
 	us := &state.Usage{Users: map[string]*state.UserUsage{}}
 	if b, err := os.ReadFile(remote.Dir + "/usage.json"); err == nil {
-		json.Unmarshal(b, us)
+		if u, err := state.DecodeUsage(b); err == nil {
+			us = u
+		}
 	}
-	if us.Users == nil {
-		us.Users = map[string]*state.UserUsage{}
-	}
-	return &st, us, nil
+	return st, us, nil
 }
 
 type subHandler struct {

@@ -71,17 +71,38 @@ func readBackup(path string) (*Backup, error) {
 	if raw, err = unseal(raw, backupPassphrase); err != nil {
 		return nil, err
 	}
-	var b Backup
-	if err := json.Unmarshal(raw, &b); err != nil {
+	return parseBackup(path, raw)
+}
+
+// parseBackup reads a backup from any release: its state and usage go through the same
+// migrations as the files on a server.
+func parseBackup(path string, raw []byte) (*Backup, error) {
+	var in struct {
+		Version string          `json:"xtuneVersion"`
+		Created int64           `json:"created"`
+		State   json.RawMessage `json:"state"`
+		Usage   json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, fmt.Errorf("%s is not an xtune backup: %w", path, err)
 	}
-	if b.State == nil || b.State.RealityPriv == "" {
+	if len(in.State) == 0 || string(in.State) == "null" {
 		return nil, fmt.Errorf("%s is not an xtune backup", path)
 	}
-	if b.Usage == nil {
-		b.Usage = &state.Usage{}
+	st, err := state.Decode(in.State)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return &b, nil
+	if st.RealityPriv == "" {
+		return nil, fmt.Errorf("%s is not an xtune backup", path)
+	}
+	b := &Backup{Version: in.Version, Created: in.Created, State: st, Usage: &state.Usage{Users: map[string]*state.UserUsage{}}}
+	if len(in.Usage) > 0 && string(in.Usage) != "null" {
+		if b.Usage, err = state.DecodeUsage(in.Usage); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return b, nil
 }
 
 func backupName(st *state.State, now time.Time) string {

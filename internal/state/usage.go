@@ -12,6 +12,7 @@ import (
 // Usage is what the enforce job measures, stored in usage.json next to state.json. Traffic
 // counters in Xray reset when it restarts, so totals are accumulated here every minute.
 type Usage struct {
+	Schema    int                    `json:"schema,omitempty"` // the file's format, see Schema
 	Users     map[string]*UserUsage  `json:"users"`
 	Blocks    []IPBlock              `json:"blocks,omitempty"`    // device-limit blocks
 	ActiveKey string                 `json:"activeKey,omitempty"` // which users config.json was last written for
@@ -102,20 +103,14 @@ func LoadUsage(r *remote.Server) (*Usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	us := &Usage{Users: map[string]*UserUsage{}}
 	if strings.TrimSpace(out) == "" {
-		return us, nil
+		return &Usage{Users: map[string]*UserUsage{}}, nil
 	}
-	if err := json.Unmarshal([]byte(out), us); err != nil {
-		return nil, fmt.Errorf("parse usage.json: %w", err)
-	}
-	if us.Users == nil {
-		us.Users = map[string]*UserUsage{}
-	}
-	return us, nil
+	return DecodeUsage([]byte(out))
 }
 
 func SaveUsage(r *remote.Server, us *Usage) error {
+	us.Schema = Schema
 	b, _ := json.MarshalIndent(us, "", " ")
 	return r.Upload(remote.Dir+"/usage.json", b, "600")
 }

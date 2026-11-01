@@ -25,6 +25,10 @@ All notable changes to this project are documented here. The format follows
   subscription under its name to v2rayNG, Hiddify, Streisand and sing-box.
 
 ### Changed
+- `state.json` and `usage.json` carry a schema number (`"schema": 1`). Files from every 0.x release are read and
+  migrated (the only change: users' links to the Telegram bot removed in 0.7.0 are dropped); files from a newer
+  xtune are refused instead of being rewritten without the fields this release does not know. Backups go through
+  the same migrations. Tests read what each release from 0.1.0 to 0.10.1 wrote, with every field set.
 - Internal: the server transport (SSH and local command execution, the state lock and the embedded `helper.sh`)
   moved to `internal/remote`, the first step of splitting the root package before v1.0. No change in behaviour.
 - Internal: the data model and its storage (`State`, `Entry`, `User`, `Usage` and the settings they hold, with

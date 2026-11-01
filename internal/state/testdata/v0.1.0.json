@@ -1,0 +1,38 @@
+{
+ "state": {
+  "host": "x-Host",
+  "realityPrivateKey": "x-RealityPriv",
+  "realityPublicKey": "x-RealityPub",
+  "shortId": "x-ShortID",
+  "vlessDecryption": "x-VencDec",
+  "vlessEncryption": "x-VencEnc",
+  "ssServerKey": "x-SSKey",
+  "certSni": "x-CertSNI",
+  "certSha256": "x-CertHash",
+  "certPem": "x-CertPEM",
+  "keyPem": "x-KeyPEM",
+  "entries": [
+   {
+    "id": "x-ID",
+    "kind": "x-Kind",
+    "port": 7,
+    "sni": "x-SNI",
+    "path": "x-Path",
+    "svc": "x-Svc",
+    "primary": true,
+    "fp": "x-FP",
+    "mode": "x-Mode",
+    "frag": "x-Frag"
+   }
+  ],
+  "users": [
+   {
+    "name": "x-Name",
+    "uuid": "x-UUID",
+    "ssKey": "x-SSKey",
+    "enabled": true,
+    "created": 7
+   }
+  ]
+ }
+}

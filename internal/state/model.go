@@ -107,6 +107,7 @@ type SubConfig struct {
 
 // State is the server's deployment and user database, stored as state.json (root, 0600).
 type State struct {
+	Schema      int                    `json:"schema"` // the file's format, see Schema
 	Host        string                 `json:"host"`
 	Domain      string                 `json:"domain,omitempty"`    // direct (DNS-only) domain used instead of Host in links
 	CDNDomain   string                 `json:"cdnDomain,omitempty"` // CDN-proxied domain for the cdn-* entries
