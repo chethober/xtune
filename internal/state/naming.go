@@ -12,11 +12,13 @@ type Naming struct {
 	Checked  int64  `json:"checked,omitempty"`  // unix seconds of the last failed lookup, to retry daily
 	Config   string `json:"config,omitempty"`   // config name template, "" = DefaultConfigName
 	Sub      string `json:"sub,omitempty"`      // subscription name template, "" = DefaultSubName
+
+	Via string `json:"-"` // the relay these configs go through: {via}, set on the relay's view only
 }
 
 // Placeholders in the templates: {flag} {country} {server} {user} {id} {proto} {port}, and {via}
 // for the relay a config goes through. Parts left empty are dropped with their separators.
 const (
-	DefaultConfigName = "{flag} {user}-{id} {via}"
+	DefaultConfigName = "{flag} {user}-{id}"
 	DefaultSubName    = "{flag} xtune - {user}"
 )

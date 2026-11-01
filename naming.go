@@ -102,6 +102,9 @@ func configName(st *state.State, e state.Entry, u state.User) string {
 	v := nameVars(st, u)
 	v["id"], v["proto"], v["port"] = e.ID, kindLabel(e.Kind), fmt.Sprint(clientPort(e))
 	v["via"] = ""
+	if st.Naming.Via != "" {
+		v["via"] = "via " + st.Naming.Via
+	}
 	return expandName(orStr(st.Naming.Config, state.DefaultConfigName), v)
 }
 

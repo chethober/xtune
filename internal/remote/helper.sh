@@ -209,8 +209,8 @@ EOF
 }
 remove_units() {
   extras_stop; test_stop_extras
-  systemctl disable --now xray-autotune xray-autotune-test xray-autotune-sub xray-autotune-bot xray-autotune-enforce.timer >/dev/null 2>&1 || true
-  rm -f $U/xray-autotune.service $U/xray-autotune-sub.service $U/xray-autotune-bot.service $U/xray-autotune-enforce.service $U/xray-autotune-enforce.timer
+  systemctl disable --now xray-autotune xray-autotune-test xray-autotune-sub xray-autotune-bot xray-autotune-relay xray-autotune-enforce.timer >/dev/null 2>&1 || true
+  rm -f $U/xray-autotune.service $U/xray-autotune-sub.service $U/xray-autotune-bot.service $U/xray-autotune-relay.service $U/xray-autotune-enforce.service $U/xray-autotune-enforce.timer
   systemctl daemon-reload
 }
 
@@ -224,6 +224,7 @@ status)
   echo "TIMER $(systemctl is-active xray-autotune-enforce.timer 2>/dev/null || true)"
   echo "TUNNELS $(systemctl is-active xray-autotune-tunnels 2>/dev/null || true)"
   echo "AWG $(systemctl is-active xray-autotune-awg 2>/dev/null || true)"
+  echo "RELAY $(systemctl is-active xray-autotune-relay 2>/dev/null || true)"
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then echo "FW ufw"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then echo "FW firewalld"
   else echo "FW none"; fi
@@ -471,6 +472,30 @@ EOF
   systemctl restart xray-autotune-sub
   fw_close $D/fw.sub; fw_open $D/fw.sub "$@"
   sleep 1; systemctl is-active xray-autotune-sub ;;
+relay-apply)
+  # multi-hop: forward ports to the main server (relay.json); arguments are the firewall port specs
+  if ! $X run -test -c $D/relay.json >/dev/null 2>&1; then $X run -test -c $D/relay.json 2>&1 | tail -5; exit 1; fi
+  unit_file xray-autotune-relay "Xray relay to an xtune server (managed by xtune)" "$X run -c $D/relay.json"
+  systemctl daemon-reload
+  systemctl enable xray-autotune-relay >/dev/null 2>&1
+  systemctl restart xray-autotune-relay
+  fw_close $D/fw.relay; fw_open $D/fw.relay "$@"
+  sleep 1; systemctl is-active xray-autotune-relay ;;
+relay-check)
+  # relay-check HOST PORT...: TCP connect time from here to the main server, in ms, or "fail"
+  h=$1; shift
+  for p in "$@"; do
+    s=$(date +%s%N)
+    if timeout 4 bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null; then echo "TCP $p $(( ($(date +%s%N) - s) / 1000000 ))"
+    else echo "TCP $p fail"; fi
+  done ;;
+relay-remove)
+  systemctl disable --now xray-autotune-relay >/dev/null 2>&1 || true
+  rm -f $U/xray-autotune-relay.service $D/relay.json; systemctl daemon-reload
+  fw_close $D/fw.relay
+  # the directory goes too when the relay is all xtune had here
+  if [ ! -f $U/xray-autotune.service ] && [ ! -f $D/state.json ]; then unlink_xt; rm -rf $D; fi
+  echo removed ;;
 sub-disable)
   systemctl disable --now xray-autotune-sub >/dev/null 2>&1 || true
   rm -f $U/xray-autotune-sub.service; systemctl daemon-reload
@@ -485,12 +510,12 @@ cleanup)
   systemctl reset-failed xray-autotune-test 2>/dev/null || true
   test_stop_extras
   fw_close $D/fw.test
-  if [ -f /etc/systemd/system/xray-autotune.service ]; then rm -rf $D/test.json $D/test; echo kept-deployed
+  if [ -f $U/xray-autotune.service ] || [ -f $U/xray-autotune-relay.service ]; then rm -rf $D/test.json $D/test; echo kept-deployed
   else unlink_xt; rm -rf $D; echo removed; fi ;;
 uninstall)
   remove_units
-  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; vpn_net_down
+  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; fw_close $D/fw.relay; vpn_net_down
   unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|relay-apply|relay-check|relay-remove|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
 esac

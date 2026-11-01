@@ -142,6 +142,7 @@ type State struct {
 	Autopilot   *Autopilot             `json:"autopilot,omitempty"` // where to get a new IP when this one is blocked
 	ClientIP    string                 `json:"clientIp,omitempty"`  // the address clients use instead of Host (a reserved IP)
 	Naming      Naming                 `json:"naming,omitzero"`     // config and subscription names, with the country flag
+	Relays      []Relay                `json:"relays,omitempty"`    // servers that forward ports here: multi-hop
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`

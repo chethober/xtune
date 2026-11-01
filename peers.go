@@ -98,7 +98,7 @@ func peerServers(st *state.State) []*state.State {
 // NamedLinks are the user's share links on every server, named by config.
 func NamedLinks(st *state.State, u state.User) []pageLink {
 	var out []pageLink
-	for _, s := range peerServers(st) {
+	for _, s := range subServers(st) {
 		for _, e := range linkEntries(s) {
 			if l := Link(s, e, u, e.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
 				out = append(out, pageLink{Name: e.ID, URL: l})

@@ -83,6 +83,7 @@ func runTUI() {
 				huh.NewOption("Tune: find the configs that get through, deploy them", "tune"),
 				huh.NewOption("Check the deployed configs from this network", "check"),
 				huh.NewOption("Server console: users, addresses", "console"),
+				huh.NewOption("Relays: multi-hop through a server in your users' country", "relays"),
 				huh.NewOption("Doctor: diagnose the server", "doctor"),
 				huh.NewOption("Backup / move to a new server", "move"),
 				huh.NewOption("Logs", "logs"),
@@ -107,6 +108,8 @@ func runTUI() {
 			showErr(t.check())
 		case "console":
 			showErr(openConsole(t.r))
+		case "relays":
+			showErr(t.relays())
 		case "doctor":
 			showErr(t.doctor())
 		case "move":

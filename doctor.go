@@ -92,6 +92,13 @@ func Doctor(r *remote.Server) *doctor {
 	default:
 		d.ok("xtune %s on the server", ss.Xtune)
 	}
+	for _, rl := range st.Relays {
+		if p := relayProblem(st, rl, ""); p != "" {
+			d.warn("relay %s %s", rl.Name, p)
+		} else {
+			d.ok("relay %s forwards %d configs from %s", rl.Name, len(rl.Forwards), rl.Addr)
+		}
+	}
 	if ss.Timer == "active" {
 		d.ok("usage and limits job is running")
 	} else {

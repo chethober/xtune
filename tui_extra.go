@@ -128,6 +128,92 @@ func (t *tui) move() error {
 	return nil
 }
 
+// relays lists the relays and adds, syncs or removes one.
+func (t *tui) relays() error {
+	st, err := requireState(t.r)
+	if err != nil {
+		return err
+	}
+	fmt.Println(titleStyle.Render("\nRelays (multi-hop)"))
+	fmt.Println(dimStyle.Render("A relay is a server in your users' country that forwards ports to this one: domestic routes\n" +
+		"are often filtered less. It runs only a port forwarder (no keys, no users); its configs join the subscriptions."))
+	printRelays(st)
+	action := "back"
+	opts := []huh.Option[string]{huh.NewOption("Add a relay", "add")}
+	for _, rl := range st.Relays {
+		opts = append(opts, huh.NewOption("Sync "+rl.Name+" (after a redeploy or a move)", "sync:"+rl.Name),
+			huh.NewOption("Remove "+rl.Name, "del:"+rl.Name))
+	}
+	opts = append(opts, huh.NewOption("Back", "back"))
+	if err := huh.NewSelect[string]().Title("Relays").Options(opts...).Value(&action).WithTheme(t.theme).Run(); err != nil || action == "back" {
+		return err
+	}
+	log := func(s string) { fmt.Println(s) }
+	kind, name, _ := strings.Cut(action, ":")
+	var rl *state.Relay
+	for i := range st.Relays {
+		if st.Relays[i].Name == name {
+			rl = &st.Relays[i]
+		}
+	}
+	dial := func(title string) (*remote.Server, error) {
+		c, err := t.askServer(title)
+		if err != nil {
+			return nil, err
+		}
+		return remote.Dial(c, tuiPrompt)
+	}
+	switch kind {
+	case "add":
+		addr := ""
+		if err := huh.NewInput().Title("Relay name").Description("Lowercase letters, digits and dashes, e.g. teh1. Configs through it are named after it.").
+			Value(&name).Validate(func(s string) error {
+			if !relayNameRe.MatchString(s) {
+				return errors.New("lowercase letters, digits and dashes")
+			}
+			return nil
+		}).WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+		relay, err := dial("Relay")
+		if err != nil {
+			return err
+		}
+		defer relay.Close()
+		if err := huh.NewInput().Title("Address clients dial (empty = " + relay.Conn.Host + ")").Value(&addr).WithTheme(t.theme).Run(); err != nil {
+			return err
+		}
+		st, err = SyncRelay(t.r, relay, RelayOpts{Name: name, Addr: strings.TrimSpace(addr), Log: log})
+	case "sync":
+		var relay *remote.Server
+		if relay, err = remote.Dial(remote.Conn{Host: rl.SSH.Host, Port: rl.SSH.Port, User: rl.SSH.User}, tuiPrompt); err != nil {
+			if relay, err = dial("Relay " + name); err != nil {
+				return err
+			}
+		}
+		defer relay.Close()
+		st, err = SyncRelay(t.r, relay, RelayOpts{Name: name, Log: log})
+	case "del":
+		relay, derr := remote.Dial(remote.Conn{Host: rl.SSH.Host, Port: rl.SSH.Port, User: rl.SSH.User}, tuiPrompt)
+		if derr != nil {
+			forget := false
+			if err := huh.NewConfirm().Title("Cannot reach the relay (" + derr.Error() + "). Forget it anyway?").Value(&forget).WithTheme(t.theme).Run(); err != nil || !forget {
+				return err
+			}
+			relay = nil
+		} else {
+			defer relay.Close()
+		}
+		st, err = RemoveRelay(t.r, relay, name)
+	}
+	if err != nil {
+		return err
+	}
+	printRelays(st)
+	pause()
+	return nil
+}
+
 // askServer asks for another server's SSH details.
 func (t *tui) askServer(title string) (remote.Conn, error) {
 	c := remote.Conn{User: "root"}

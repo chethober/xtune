@@ -13,6 +13,14 @@ All notable changes to this project are documented here. The format follows
   (`{flag} {country} {server} {user} {id} {proto} {port} {via}`) and the subscription's name in apps
   (`Profile-Title` and the failover config). Without templates, names stay as before: `USER-ID` and
   `xtune - USER`, after the flag.
+- Multi-hop through a relay (`xtune relay add NAME --ssh RELAY_HOST`, and *Relays* in the TUI): a server in your
+  users' own country forwards ports to the main server (client → relay → server), for networks that filter
+  international routes more than domestic ones. The relay runs only an Xray port forwarder (unit
+  `xray-autotune-relay`): no keys and no users, so REALITY, Hysteria2, WireGuard and the SSH tunnels still end at
+  the main server. Each TCP port is measured from the relay and left out when it cannot be reached. Configs through
+  the relay join every subscription and the failover config as `RELAY-ID`, with the main server's flag
+  (`{via}` names the relay in custom templates). `xtune relay sync` updates a relay after a redeploy or a move;
+  until then its changed configs are left out of subscriptions, and `xtune doctor` says so.
 - Named subscription import links: the user's page and `xtune users links` give one-tap links that add the
   subscription under its name to v2rayNG, Hiddify, Streisand and sing-box.
 

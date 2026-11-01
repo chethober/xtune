@@ -33,6 +33,7 @@ type Status struct {
 	Sub, Timer, Bot  string // subscription server, enforce timer and Telegram bot (systemctl is-active)
 	Tunnels          string // SSH and DNS tunnel server
 	AWG              string // AmneziaWG server
+	Relay            string // multi-hop relay to another server (xray-autotune-relay)
 	FW               string // active host firewall: ufw | firewalld | none
 }
 
@@ -65,6 +66,8 @@ func (r *Server) Status() (Status, error) {
 			s.Tunnels = v
 		case "AWG":
 			s.AWG = v
+		case "RELAY":
+			s.Relay = v
 		case "FW":
 			s.FW = v
 		}

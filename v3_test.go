@@ -141,6 +141,7 @@ func TestXrayAcceptsNewConfigs(t *testing.T) {
 	for name, cfg := range map[string]J{
 		"hop":   ClientConfig(Outbound(st, hop, u, state.Knobs{}, "proxy")),
 		"split": ClientConfig(Outbound(st, cdn, u, state.Knobs{FP: "chrome", Mode: "packet-up", Split: "cdn-up"}, "proxy")),
+		"relay": relayConfig("203.0.113.7", []state.Forward{{ID: "r-tcp", Port: 30443, To: 443, Net: "tcp"}, {ID: "hy2", Port: 30444, To: 8443, Net: "udp"}}),
 	} {
 		if err := xrayAccepts(bin, cfg); err != nil {
 			t.Errorf("%s: %v", name, err)

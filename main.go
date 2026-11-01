@@ -54,6 +54,8 @@ On your computer (client):
   xtune restore   [conn] FILE              rebuild a backup on a new server, configs as they were
   xtune migrate   [conn | --backup FILE] --to [user@]host[:port] [--no-tune] [tune flags]
                                            move the deployment to a new server, keeping users and links
+  xtune relay     [conn] [list | add NAME --ssh RELAY [--addr A] [--only ID,ID] | sync [NAME] | del NAME]
+                                           multi-hop: a server in your users' country forwards to this one
   xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
   xtune xray      [conn] status|update     check / update Xray here and on the server
   xtune logs      [conn] [-n N] [-f]
@@ -139,6 +141,8 @@ func main() {
 		err = cmdCountry(args)
 	case "names":
 		err = cmdNames(args)
+	case "relay":
+		err = cmdRelay(args)
 	case "notify":
 		err = cmdNotify(args)
 	case "warp":
@@ -453,6 +457,11 @@ func afterDeploy(r *remote.Server, st *state.State) {
 		fmt.Println("[!] xtune could not be installed on the server, so users cannot be managed there yet:", err)
 	} else if len(st.Users) == 0 {
 		fmt.Printf("\nNo users yet. Add them on the server: xtune console --host %s  (or ssh in and run sudo xtune)\n", r.Conn.Host)
+	}
+	for _, rl := range st.Relays {
+		if p := relayProblem(st, rl, ""); p != "" {
+			fmt.Printf("[!] relay %s %s\n", rl.Name, p)
+		}
 	}
 }
 
