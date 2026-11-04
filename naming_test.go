@@ -221,8 +221,8 @@ func TestDetectFlagOutbound(t *testing.T) {
 }
 
 func TestTraceCountry(t *testing.T) {
-	ip, cc := netinfo.TraceCountry("fl=1\nh=1.1.1.1\nip=83.147.253.212\nts=1\ncolo=AMS\nloc=NL\ntls=TLSv1.3\n")
-	if ip != "83.147.253.212" || cc != "NL" {
+	ip, cc := netinfo.TraceCountry("fl=1\nh=1.1.1.1\nip=203.0.113.7\nts=1\ncolo=AMS\nloc=NL\ntls=TLSv1.3\n")
+	if ip != "203.0.113.7" || cc != "NL" {
 		t.Errorf("got %q %q", ip, cc)
 	}
 	for _, body := range []string{"ip=192.0.2.1\nloc=XX", "ip=192.0.2.1\nloc=T1", "ip=192.0.2.1", "<html>"} {
