@@ -53,35 +53,54 @@ func checkTemplate(tmpl string, allowed []string) error {
 // ---------------------------------------------------------------- the server's country
 
 // detectFlag looks up the server's country when it is not known yet, at most once a day after a
-// failure. It reports whether the naming changed.
+// failure. The country is where the server's outbound address is (Cloudflare's trace, run here on
+// the server); when that cannot be reached, the registry's country of the server's IP block stands
+// in and is retried daily, as are flags detected before the outbound lookup existed. It reports
+// whether the naming changed.
 func detectFlag(st *state.State, now time.Time) bool {
 	n := &st.Naming
-	if n.Flag != "" || now.Unix()-n.Checked < 24*3600 {
+	stale := n.Detected && !n.Outbound // a registry guess: try the outbound lookup again
+	if (n.Flag != "" && !stale) || now.Unix()-n.Checked < 24*3600 {
 		return false
 	}
-	ip := net.ParseIP(orStr(st.ClientIP, st.Host))
+	if cc, err := netinfo.OutboundCountry(); err == nil {
+		changed := n.Flag != cc || !n.Detected || !n.Outbound || n.Checked != 0
+		n.Flag, n.Detected, n.Outbound, n.Checked = cc, true, true, 0
+		return changed
+	}
+	n.Checked = now.Unix()
+	if stale {
+		return true // keep the registry's guess until the outbound lookup works
+	}
+	if cc := registryCountry(orStr(st.ClientIP, st.Host)); cc != "" {
+		n.Flag, n.Detected, n.Outbound = cc, true, false
+	}
+	return true
+}
+
+// registryCountry is the country the IP block of host (an IP or a name) is registered in, "" when
+// unknown. Hosting companies often register blocks where they are based, not where servers are.
+func registryCountry(host string) string {
+	ip := net.ParseIP(host)
 	if ip == nil {
-		if ips, err := net.LookupIP(st.Host); err == nil && len(ips) > 0 {
+		if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
 			ip = ips[0]
 		}
 	}
 	if ip == nil {
-		n.Checked = now.Unix()
-		return true
+		return ""
 	}
 	cc, err := netinfo.CountryLookup(ip)
 	if err != nil {
-		n.Checked = now.Unix()
-		return true
+		return ""
 	}
-	n.Flag, n.Detected, n.Checked = cc, true, 0
-	return true
+	return cc
 }
 
 // forgetDetectedFlag drops a looked-up country after the server moves, so it is looked up again.
 func forgetDetectedFlag(st *state.State) {
 	if st.Naming.Detected {
-		st.Naming.Flag, st.Naming.Detected, st.Naming.Checked = "", false, 0
+		st.Naming.Flag, st.Naming.Detected, st.Naming.Outbound, st.Naming.Checked = "", false, false, 0
 	}
 }
 
@@ -119,11 +138,11 @@ func SetNaming(r *remote.Server, c NamingChange, now time.Time) (*state.State, e
 	if c.Country != nil {
 		switch v := strings.ToLower(strings.TrimSpace(*c.Country)); {
 		case v == "auto":
-			n.Flag, n.Detected, n.Checked = "", false, 0
+			n.Flag, n.Detected, n.Outbound, n.Checked = "", false, false, 0
 		case v == "none" || v == "off" || v == "":
-			n.Flag, n.Detected = "off", false
+			n.Flag, n.Detected, n.Outbound = "off", false, false
 		case protocols.ValidCountryCode(v):
-			n.Flag, n.Detected = strings.ToUpper(v), false
+			n.Flag, n.Detected, n.Outbound = strings.ToUpper(v), false, false
 		default:
 			return nil, fmt.Errorf("--country %q: use a two-letter country code (de, nl, us, …), auto or none", *c.Country)
 		}
@@ -143,8 +162,10 @@ func describeNaming(st *state.State) string {
 		flag = "off"
 	case protocols.ServerFlag(st) != "":
 		flag = protocols.FlagEmoji(protocols.ServerFlag(st)) + " " + protocols.ServerFlag(st)
-		if n.Detected {
-			flag += " (looked up)"
+		if n.Detected && n.Outbound {
+			flag += " (looked up from the outbound address)"
+		} else if n.Detected {
+			flag += " (registry's country of the IP; retried daily)"
 		}
 	}
 	u := state.User{Name: "USER"}

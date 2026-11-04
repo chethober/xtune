@@ -24,9 +24,12 @@ Named sets of limits: `xtune plans add basic --quota 50 --days 30 --devices 2 --
 ## Names and country flags
 
 Apps show each config by the name after `#` in its link, and a subscription by its `Profile-Title` header. xtune
-puts the **flag of the country traffic leaves from** in front of both: the server's country, looked up once from its
-IP (Team Cymru's DNS service; again after `xtune migrate`). Configs through a [relay](multihop.md) keep the main
-server's flag, since that is still where traffic exits. Followers keep their own flags in the primary's subscriptions.
+puts the **flag of the country traffic leaves from** in front of both: the server's country, looked up once by the
+server from its outbound address (Cloudflare's `/cdn-cgi/trace`; again after `xtune migrate`). When that cannot be
+reached, the country the IP block is registered in (Team Cymru's DNS service) stands in and the lookup is retried
+daily: hosting companies often register blocks where they are based, not where the server is. Configs through a
+[relay](multihop.md) show both ends, relay first (`🇮🇷→🇳🇱 bob-teh1-r-tcp`, `{country}` is `IR→NL`): where apps
+connect, then where traffic exits. Followers keep their own flags in the primary's subscriptions.
 
 ```sh
 xtune names                                    # what configs and the subscription are called now

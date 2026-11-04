@@ -218,6 +218,43 @@ func ResetASNCache() {
 	asnCache.Unlock()
 }
 
+// TraceCountry reads the ip= and loc= lines of a Cloudflare /cdn-cgi/trace answer: the address a
+// machine's traffic leaves from, and the country Cloudflare places it in. cc is "" when absent.
+func TraceCountry(body string) (ip, cc string) {
+	for _, line := range strings.Split(body, "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch k {
+		case "ip":
+			ip = v
+		case "loc":
+			if v = strings.ToUpper(v); isCountryCode(v) && v != "XX" && v != "T1" {
+				cc = v
+			}
+		}
+	}
+	return ip, cc
+}
+
+// OutboundCountry is the country this machine's traffic leaves from, as Cloudflare locates its
+// outbound address. Unlike CountryLookup (the registry's country of the IP block, often where the
+// hosting company is based, not where the server is) it follows the server's real location.
+// A variable so tests can stand in for the network.
+var OutboundCountry = func() (string, error) {
+	c := &http.Client{Timeout: 5 * time.Second}
+	var errs []string
+	for _, u := range []string{"https://1.1.1.1/cdn-cgi/trace", "https://www.cloudflare.com/cdn-cgi/trace"} {
+		b, err := getBody(c, u)
+		if err == nil {
+			if _, cc := TraceCountry(string(b)); cc != "" {
+				return cc, nil
+			}
+			err = errors.New("no country in trace")
+		}
+		errs = append(errs, u+": "+err.Error())
+	}
+	return "", errors.New(strings.Join(errs, "; "))
+}
+
 // CountryLookup finds the country an IP is registered in. A variable so tests can stand in for DNS.
 var CountryLookup = func(ip net.IP) (string, error) {
 	_, cc, err := CymruOrigin(net.DefaultResolver, ip)

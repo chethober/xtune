@@ -26,7 +26,8 @@ same under *Relays*.
   cannot reach are left out. UDP (Hysteria2, WireGuard) cannot be measured this way and is forwarded as is.
 - **Ports.** The relay listens on each config's own port when it is free there, otherwise on a free high port.
 - **In every subscription.** The relay's configs appear after the main server's, named `RELAY-ID` (`teh1-r-tcp`)
-  with the main server's flag, and in the failover config, so apps fail over between direct and relayed paths.
+  after the relay's flag and the main server's (`🇮🇷→🇳🇱`; the relay's country is looked up from the relay on
+  `add` and `sync`), and in the failover config, so apps fail over between direct and relayed paths.
 - **What can go through:** REALITY, VLESS Encryption, Trojan, Hysteria2 (without port hopping), Shadowsocks,
   WireGuard, the SSH tunnels and MTProto. CDN and Worker configs already have their own path; the DNS tunnel goes
   through resolvers; OpenVPN, IKEv2 and AmneziaWG come as profiles that name the main server.

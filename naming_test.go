@@ -20,6 +20,7 @@ import (
 // Tests never look anything up on the internet: lookups that a test does not stand in for fail.
 func TestMain(m *testing.M) {
 	netinfo.CountryLookup = func(net.IP) (string, error) { return "", errors.New("no lookups in tests") }
+	netinfo.OutboundCountry = func() (string, error) { return "", errors.New("no lookups in tests") }
 	os.Exit(m.Run())
 }
 
@@ -32,6 +33,22 @@ func stubCountry(t *testing.T, cc string) *int {
 		calls++
 		if cc == "" {
 			return "", errors.New("lookup failed")
+		}
+		return cc, nil
+	}
+	return &calls
+}
+
+// stubOutbound stands in for Cloudflare's trace: cc, or a failure when "".
+func stubOutbound(t *testing.T, cc string) *int {
+	t.Helper()
+	old := netinfo.OutboundCountry
+	t.Cleanup(func() { netinfo.OutboundCountry = old })
+	calls := 0
+	netinfo.OutboundCountry = func() (string, error) {
+		calls++
+		if cc == "" {
+			return "", errors.New("trace failed")
 		}
 		return cc, nil
 	}
@@ -144,7 +161,7 @@ func TestDetectFlag(t *testing.T) {
 	if detectFlag(st, now.Add(time.Hour)) || *calls != 1 {
 		t.Error("retried within the day")
 	}
-	stubCountry(t, "FI")
+	stubOutbound(t, "FI")
 	if !detectFlag(st, now.Add(25*time.Hour)) || st.Naming.Flag != "FI" || !st.Naming.Detected || st.Naming.Checked != 0 {
 		t.Errorf("retry: %+v", st.Naming)
 	}
@@ -159,6 +176,59 @@ func TestDetectFlag(t *testing.T) {
 	forgetDetectedFlag(st)
 	if st.Naming.Flag != "SE" {
 		t.Error("a chosen country was forgotten")
+	}
+}
+
+// The flag follows where the server's outbound address is, not the registry's country of its IP
+// block (a Dutch server in a block registered in Greece is NL). A registry guess stands in while
+// the outbound lookup fails, is retried daily, and flags detected by the registry before are
+// looked up again.
+func TestDetectFlagOutbound(t *testing.T) {
+	st := testState()
+	now := time.Now()
+	stubCountry(t, "GR")
+	out := stubOutbound(t, "NL")
+	if !detectFlag(st, now) || st.Naming.Flag != "NL" || !st.Naming.Detected || !st.Naming.Outbound {
+		t.Fatalf("outbound lookup: %+v", st.Naming)
+	}
+	if detectFlag(st, now.Add(48*time.Hour)) || *out != 1 {
+		t.Error("an outbound flag was looked up again")
+	}
+
+	st = testState()
+	out = stubOutbound(t, "")
+	if !detectFlag(st, now) || st.Naming.Flag != "GR" || st.Naming.Outbound || st.Naming.Checked != now.Unix() {
+		t.Fatalf("registry fallback: %+v", st.Naming)
+	}
+	if detectFlag(st, now.Add(time.Hour)) || *out != 1 {
+		t.Error("the registry guess was retried within the day")
+	}
+	stubOutbound(t, "NL")
+	if !detectFlag(st, now.Add(25*time.Hour)) || st.Naming.Flag != "NL" || !st.Naming.Outbound || st.Naming.Checked != 0 {
+		t.Errorf("registry guess not replaced: %+v", st.Naming)
+	}
+
+	// state from before the outbound lookup: detected, but by the registry
+	st = testState()
+	st.Naming.Flag, st.Naming.Detected = "GR", true
+	if !detectFlag(st, now) || st.Naming.Flag != "NL" || !st.Naming.Outbound {
+		t.Errorf("an old registry flag was kept: %+v", st.Naming)
+	}
+	st.Naming.Flag, st.Naming.Detected, st.Naming.Outbound = "SE", false, false // chosen by hand
+	if detectFlag(st, now) || st.Naming.Flag != "SE" {
+		t.Errorf("a chosen country was replaced: %+v", st.Naming)
+	}
+}
+
+func TestTraceCountry(t *testing.T) {
+	ip, cc := netinfo.TraceCountry("fl=1\nh=1.1.1.1\nip=203.0.113.7\nts=1\ncolo=AMS\nloc=NL\ntls=TLSv1.3\n")
+	if ip != "203.0.113.7" || cc != "NL" {
+		t.Errorf("got %q %q", ip, cc)
+	}
+	for _, body := range []string{"ip=192.0.2.1\nloc=XX", "ip=192.0.2.1\nloc=T1", "ip=192.0.2.1", "<html>"} {
+		if _, cc := netinfo.TraceCountry(body); cc != "" {
+			t.Errorf("%q: country %q", body, cc)
+		}
 	}
 }
 
