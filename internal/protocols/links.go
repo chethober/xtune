@@ -102,7 +102,7 @@ func RelayStates(st *state.State) []*state.State {
 		rs := *st
 		rs.Domain, rs.CDNDomain, rs.ClientIP, rs.Host = "", "", rl.Addr, rl.Addr
 		rs.Relays, rs.Peers, rs.Worker = nil, nil, nil
-		rs.Naming.Via = rl.Name
+		rs.Naming.Via, rs.Naming.ViaFlag = rl.Name, rl.Flag
 		rs.Entries = nil
 		for _, e := range st.Entries {
 			i := slices.IndexFunc(rl.Forwards, func(f state.Forward) bool { return f.ID == e.ID && f.To == e.Port })

@@ -126,6 +126,20 @@ func TestRelayLinks(t *testing.T) {
 	if n := protocols.ConfigName(st, st.Entries[0], u); n != "🇩🇪 REALITY" {
 		t.Errorf("direct name %q", n)
 	}
+	// a relay whose country is known: relay's flag → the server's
+	st.Relays[0].Flag = "IR"
+	st.Naming.Config = "{flag} {country} {user}-{id}"
+	if n := protocols.ConfigName(protocols.RelayStates(st)[0], protocols.RelayStates(st)[0].Entries[0], u); n != "🇮🇷→🇩🇪 IR→DE bob-teh1-r-tcp" {
+		t.Errorf("relay flags %q", n)
+	}
+	if n := protocols.ConfigName(st, st.Entries[0], u); n != "🇩🇪 DE bob-r-tcp" {
+		t.Errorf("direct name with a relay's country known %q", n)
+	}
+	st.Naming.Flag = "off" // no flags at all, not even the relay's
+	if n := protocols.ConfigName(protocols.RelayStates(st)[0], protocols.RelayStates(st)[0].Entries[0], u); n != "bob-teh1-r-tcp" {
+		t.Errorf("flags off %q", n)
+	}
+	st.Naming.Flag, st.Naming.Config, st.Relays[0].Flag = "DE", "{flag} {proto} {via}", ""
 	// the failover config tries the relay too
 	b, _ := json.Marshal(protocols.FailoverConfig(st, u))
 	if !strings.Contains(string(b), `"proxy-teh1-r-tcp"`) || !strings.Contains(string(b), "198.51.100.20") {
@@ -153,7 +167,7 @@ func TestStaleRelaysLeftOut(t *testing.T) {
 func relayFake() (*remote.Server, *fakeServer) {
 	fs := newFake()
 	fs.helper = map[string]string{"status": "ARCH x86_64\nXRAY 26.1.1\nSTATE no", "relay-apply": "active",
-		"relay-check": "TCP 443 35\nTCP 30001 fail", "relay-remove": "removed"}
+		"relay-check": "TCP 443 35\nTCP 30001 fail", "relay-remove": "removed", "trace": "ip=198.51.100.20\nloc=IR"}
 	fs.used = "USED tcp 0.0.0.0:22\nUSED tcp 0.0.0.0:443"
 	return &remote.Server{Transport: fs, Conn: remote.Conn{Host: "198.51.100.20", Port: 22, User: "root"}}, fs
 }
@@ -178,7 +192,7 @@ func TestSyncAndRemoveRelay(t *testing.T) {
 	for _, f := range rl.Forwards {
 		ids = append(ids, f.ID)
 	}
-	if rl.Addr != "198.51.100.20" || rl.Target != "203.0.113.7" || rl.SSH.Host != "198.51.100.20" || rl.SSH.Port != 0 || rl.SSH.User != "" {
+	if rl.Addr != "198.51.100.20" || rl.Flag != "IR" || rl.Target != "203.0.113.7" || rl.SSH.Host != "198.51.100.20" || rl.SSH.Port != 0 || rl.SSH.User != "" {
 		t.Errorf("relay: %+v", rl)
 	}
 	if strings.Join(ids, ",") != "r-tcp,hy2" {

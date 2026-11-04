@@ -9,11 +9,15 @@ type Naming struct {
 	// location. "" = not known yet (looked up automatically), "off" = no flag.
 	Flag     string `json:"flag,omitempty"`
 	Detected bool   `json:"detected,omitempty"` // Flag came from a lookup, so a move to a new IP looks it up again
-	Checked  int64  `json:"checked,omitempty"`  // unix seconds of the last failed lookup, to retry daily
-	Config   string `json:"config,omitempty"`   // config name template, "" = DefaultConfigName
-	Sub      string `json:"sub,omitempty"`      // subscription name template, "" = DefaultSubName
+	// Outbound: the detected Flag is where the server's outbound address is (Cloudflare's trace),
+	// not only the registry's country of its IP block; registry guesses are retried daily.
+	Outbound bool   `json:"outbound,omitempty"`
+	Checked  int64  `json:"checked,omitempty"` // unix seconds of the last failed or registry-only lookup, to retry daily
+	Config   string `json:"config,omitempty"`  // config name template, "" = DefaultConfigName
+	Sub      string `json:"sub,omitempty"`     // subscription name template, "" = DefaultSubName
 
-	Via string `json:"-"` // the relay these configs go through: {via}, set on the relay's view only
+	Via     string `json:"-"` // the relay these configs go through: {via}, set on the relay's view only
+	ViaFlag string `json:"-"` // the relay's country: {flag} becomes "RELAY→SERVER" on the relay's view
 }
 
 // Placeholders in the templates: {flag} {country} {server} {user} {id} {proto} {port}, and {via}

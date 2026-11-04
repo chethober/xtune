@@ -6,9 +6,10 @@ package state
 // and no users: configs through it are this server's configs, dialled at the relay's address.
 type Relay struct {
 	Name     string    `json:"name"`
-	Addr     string    `json:"addr"`   // the address clients dial: the relay's IP or a domain pointing at it
-	SSH      RelaySSH  `json:"ssh"`    // how xtune reaches the relay again (sync, removal); never a secret
-	Target   string    `json:"target"` // the address of this server the relay forwards to
+	Addr     string    `json:"addr"`           // the address clients dial: the relay's IP or a domain pointing at it
+	Flag     string    `json:"flag,omitempty"` // the relay's country (ISO 3166-1 alpha-2), "" = unknown
+	SSH      RelaySSH  `json:"ssh"`            // how xtune reaches the relay again (sync, removal); never a secret
+	Target   string    `json:"target"`         // the address of this server the relay forwards to
 	Forwards []Forward `json:"forwards"`
 	Added    int64     `json:"added"`
 }

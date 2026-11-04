@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chethober/xtune/internal/netinfo"
 	"github.com/chethober/xtune/internal/protocols"
 	"github.com/chethober/xtune/internal/remote"
 	"github.com/chethober/xtune/internal/state"
@@ -142,6 +143,9 @@ func SyncRelay(r, relay *remote.Server, o RelayOpts) (*state.State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("relay: %w", err)
 	}
+	if cc := relayCountry(relay, rl.Addr); cc != "" {
+		rl.Flag = cc
+	}
 	fs := planForwards(st, rl.Forwards, usedPorts(probe), o.Only)
 	if len(fs) == 0 {
 		return nil, errors.New("no config here can go through a relay (CDN, Worker, DNS tunnel and VPN configs cannot)")
@@ -200,6 +204,17 @@ func SyncRelay(r, relay *remote.Server, o RelayOpts) (*state.State, error) {
 	return st, state.Save(r, st)
 }
 
+// relayCountry is where the relay is: Cloudflare's view of its outbound address, from the relay
+// itself, else the registry's country of addr's IP block; "" when neither is known.
+func relayCountry(relay *remote.Server, addr string) string {
+	if out, err := relay.Helper("trace"); err == nil {
+		if _, cc := netinfo.TraceCountry(out); cc != "" {
+			return cc
+		}
+	}
+	return registryCountry(addr)
+}
+
 // RemoveRelay stops relay name (when it can be reached: relay may be nil) and forgets it.
 func RemoveRelay(r, relay *remote.Server, name string) (*state.State, error) {
 	if relay != nil {
@@ -238,7 +253,7 @@ func printRelays(st *state.State) {
 		if len(ms) > 0 {
 			lat = fmt.Sprintf("%d ms", slices.Min(ms))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", rl.Name, rl.Addr, len(rl.Forwards), lat, relayProblem(st, rl, "in subscriptions"))
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", strings.TrimSpace(protocols.FlagEmoji(rl.Flag)+" "+rl.Name), rl.Addr, len(rl.Forwards), lat, relayProblem(st, rl, "in subscriptions"))
 	}
 	tw.Flush()
 }

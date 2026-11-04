@@ -80,9 +80,15 @@ func isNameSep(t string) bool {
 	return strings.Trim(t, "-·|/•,:–—") == ""
 }
 
+// nameVars fill the templates. Through a relay, {flag} and {country} name both ends, relay first
+// ("🇮🇷→🇳🇱", "IR→NL"): where clients connect, then where traffic leaves for the internet.
 func nameVars(st *state.State, u state.User) map[string]string {
 	cc := ServerFlag(st)
-	return map[string]string{"flag": FlagEmoji(cc), "country": cc, "server": st.Naming.Label, "user": u.Name}
+	flag, country := FlagEmoji(cc), cc
+	if via := strings.ToUpper(st.Naming.ViaFlag); cc != "" && ValidCountryCode(via) {
+		flag, country = FlagEmoji(via)+"→"+flag, via+"→"+cc
+	}
+	return map[string]string{"flag": flag, "country": country, "server": st.Naming.Label, "user": u.Name}
 }
 
 // ConfigName is what apps show for one config of u.

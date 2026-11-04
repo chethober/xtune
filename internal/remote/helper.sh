@@ -489,6 +489,12 @@ relay-check)
     if timeout 4 bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null; then echo "TCP $p $(( ($(date +%s%N) - s) / 1000000 ))"
     else echo "TCP $p fail"; fi
   done ;;
+trace)
+  # Cloudflare's view of this machine's outbound address: its ip= and loc= (country) lines
+  for u in https://1.1.1.1/cdn-cgi/trace https://www.cloudflare.com/cdn-cgi/trace; do
+    out=$(curl -fsS --max-time 5 "$u" 2>/dev/null || wget -qO- -T 5 "$u" 2>/dev/null) || continue
+    echo "$out" | grep -E '^(ip|loc)=' && break
+  done; true ;;
 relay-remove)
   systemctl disable --now xray-autotune-relay >/dev/null 2>&1 || true
   rm -f $U/xray-autotune-relay.service $D/relay.json; systemctl daemon-reload

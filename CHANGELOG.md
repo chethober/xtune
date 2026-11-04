@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Country flags follow where the server is, not where its IP block is registered: the server looks up its
+  outbound address's country from Cloudflare's `/cdn-cgi/trace`, with Team Cymru's registry country only as a
+  fallback that is retried daily. Flags detected the old way are looked up again (a Dutch server in a block
+  registered in Greece showed 🇬🇷).
+
+### Changed
+- Configs through a relay show the relay's flag and the main server's (`🇮🇷→🇳🇱 bob-teh1-r-tcp`; `{country}` is
+  `IR→NL`), and `xtune relay` lists each relay's flag. The relay's country is looked up from the relay on
+  `xtune relay add` and `sync`.
+
 ## [1.0.0] - 2026-11-01
 
 The first stable release: from here on, `state.json`, backups, commands and flags, `--json` output and users'
