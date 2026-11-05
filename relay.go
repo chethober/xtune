@@ -236,7 +236,7 @@ func RemoveRelay(r, relay *remote.Server, name string) (*state.State, error) {
 }
 
 func printRelays(st *state.State) {
-	if len(st.Relays) == 0 {
+	if st == nil || len(st.Relays) == 0 {
 		fmt.Println("no relays (add one: xtune relay add NAME --ssh RELAY_HOST)")
 		return
 	}
