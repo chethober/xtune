@@ -176,12 +176,12 @@ func (t *tui) relays() error {
 		}).WithTheme(t.theme).Run(); err != nil {
 			return err
 		}
-		relay, err := dial("Relay")
-		if err != nil {
+		var relay *remote.Server
+		if relay, err = dial("Relay"); err != nil {
 			return err
 		}
 		defer relay.Close()
-		if err := huh.NewInput().Title("Address clients dial (empty = " + relay.Conn.Host + ")").Value(&addr).WithTheme(t.theme).Run(); err != nil {
+		if err = huh.NewInput().Title("Address clients dial (empty = " + relay.Conn.Host + ")").Value(&addr).WithTheme(t.theme).Run(); err != nil {
 			return err
 		}
 		st, err = SyncRelay(t.r, relay, RelayOpts{Name: name, Addr: strings.TrimSpace(addr), Log: log})

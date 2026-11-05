@@ -259,3 +259,8 @@ func TestParseRelayCheck(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestPrintRelaysNil(t *testing.T) {
+	// printRelays must safely handle nil state without panicking
+	printRelays(nil)
+}
