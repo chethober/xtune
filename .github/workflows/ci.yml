@@ -46,7 +46,7 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: shellcheck
-        run: shellcheck internal/remote/helper.sh install.sh
+        run: shellcheck pkg/remote/helper.sh install.sh
       - name: docs links
         run: python3 scripts/check-links.py
 

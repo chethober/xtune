@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   registered in Greece showed 🇬🇷).
 
 ### Changed
+- The shared packages moved from `internal/` to `pkg/` (`pkg/remote`, `pkg/state`, `pkg/protocols`, `pkg/netinfo`,
+  `pkg/cloudflare`, `pkg/dnstt`), so other programs, starting with the xtune client app, can import them. Their Go
+  API is not covered by the 1.x promise yet ([Compatibility](docs/compatibility.md#go-packages)).
 - Configs through a relay show the relay's flag and the main server's (`🇮🇷→🇳🇱 bob-teh1-r-tcp`; `{country}` is
   `IR→NL`), and `xtune relay` lists each relay's flag. The relay's country is looked up from the relay on
   `xtune relay add` and `sync`.

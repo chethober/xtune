@@ -25,11 +25,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	dnsttclient "github.com/chethober/xtune/internal/dnstt/client"
-	dnsttserver "github.com/chethober/xtune/internal/dnstt/server"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	dnsttclient "github.com/chethober/xtune/pkg/dnstt/client"
+	dnsttserver "github.com/chethober/xtune/pkg/dnstt/server"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 	"golang.org/x/crypto/ssh"
 	"www.bamsoftware.com/git/dnstt.git/dns"
 )

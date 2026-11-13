@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/netinfo"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/netinfo"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Config and subscription names. Apps show a config by the name after "#" in its link, and a

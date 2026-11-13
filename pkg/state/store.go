@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/pkg/remote"
 )
 
 // Load reads state.json; it returns nil, nil when the server has no deployment yet.

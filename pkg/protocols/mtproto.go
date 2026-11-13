@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // The commands, flags and --json shapes are what 1.x keeps stable (docs/compatibility.md). These

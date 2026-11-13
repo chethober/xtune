@@ -13,8 +13,8 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 

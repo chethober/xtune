@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/pkg/remote"
 )
 
 // ---------------------------------------------------------------- versions

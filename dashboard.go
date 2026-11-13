@@ -8,9 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // The dashboard is a full-screen overview of a deployment: the server's configs with their

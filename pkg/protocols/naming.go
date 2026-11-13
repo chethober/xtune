@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 var NamePlaceholder = regexp.MustCompile(`\{(\w+)\}`)

@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 var FragNames = []string{"none", "frag-mild", "frag-aggr"}

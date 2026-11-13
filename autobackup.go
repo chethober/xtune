@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Scheduled backups: the enforce job seals a backup with the plan's passphrase and sends it off

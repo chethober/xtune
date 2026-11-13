@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // TestCheckEndToEnd runs a real local Xray as the "server" and measures it with xtune check.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 func TestSnapshotDash(t *testing.T) {

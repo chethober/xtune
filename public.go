@@ -17,9 +17,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Public profiles: a pool of users for sharing a server with a community, through a bot such as

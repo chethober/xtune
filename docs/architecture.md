@@ -6,17 +6,17 @@ xtune is one static Go binary: the client on your computer and the tool on the s
 
 ```
 main (cmd, TUI, tuning, deploy, users, subscription server, enforce job)
- ├── internal/protocols   state → Xray configs, share links, subscriptions, names, VPN/tunnel profiles
- │    └── internal/state  the data model: state.json and usage.json, their schema and migrations
- │         └── internal/remote   running commands on the server: SSH or local, the lock, helper.sh
- ├── internal/netinfo     ASN and country of a network or an IP (Team Cymru, cached)
- ├── internal/cloudflare  the Cloudflare API calls xtune makes
- └── internal/dnstt       the DNS tunnel (vendored dnstt)
+ ├── pkg/protocols   state → Xray configs, share links, subscriptions, names, VPN/tunnel profiles
+ │    └── pkg/state  the data model: state.json and usage.json, their schema and migrations
+ │         └── pkg/remote   running commands on the server: SSH or local, the lock, helper.sh
+ ├── pkg/netinfo     ASN and country of a network or an IP (Team Cymru, cached)
+ ├── pkg/cloudflare  the Cloudflare API calls xtune makes
+ └── pkg/dnstt       the DNS tunnel (vendored dnstt)
 ```
 
 Each package only imports the ones below it. `protocols` only builds: it never talks to a server.
 
-- **Everything that changes the server** goes through `internal/remote/helper.sh`, embedded in the binary and run as
+- **Everything that changes the server** goes through `pkg/remote/helper.sh`, embedded in the binary and run as
   root, which keeps to `/opt/xray-autotune`, the `xray-autotune*` units, the `/usr/local/bin/xtune` link and the
   firewall rules it records itself ([what it touches](operations.md#what-xtune-touches-on-the-server)).
 - **The same code runs over SSH and locally.** Functions that change the server take a `*remote.Server`, whose

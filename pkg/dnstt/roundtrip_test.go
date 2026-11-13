@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/dnstt/client"
-	"github.com/chethober/xtune/internal/dnstt/server"
+	"github.com/chethober/xtune/pkg/dnstt/client"
+	"github.com/chethober/xtune/pkg/dnstt/server"
 	"www.bamsoftware.com/git/dnstt.git/dns"
 	"www.bamsoftware.com/git/dnstt.git/noise"
 )

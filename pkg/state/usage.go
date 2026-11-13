@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/remote"
+	"github.com/chethober/xtune/pkg/remote"
 )
 
 // Usage is what the enforce job measures, stored in usage.json next to state.json. Traffic

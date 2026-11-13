@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // A backup is a deployment's identity (server keys, certificate), its users with their usage, and

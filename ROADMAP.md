@@ -16,7 +16,7 @@ The first release that promises stability, not just features.
 - [x] A frozen set of CLI flags and `--json` output shapes, with a documented deprecation policy
   ([docs/compatibility.md](docs/compatibility.md)), checked by tests.
 - [x] The reference moved out of the README into [docs/](docs/README.md).
-- [x] Split the root package, first part: `internal/remote` (server transport), `internal/state` (data model and
+- [x] Split the root package, first part: `internal/remote` (server transport, now `pkg/remote`), `internal/state` (data model and
   storage), `internal/protocols` (configs, links, subscriptions, profiles), `internal/netinfo`,
   `internal/cloudflare`.
 

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/netinfo"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/netinfo"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Tests never look anything up on the internet: lookups that a test does not stand in for fail.

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/cloudflare"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/cloudflare"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // The Workers free plan allows 100,000 requests a day per account, and every connection through

@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"slices"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // TunnelConf is what the tunnel server runs.

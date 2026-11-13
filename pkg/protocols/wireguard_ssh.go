@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // secret derives a per-user secret for one protocol from the user's UUID, so rotating a user

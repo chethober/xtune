@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // The MTProto proxy serves Telegram's own proxy protocol, for users who only need Telegram.

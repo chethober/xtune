@@ -18,8 +18,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Clean IPs: on many censored networks, part of Cloudflare's edge is blocked or throttled, and

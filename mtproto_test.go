@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // mtprotoClientFrame builds the first 64 bytes a Telegram client sends for user key and DC: a
