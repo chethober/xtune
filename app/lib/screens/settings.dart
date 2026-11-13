@@ -483,7 +483,9 @@ class _SubRow extends StatelessWidget {
           if (sub.local) T.s('pasted'),
         ].join(' · '),
       ),
-      trailing: PopupMenuButton<String>(
+      trailing: XMenuButton<String>(
+        tooltip: T.s('more'),
+        round: false,
         onSelected: (v) async {
           switch (v) {
             case 'refresh':
@@ -498,10 +500,10 @@ class _SubRow extends StatelessWidget {
               await s.removeSub(sub);
           }
         },
-        itemBuilder: (_) => [
-          if (!sub.local) PopupMenuItem(value: 'refresh', child: Text(T.s('refresh'))),
-          if (sub.usage.page.isNotEmpty) PopupMenuItem(value: 'page', child: Text(T.s('openPage'))),
-          PopupMenuItem(value: 'remove', child: Text(T.s('remove'))),
+        items: [
+          if (!sub.local) XMenuItem('refresh', T.s('refresh'), icon: Icons.refresh_rounded),
+          if (sub.usage.page.isNotEmpty) XMenuItem('page', T.s('openPage'), icon: Icons.open_in_new_rounded),
+          XMenuItem('remove', T.s('remove'), icon: Icons.delete_outline_rounded, danger: true),
         ],
       ),
     );

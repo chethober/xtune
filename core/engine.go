@@ -434,7 +434,7 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 	rules = append(rules, catchAll)
 
 	cfg := J{"log": J{"loglevel": o.LogLevel}, "inbounds": inbounds, "outbounds": obs,
-		"stats": J{}, "policy": J{"system": J{"statsInboundUplink": true, "statsInboundDownlink": true}}}
+		"stats": J{}, "policy": J{"system": J{"statsOutboundUplink": true, "statsOutboundDownlink": true}}}
 	if f := logFile(); f != "" {
 		cfg["log"].(J)["error"] = f
 	}
@@ -820,13 +820,16 @@ func CurrentStatus() Status {
 		return s
 	}
 	s.Running, s.Mode, s.Since, s.Selected = true, engine.opts.Mode, engine.since.Unix(), engine.opts.Selected
+	// Traffic is counted on the configs' outbounds: the TUN inbound (VPN mode) hands connections
+	// straight to the router, past the listeners where Xray counts inbound traffic, so inbound
+	// counters stay at zero there. Sites that go direct are not tunnel traffic and are left out.
 	if m, ok := engine.inst.GetFeature(stats.ManagerType()).(stats.Manager); ok {
-		for _, in := range []string{"tun", "socks", "http"} {
-			if c := m.GetCounter("inbound>>>" + in + ">>>traffic>>>uplink"); c != nil {
-				s.Up += c.Value()
+		for _, c := range engine.configs {
+			if n := m.GetCounter("outbound>>>" + tagOf(c) + ">>>traffic>>>uplink"); n != nil {
+				s.Up += n.Value()
 			}
-			if c := m.GetCounter("inbound>>>" + in + ">>>traffic>>>downlink"); c != nil {
-				s.Down += c.Value()
+			if n := m.GetCounter("outbound>>>" + tagOf(c) + ">>>traffic>>>downlink"); n != nil {
+				s.Down += n.Value()
 			}
 		}
 	}

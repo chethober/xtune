@@ -48,11 +48,11 @@ class RulesPage extends StatelessWidget {
       subtitle: T.s('rulesHint'),
       back: true,
       actions: [
-        PopupMenuButton<String>(
+        XMenuButton<String>(
           tooltip: T.s('presets'),
-          icon: const Icon(Icons.auto_awesome_rounded),
+          icon: Icons.auto_awesome_rounded,
           onSelected: (k) => save([...rules, ...rulePresets[k]!.map((r) => RouteRule.fromJson(r.toJson()))]),
-          itemBuilder: (_) => [for (final k in rulePresets.keys) PopupMenuItem(value: k, child: Text(T.s(k)))],
+          items: [for (final k in rulePresets.keys) XMenuItem(k, T.s(k))],
         ),
         RoundIconButton(
           icon: Icons.add_rounded,
@@ -131,11 +131,11 @@ Future<RouteRule?> editRule(BuildContext context, RouteRule? r) {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              DropdownButtonFormField<String>(
-                initialValue: match,
-                decoration: InputDecoration(labelText: T.s('ruleMatch')),
-                items: [for (final m in ruleMatches) DropdownMenuItem(value: m, child: Text(T.s('match_$m')))],
-                onChanged: (v) => setState(() => match = v ?? match),
+              XDropdown<String>(
+                label: T.s('ruleMatch'),
+                value: match,
+                items: [for (final m in ruleMatches) XMenuItem(m, T.s('match_$m'))],
+                onChanged: (v) => setState(() => match = v),
               ),
               const SizedBox(height: Space.m),
               TextField(
@@ -234,13 +234,12 @@ Future<Map<String, dynamic>?> editTweaks(
                 ],
               ),
             ),
-          DropdownButtonFormField<String>(
-            initialValue: fingerprints.contains(t['fingerprint']) ? t['fingerprint'] as String? ?? '' : '',
-            decoration: InputDecoration(labelText: T.s('fingerprint'), helperText: T.s('fingerprintHint')),
-            items: [
-              for (final f in fingerprints) DropdownMenuItem(value: f, child: Text(f.isEmpty ? T.s(perConfig ? 'tweakInherit' : 'tweakServer') : f)),
-            ],
-            onChanged: (v) => setState(() => (v == null || v.isEmpty) ? t.remove('fingerprint') : t['fingerprint'] = v),
+          XDropdown<String>(
+            label: T.s('fingerprint'),
+            helper: T.s('fingerprintHint'),
+            value: fingerprints.contains(t['fingerprint']) ? t['fingerprint'] as String? ?? '' : '',
+            items: [for (final f in fingerprints) XMenuItem(f, f.isEmpty ? T.s(perConfig ? 'tweakInherit' : 'tweakServer') : f)],
+            onChanged: (v) => setState(() => v.isEmpty ? t.remove('fingerprint') : t['fingerprint'] = v),
           ),
           const SizedBox(height: Space.l),
           triState('mux', T.s('mux'), T.s('muxHint')),

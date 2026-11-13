@@ -122,27 +122,12 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
         }
       },
       actions: [
-        PopupMenuButton<String>(
+        XMenuButton<String>(
           tooltip: T.s('sort'),
-          initialValue: s.settings.sort,
+          icon: Icons.sort_rounded,
+          selected: s.settings.sort,
           onSelected: (v) => s.updateSettings((x) => x.sort = v),
-          itemBuilder: (_) => [
-            for (final k in sorts)
-              CheckedPopupMenuItem(value: k, checked: s.settings.sort == k, child: Text(T.s('sort${k[0].toUpperCase()}${k.substring(1)}'))),
-          ],
-          child: Padding(
-            padding: const EdgeInsetsDirectional.only(start: Space.s),
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: X.glass,
-                shape: BoxShape.circle,
-                border: Border.all(color: X.edge),
-              ),
-              child: const Icon(Icons.sort_rounded, size: 20),
-            ),
-          ),
+          items: [for (final k in sorts) XMenuItem(k, T.s('sort${k[0].toUpperCase()}${k.substring(1)}'))],
         ),
         if (sub != null) RoundIconButton(icon: Icons.low_priority_rounded, tooltip: T.s('autoPool'), onPressed: () => _editPool(context)),
         RoundIconButton(icon: Icons.add_rounded, tooltip: T.s('addSub'), filled: true, onPressed: () => showAddSub(context)),

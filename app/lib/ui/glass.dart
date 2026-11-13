@@ -724,3 +724,257 @@ class Group extends StatelessWidget {
     ),
   );
 }
+
+// ---------------------------------------------------------------- menus and dropdowns
+
+/// One choice in a menu or a dropdown.
+class XMenuItem<T> {
+  const XMenuItem(this.value, this.label, {this.icon, this.danger = false, this.enabled = true});
+  final T value;
+  final String label;
+  final IconData? icon;
+  final bool danger, enabled;
+}
+
+/// Opens a glass menu next to [anchor] (in global coordinates): below it when there is room,
+/// above otherwise; as wide as [width] (a dropdown's field) or its widest item. The chosen value,
+/// or null when dismissed.
+Future<T?> showXMenu<T>(BuildContext context, {required Rect anchor, required List<XMenuItem<T>> items, T? selected, double? width}) {
+  return Navigator.of(context).push<T>(
+    _XMenuRoute<T>(
+      anchor: anchor,
+      items: items,
+      selected: selected,
+      width: width,
+      rtl: Directionality.of(context) == TextDirection.rtl,
+      label: MaterialLocalizations.of(context).popupMenuLabel,
+    ),
+  );
+}
+
+Rect _rectOf(BuildContext context) {
+  final box = context.findRenderObject() as RenderBox;
+  return box.localToGlobal(Offset.zero) & box.size;
+}
+
+class _XMenuRoute<T> extends PopupRoute<T> {
+  _XMenuRoute({required this.anchor, required this.items, required this.selected, required this.width, required this.rtl, required this.label});
+  final Rect anchor;
+  final List<XMenuItem<T>> items;
+  final T? selected;
+  final double? width;
+  final bool rtl;
+  final String label;
+
+  @override
+  Color? get barrierColor => Colors.black.withValues(alpha: 0.08);
+  @override
+  bool get barrierDismissible => true;
+  @override
+  String? get barrierLabel => label;
+  @override
+  Duration get transitionDuration => Motion.fast;
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 110);
+
+  @override
+  Widget buildPage(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation) {
+    final media = MediaQuery.of(context);
+    final screen = media.size;
+    final pad = media.padding;
+    const gap = 6.0, item = 46.0, inset = 6.0;
+    final natural = items.length * item + inset * 2;
+    final below = screen.height - pad.bottom - anchor.bottom - gap - Space.l;
+    final above = anchor.top - pad.top - gap - Space.l;
+    final down = below >= natural || below >= above;
+    final maxH = (down ? below : above).clamp(item * 2 + inset * 2, screen.height * 0.6);
+    final w = (width ?? 220.0).clamp(160.0, screen.width - Space.l * 2);
+    // a field's menu lines up with the field; a button's with the button's outer edge
+    var left = width != null ? (rtl ? anchor.right - w : anchor.left) : (rtl ? anchor.left : anchor.right - w);
+    left = left.clamp(Space.l, screen.width - Space.l - w);
+    final origin = Alignment(rtl == (width == null) ? -1 : 1, down ? -1 : 1);
+    return MediaQuery.removePadding(
+      context: context,
+      removeTop: true,
+      removeBottom: true,
+      child: Stack(
+        children: [
+          Positioned(
+            left: left,
+            width: w,
+            top: down ? anchor.bottom + gap : null,
+            bottom: down ? null : screen.height - anchor.top + gap,
+            child: FadeTransition(
+              opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+              child: ScaleTransition(
+                alignment: origin,
+                scale: Tween(begin: 0.92, end: 1.0).animate(CurvedAnimation(parent: animation, curve: Motion.curve)),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxH),
+                  // no drop shadow: it would show through the translucent panel as a dark ledge
+                  child: Glass(
+                    radius: Radii.l,
+                    padding: const EdgeInsets.all(inset),
+                    color: X.isLight ? const Color(0xEBFFFFFF) : X.sheet.withValues(alpha: 0.9),
+                    border: X.isLight ? const Color(0x1F000000) : null,
+                    child: _XMenuList<T>(items: items, selected: selected),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _XMenuList<T> extends StatelessWidget {
+  const _XMenuList({required this.items, required this.selected});
+  final List<XMenuItem<T>> items;
+  final T? selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final anyIcon = items.any((i) => i.icon != null);
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final (n, i) in items.indexed)
+            Semantics(
+              button: true,
+              selected: i.value == selected,
+              child: InkWell(
+                autofocus: selected == null ? n == 0 : i.value == selected,
+                borderRadius: BorderRadius.circular(Radii.m),
+                onTap: i.enabled ? () => Navigator.of(context).pop(i.value) : null,
+                child: Container(
+                  height: 46,
+                  padding: const EdgeInsets.symmetric(horizontal: Space.m),
+                  decoration: BoxDecoration(color: i.value == selected ? X.selected : null, borderRadius: BorderRadius.circular(Radii.m)),
+                  child: Row(
+                    children: [
+                      if (anyIcon) ...[
+                        Icon(i.icon, size: 19, color: i.danger ? X.bad : (i.value == selected ? X.accent : X.muted)),
+                        const SizedBox(width: Space.m),
+                      ],
+                      Expanded(
+                        child: Text(
+                          i.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Type.body.copyWith(
+                            fontSize: 15,
+                            color: !i.enabled ? X.muted : (i.danger ? X.bad : X.text),
+                            fontWeight: i.value == selected ? FontWeight.w600 : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                      if (i.value == selected) Icon(Icons.check_rounded, size: 18, color: X.accent),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A round glass button that opens a menu: page actions (sort, presets) and row menus.
+class XMenuButton<T> extends StatelessWidget {
+  const XMenuButton({
+    super.key,
+    required this.items,
+    required this.onSelected,
+    required this.tooltip,
+    this.icon = Icons.more_vert_rounded,
+    this.selected,
+    this.round = true,
+  });
+  final List<XMenuItem<T>> items;
+  final ValueChanged<T> onSelected;
+  final String tooltip;
+  final IconData icon;
+  final T? selected;
+
+  /// A glass circle like the page's other actions; false for a plain icon in a list row.
+  final bool round;
+
+  @override
+  Widget build(BuildContext context) => Builder(
+    builder: (context) {
+      Future<void> open() async {
+        final v = await showXMenu<T>(context, anchor: _rectOf(context), items: items, selected: selected);
+        if (v != null) onSelected(v);
+      }
+
+      if (!round) {
+        return IconButton(
+          tooltip: tooltip,
+          onPressed: open,
+          icon: Icon(icon, color: X.muted),
+        );
+      }
+      return RoundIconButton(icon: icon, tooltip: tooltip, onPressed: open);
+    },
+  );
+}
+
+/// A form field that picks one of [items], looking like the text fields around it.
+class XDropdown<T> extends StatelessWidget {
+  const XDropdown({super.key, required this.label, required this.value, required this.items, required this.onChanged, this.helper});
+  final String label;
+  final String? helper;
+  final T value;
+  final List<XMenuItem<T>> items;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = items.where((i) => i.value == value).firstOrNull;
+    final body = Builder(
+      builder: (context) {
+        Future<void> open() async {
+          final r = _rectOf(context);
+          final v = await showXMenu<T>(context, anchor: r, items: items, selected: value, width: r.width);
+          if (v != null && v != value) onChanged(v);
+        }
+
+        // the helper goes under the field, not in it, so the menu opens right below the field
+        final field = Semantics(
+          button: true,
+          label: label,
+          value: current?.label,
+          child: InkWell(
+            onTap: open,
+            borderRadius: BorderRadius.circular(Radii.m),
+            child: InputDecorator(
+              decoration: InputDecoration(
+                labelText: label,
+                suffixIcon: Icon(Icons.unfold_more_rounded, color: X.muted, size: 20),
+              ),
+              child: Text(current?.label ?? '', style: Type.body, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+          ),
+        );
+        return field;
+      },
+    );
+    if (helper == null) return body;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        body,
+        Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(Space.m, Space.xs + 2, Space.m, 0),
+          child: Text(helper!, style: Type.caption),
+        ),
+      ],
+    );
+  }
+}
