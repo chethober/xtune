@@ -59,6 +59,10 @@ func fakeReleases(t *testing.T, apk []byte, sumOverride string) *httptest.Server
 
 func TestCheckAndDownloadUpdate(t *testing.T) {
 	defer func(a, v string) { releasesAPI, Version = a, v }(releasesAPI, Version)
+	dataMu.Lock()
+	old := dataDir
+	dataMu.Unlock()
+	defer SetDataDir(old) // the temporary folder goes away with this test; later tests log to the old one
 	SetDataDir(t.TempDir())
 	apk := bytes.Repeat([]byte("apk!"), 50000)
 	srv := fakeReleases(t, apk, "")
