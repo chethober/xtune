@@ -8,14 +8,14 @@ class CheckScreen extends StatelessWidget {
   const CheckScreen({super.key});
 
   static (String, Color) badge(String state) => switch (state) {
-        'ok' => ('WORKS', X.accent),
-        'slow' => ('SLOW', X.warn),
-        'throttled' => ('THROTTLED', X.warn),
-        'flaky' => ('FLAKY', X.warn),
-        'blocked' => ('BLOCKED', X.bad),
-        'skipped' => ('OTHER APP', X.muted),
-        _ => ('TESTING', X.blue),
-      };
+    'ok' => ('WORKS', X.accent),
+    'slow' => ('SLOW', X.warn),
+    'throttled' => ('THROTTLED', X.warn),
+    'flaky' => ('FLAKY', X.warn),
+    'blocked' => ('BLOCKED', X.bad),
+    'skipped' => ('OTHER APP', X.muted),
+    _ => ('TESTING', X.blue),
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +30,13 @@ class CheckScreen extends StatelessWidget {
     final bad = tested.where((r) => r['state'] == 'blocked').length;
     final net = (s.network?['name'] as String?)?.isNotEmpty == true ? s.network!['name'] as String : (T.rtl ? 'این شبکه' : 'this network');
     results.sort((a, b) {
-      int rank(Map r) => switch (r['state']) { 'ok' => 0, 'slow' || 'throttled' || 'flaky' => 1, 'testing' => 2, 'blocked' => 3, _ => 4 };
+      int rank(Map r) => switch (r['state']) {
+        'ok' => 0,
+        'slow' || 'throttled' || 'flaky' => 1,
+        'testing' => 2,
+        'blocked' => 3,
+        _ => 4,
+      };
       final c = rank(a).compareTo(rank(b));
       if (c != 0) return c;
       return ((a['warmMs'] as num?) ?? 99999).compareTo((b['warmMs'] as num?) ?? 99999);
@@ -42,37 +48,49 @@ class CheckScreen extends StatelessWidget {
       children: [
         if (check != null)
           Glass(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(running ? T.s('testing', {'n': finished, 'total': tested.length}) : T.s('done', {'n': tested.length}), style: Type.bodyStrong),
-              const SizedBox(height: Space.m),
-              Bar(fraction: tested.isEmpty ? 1 : finished / tested.length),
-              const SizedBox(height: Space.m),
-              Row(children: [
-                Expanded(child: _Count(ok, T.s('work'), X.accent)),
-                Expanded(child: _Count(warn, T.s('throttled'), X.warn)),
-                Expanded(child: _Count(bad, T.s('blocked'), X.bad)),
-              ]),
-              if (s.reportMessage != null) ...[const SizedBox(height: Space.s), Text(s.reportMessage!, style: Type.caption)],
-            ]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(running ? T.s('testing', {'n': finished, 'total': tested.length}) : T.s('done', {'n': tested.length}), style: Type.bodyStrong),
+                const SizedBox(height: Space.m),
+                Bar(fraction: tested.isEmpty ? 1 : finished / tested.length),
+                const SizedBox(height: Space.m),
+                Row(
+                  children: [
+                    Expanded(child: _Count(ok, T.s('work'), X.accent)),
+                    Expanded(child: _Count(warn, T.s('throttled'), X.warn)),
+                    Expanded(child: _Count(bad, T.s('blocked'), X.bad)),
+                  ],
+                ),
+                if (s.reportMessage != null) ...[const SizedBox(height: Space.s), Text(s.reportMessage!, style: Type.caption)],
+              ],
+            ),
           ),
         if (results.isNotEmpty) SectionLabel(T.s('resultsSoFar')),
         for (final r in results)
           Container(
             padding: const EdgeInsets.symmetric(vertical: 11),
-            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: X.track))),
-            child: Row(children: [
-              AnimatedSwitcher(
-                duration: Motion.normal,
-                child: Badge2(badge(r['state'] as String).$1, badge(r['state'] as String).$2, key: ValueKey(r['state'])),
-              ),
-              const SizedBox(width: Space.m),
-              Expanded(flex: 3, child: Text(r['name'] as String? ?? '', style: Type.body, overflow: TextOverflow.ellipsis)),
-              const SizedBox(width: Space.s),
-              Flexible(
-                flex: 2,
-                child: Text(_detail(r), textAlign: TextAlign.end, maxLines: 1, overflow: TextOverflow.ellipsis, style: Type.secondary),
-              ),
-            ]),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: X.track)),
+            ),
+            child: Row(
+              children: [
+                AnimatedSwitcher(
+                  duration: Motion.normal,
+                  child: Badge2(badge(r['state'] as String).$1, badge(r['state'] as String).$2, key: ValueKey(r['state'])),
+                ),
+                const SizedBox(width: Space.m),
+                Expanded(
+                  flex: 3,
+                  child: Text(r['name'] as String? ?? '', style: Type.body, overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: Space.s),
+                Flexible(
+                  flex: 2,
+                  child: Text(_detail(r), textAlign: TextAlign.end, maxLines: 1, overflow: TextOverflow.ellipsis, style: Type.secondary),
+                ),
+              ],
+            ),
           ),
         const SizedBox(height: Space.l),
         CheckboxListTile(
@@ -124,12 +142,15 @@ class _Count extends StatelessWidget {
   final String label;
   final Color color;
   @override
-  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        TweenAnimationBuilder<int>(
-          tween: IntTween(end: n),
-          duration: Motion.normal,
-          builder: (_, v, _) => Text('$v', style: Type.stat.copyWith(fontSize: 20, color: color)),
-        ),
-        Text(label, style: Type.caption),
-      ]);
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      TweenAnimationBuilder<int>(
+        tween: IntTween(end: n),
+        duration: Motion.normal,
+        builder: (_, v, _) => Text('$v', style: Type.stat.copyWith(fontSize: 20, color: color)),
+      ),
+      Text(label, style: Type.caption),
+    ],
+  );
 }

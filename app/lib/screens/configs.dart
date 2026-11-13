@@ -13,6 +13,7 @@ import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
 import 'add_sub.dart';
+import 'options.dart';
 
 class ConfigsScreen extends StatefulWidget {
   const ConfigsScreen({super.key});
@@ -35,7 +36,9 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
   static const sorts = ['recommended', 'latency', 'name', 'type'];
 
   List<_Row> _rows(AppState s) {
-    final configs = s.sub?.configs ?? [];
+    final all = s.sub?.allConfigs ?? [];
+    // filters: all, Xray, VPN, Tunnels, starred, hidden
+    final configs = filter == 5 ? all.where((c) => c.hidden).toList() : all.where((c) => !c.hidden).toList();
     final checked = <String, Map<String, dynamic>>{};
     if (s.check != null && s.checkSubId == s.sub?.id) {
       for (final r in (s.check!['results'] as List? ?? [])) {
@@ -46,24 +49,39 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
     final rows = <_Row>[];
     for (var i = 0; i < configs.length; i++) {
       final c = configs[i];
-      if (filter != 0 && c.group != groups[filter]) continue;
+      if (filter >= 1 && filter <= 3 && c.group != groups[filter]) continue;
+      if (filter == 4 && !c.star) continue;
       var state = 'unknown';
       int? ms;
       final delay = s.connected ? s.delayOf(c.id) : null;
-      final r = checked[c.id];
+      final sp = s.speed[c.id];
+      final r = sp != null && sp['state'] != 'testing' ? sp : checked[c.id];
       if (c.handoff) {
         state = 'ext';
       } else if (delay != null) {
         state = delay < 0 ? 'bad' : 'ok';
         ms = delay < 0 ? null : delay;
       } else if (r != null) {
-        state = switch (r['state']) { 'ok' => 'ok', 'blocked' => 'bad', _ => 'warn' };
+        state = switch (r['state']) {
+          'ok' => 'ok',
+          'blocked' => 'bad',
+          _ => 'warn',
+        };
         final w = (r['warmMs'] as num?)?.toInt() ?? -1;
         ms = w > 0 ? w : null;
       }
+      if (sp?['state'] == 'testing') state = 'testing';
       rows.add(_Row(c, state, ms, i));
     }
-    int rank(_Row r) => switch (r.state) { 'ok' => 0, 'warn' => 1, 'unknown' => 2, 'ext' => 3, _ => 4 };
+    int rank(_Row r) => switch (r.state) {
+      'ok' => 0,
+      'warn' => 1,
+      'unknown' => 2,
+      'ext' => 3,
+      _ => 4,
+    };
+    // starred first, then the chosen order
+    rows.sort((a, b) => (a.c.star ? 0 : 1).compareTo(b.c.star ? 0 : 1));
     switch (s.settings.sort) {
       case 'latency':
         rows.sort((a, b) {
@@ -89,7 +107,12 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
     final rows = _rows(s);
     return XPage(
       title: T.s('configs'),
-      subtitle: sub == null ? null : [if (sub.network != null) T.s('rankedFor', {'net': sub.network!}), T.s('updated', {'when': _ago(sub.fetched)})].join(' · '),
+      subtitle: sub == null
+          ? null
+          : [
+              if (sub.network != null) T.s('rankedFor', {'net': sub.network!}),
+              T.s('updated', {'when': _ago(sub.fetched)}),
+            ].join(' · '),
       onRefresh: () async {
         if (sub == null) return;
         try {
@@ -112,20 +135,36 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
             child: Container(
               width: 44,
               height: 44,
-              decoration: BoxDecoration(color: X.glass, shape: BoxShape.circle, border: Border.all(color: X.edge)),
+              decoration: BoxDecoration(
+                color: X.glass,
+                shape: BoxShape.circle,
+                border: Border.all(color: X.edge),
+              ),
               child: const Icon(Icons.sort_rounded, size: 20),
             ),
           ),
         ),
+        if (sub != null) RoundIconButton(icon: Icons.low_priority_rounded, tooltip: T.s('autoPool'), onPressed: () => _editPool(context)),
         RoundIconButton(icon: Icons.add_rounded, tooltip: T.s('addSub'), filled: true, onPressed: () => showAddSub(context)),
       ],
       children: [
-        Pills(labels: [T.s('all'), 'Xray', 'VPN', 'Tunnels'], selected: filter, onSelect: (i) => setState(() => filter = i)),
+        Pills(
+          labels: [
+            T.s('all'),
+            'Xray',
+            'VPN',
+            'Tunnels',
+            '★ ${T.s('starred')}',
+            if ((sub?.allConfigs ?? []).any((c) => c.hidden)) T.s('hiddenN', {'n': sub!.allConfigs.where((c) => c.hidden).length}),
+          ],
+          selected: filter,
+          onSelect: (i) => setState(() => filter = i),
+        ),
         const SizedBox(height: Space.m),
         if (sub != null)
           _ConfigRow(
             title: T.s('auto'),
-            meta: T.s('bestHere'),
+            meta: sub.pool.isEmpty ? T.s('bestHere') : T.s('poolOf', {'n': sub.pool.length}),
             trailing: '',
             engine: '',
             dot: X.accent,
@@ -137,13 +176,19 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
             key: ValueKey(r.c.id),
             padding: const EdgeInsets.only(top: Space.s),
             child: _ConfigRow(
-              title: r.c.name,
+              title: r.c.star ? '★ ${r.c.name}' : r.c.name,
               meta: switch (r.state) {
+                'testing' => '${r.c.label} · ${T.s('speedTesting')}',
                 'ext' => '${r.c.label} · ${T.s('runsElsewhere')}',
                 'bad' => '${r.c.label} · ${T.s('blockedHere')}',
                 _ => r.c.label,
               },
-              trailing: switch (r.state) { 'ext' => T.s('openInApp'), 'bad' => '—', _ => r.ms == null ? '' : '${r.ms} ms' },
+              trailing: switch (r.state) {
+                'testing' => '…',
+                'ext' => T.s('openInApp'),
+                'bad' => '—',
+                _ => r.ms == null ? '' : '${r.ms} ms',
+              },
               engine: r.c.engineLabel,
               dot: X.status(r.state),
               selected: s.settings.selected == r.c.id,
@@ -165,15 +210,16 @@ String _ago(DateTime t) {
 }
 
 class _ConfigRow extends StatelessWidget {
-  const _ConfigRow(
-      {required this.title,
-      required this.meta,
-      required this.trailing,
-      required this.engine,
-      required this.dot,
-      required this.selected,
-      required this.onTap,
-      this.onLongPress});
+  const _ConfigRow({
+    required this.title,
+    required this.meta,
+    required this.trailing,
+    required this.engine,
+    required this.dot,
+    required this.selected,
+    required this.onTap,
+    this.onLongPress,
+  });
   final String title, meta, trailing, engine;
   final Color dot;
   final bool selected;
@@ -195,22 +241,30 @@ class _ConfigRow extends StatelessWidget {
             color: selected ? X.accent.withValues(alpha: 0.14) : null,
             border: selected ? X.accent.withValues(alpha: 0.45) : null,
             onTap: onTap,
-            child: Row(children: [
-              Dot(dot, size: 10),
-              const SizedBox(width: Space.m),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(title, style: Type.bodyStrong, overflow: TextOverflow.ellipsis),
-                  const SizedBox(height: 3),
-                  Text(meta, style: Type.caption, overflow: TextOverflow.ellipsis),
-                ]),
-              ),
-              const SizedBox(width: Space.s),
-              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Text(trailing, style: Type.number.copyWith(color: dot == X.bad ? X.bad : (dot == X.blue ? X.blue : X.text))),
-                if (engine.isNotEmpty) ...[const SizedBox(height: 3), Text(engine, style: Type.caption)],
-              ]),
-            ]),
+            child: Row(
+              children: [
+                Dot(dot, size: 10),
+                const SizedBox(width: Space.m),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: Type.bodyStrong, overflow: TextOverflow.ellipsis),
+                      const SizedBox(height: 3),
+                      Text(meta, style: Type.caption, overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: Space.s),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(trailing, style: Type.number.copyWith(color: dot == X.bad ? X.bad : (dot == X.blue ? X.blue : X.text))),
+                    if (engine.isNotEmpty) ...[const SizedBox(height: 3), Text(engine, style: Type.caption)],
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -235,43 +289,213 @@ Future<void> _handoff(BuildContext context, Config c) async {
   await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], title: (f['Name'] ?? f['name'] ?? c.name) as String));
 }
 
+/// A config's sheet: speed test, star, rename, its own tweaks, hide, and its link as a QR code.
 void _details(BuildContext context, Config c) {
+  final s = AppScope.of(context);
   showXSheet<void>(
     context,
     title: c.name,
-    builder: (ctx, _) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Text('${c.label} · ${c.engineLabel}', style: Type.secondary),
-      if (c.link.isNotEmpty) ...[
-        const SizedBox(height: Space.l),
-        Center(
-          child: Container(
-            padding: const EdgeInsets.all(Space.s),
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(Radii.m)),
-            child: QrImageView(data: c.link, size: 220),
+    builder: (ctx, setState) {
+      final sp = s.speed[c.id];
+      final m = s.sub?.meta[c.id];
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('${c.label} · ${c.engineLabel}${c.name != c.serverName ? ' · ${c.serverName}' : ''}', style: Type.secondary),
+          const SizedBox(height: Space.m),
+          if (!c.handoff)
+            Glass(
+              padding: const EdgeInsets.all(Space.m),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      sp == null
+                          ? T.s('speedHint')
+                          : sp['state'] == 'testing'
+                          ? T.s('speedTesting')
+                          : _speedText(sp),
+                      style: sp == null ? Type.secondary : Type.body,
+                    ),
+                  ),
+                  const SizedBox(width: Space.s),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(minimumSize: const Size(0, 40)),
+                    onPressed: sp?['state'] == 'testing'
+                        ? null
+                        : () async {
+                            final f = s.speedTest(c.id);
+                            setState(() {});
+                            await f;
+                            if (ctx.mounted) setState(() {});
+                          },
+                    icon: const Icon(Icons.speed_rounded, size: 18),
+                    label: Text(T.s('speedTest')),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: Space.s),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(c.star ? Icons.star_rounded : Icons.star_outline_rounded, color: c.star ? X.warn : null),
+            title: Text(c.star ? T.s('unstar') : T.s('star')),
+            onTap: () async {
+              await s.markConfig(c.id, (m) => m.star = !c.star);
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.edit_rounded),
+            title: Text(T.s('rename')),
+            onTap: () async {
+              Navigator.pop(ctx);
+              final ctl = TextEditingController(text: c.name);
+              final v = await showDialog<String>(
+                context: context,
+                builder: (d) => AlertDialog(
+                  title: Text(T.s('rename')),
+                  content: TextField(controller: ctl, autofocus: true),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(d, ''), child: Text(T.s('reset'))),
+                    FilledButton(onPressed: () => Navigator.pop(d, ctl.text.trim()), child: const Text('OK')),
+                  ],
+                ),
+              );
+              if (v != null) await s.markConfig(c.id, (m) => m.rename = v == c.serverName ? '' : v);
+            },
+          ),
+          if (!c.handoff)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.tune_rounded),
+              title: Text(T.s('tweaksThis')),
+              subtitle: Text(tweaksSummary(m?.tweaks ?? {})),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final t = await editTweaks(context, title: c.name, current: m?.tweaks ?? {}, perConfig: true);
+                if (t != null) await s.setConfigTweaks(c.id, t);
+              },
+            ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(c.hidden ? Icons.visibility_rounded : Icons.visibility_off_rounded),
+            title: Text(c.hidden ? T.s('unhide') : T.s('hide')),
+            subtitle: c.hidden ? null : Text(T.s('hideHint')),
+            onTap: () async {
+              await s.markConfig(c.id, (m) => m.hidden = !c.hidden);
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+          ),
+          if (c.link.isNotEmpty) ...[
+            const SizedBox(height: Space.m),
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(Space.s),
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(Radii.m)),
+                child: QrImageView(data: c.link, size: 200),
+              ),
+            ),
+            const SizedBox(height: Space.m),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: c.link));
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    },
+                    icon: const Icon(Icons.copy_rounded),
+                    label: Text(T.s('copy')),
+                  ),
+                ),
+                const SizedBox(width: Space.s),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => SharePlus.instance.share(ShareParams(text: c.link)),
+                    icon: const Icon(Icons.share_rounded),
+                    label: Text(T.s('share')),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      );
+    },
+  );
+}
+
+String _speedText(Map<String, dynamic> r) {
+  final st = r['state'] as String? ?? '';
+  if (st == 'blocked') return T.s('speedBlocked');
+  final warm = (r['warmMs'] as num?)?.toInt() ?? -1;
+  final down = (r['downMbps'] as num?)?.toDouble() ?? 0;
+  return [if (warm > 0) '$warm ms', if (down > 0) '${down.toStringAsFixed(1)} Mbps', if (st == 'throttled') T.s('throttled')].join(' · ');
+}
+
+/// The Auto pool: which configs Auto may use, in priority order (the first is the fallback).
+Future<void> _editPool(BuildContext context) async {
+  final s = AppScope.of(context);
+  final sub = s.sub;
+  if (sub == null) return;
+  final runnable = sub.allConfigs.where((c) => !c.handoff).toList();
+  final ids = sub.pool.isEmpty
+      ? [
+          for (final c in runnable)
+            if (!c.dnstt) c.id,
+        ]
+      : [...sub.pool.where((id) => runnable.any((c) => c.id == id))];
+  final rest = runnable.where((c) => !ids.contains(c.id)).map((c) => c.id).toList();
+  final order = [...ids, ...rest];
+  final on = {...ids};
+  final names = {for (final c in runnable) c.id: c.name};
+  final saved = await showXSheet<bool>(
+    context,
+    title: T.s('autoPool'),
+    padded: false,
+    builder: (ctx, setState) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Space.l, 0, Space.l, Space.s),
+          child: Text(T.s('autoPoolHint'), style: Type.secondary),
+        ),
+        ReorderableListView(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          buildDefaultDragHandles: false,
+          onReorderItem: (a, b) => setState(() {
+            final id = order.removeAt(a);
+            order.insert(b, id);
+          }),
+          children: [
+            for (var i = 0; i < order.length; i++)
+              CheckboxListTile(
+                key: ValueKey(order[i]),
+                value: on.contains(order[i]),
+                onChanged: (v) => setState(() => v == true ? on.add(order[i]) : on.remove(order[i])),
+                title: Text(names[order[i]] ?? order[i]),
+                subtitle: i == order.indexWhere(on.contains) ? Text(T.s('poolFirst')) : null,
+                secondary: ReorderableDragStartListener(index: i, child: const Icon(Icons.drag_indicator_rounded)),
+              ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.all(Space.l),
+          child: Row(
+            children: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(T.s('poolAll'))),
+              const Spacer(),
+              FilledButton(onPressed: on.isEmpty ? null : () => Navigator.pop(ctx, true), child: Text(T.s('save'))),
+            ],
           ),
         ),
-        const SizedBox(height: Space.m),
-        Row(children: [
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: c.link));
-                if (ctx.mounted) Navigator.pop(ctx);
-              },
-              icon: const Icon(Icons.copy_rounded),
-              label: Text(T.s('copy')),
-            ),
-          ),
-          const SizedBox(width: Space.s),
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: () => SharePlus.instance.share(ShareParams(text: c.link)),
-              icon: const Icon(Icons.share_rounded),
-              label: Text(T.s('share')),
-            ),
-          ),
-        ]),
       ],
-    ]),
+    ),
   );
+  if (saved == null) return;
+  await s.setPool(saved ? order.where(on.contains).toList() : []);
 }

@@ -45,12 +45,12 @@ class XtuneApp extends StatelessWidget {
         listenable: state,
         builder: (context, _) {
           T.lang = state.settings.lang;
+          X.p = Palette.of(state.settings.theme, state.settings.accent, WidgetsBinding.instance.platformDispatcher.platformBrightness);
           return MaterialApp(
             title: 'xtune',
             debugShowCheckedModeBanner: false,
             theme: appTheme(),
-            builder: (context, child) =>
-                Directionality(textDirection: T.rtl ? TextDirection.rtl : TextDirection.ltr, child: child!),
+            builder: (context, child) => Directionality(textDirection: T.rtl ? TextDirection.rtl : TextDirection.ltr, child: child!),
             home: const Shell(),
           );
         },
@@ -97,6 +97,9 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   }
 
   @override
+  void didChangePlatformBrightness() => AppScope.of(context).themeChanged(); // "system" theme follows it
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
     if (s == AppLifecycleState.detached && !Platform.isAndroid) {
       final core = CoreClient.instance;
@@ -116,67 +119,69 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
       TabItem(Icons.dns_outlined, T.s('manage')),
       TabItem(Icons.tune_rounded, T.s('settings')),
     ];
-    final pages = [
-      HomeScreen(onOpenConfigs: () => go(1)),
-      const ConfigsScreen(),
-      const CheckScreen(),
-      const ManageScreen(),
-      const SettingsScreen(),
-    ];
+    final pages = [HomeScreen(onOpenConfigs: () => go(1)), const ConfigsScreen(), const CheckScreen(), const ManageScreen(), const SettingsScreen()];
     final body = IndexedStack(index: index, children: pages);
     if (wide) {
       return Scaffold(
         backgroundColor: Colors.transparent,
         body: Backdrop(
           child: SafeArea(
-            child: Row(children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: SizedBox(
-                  width: 92,
-                  child: Glass(
-                    radius: 28,
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-                    color: X.glassStrong,
-                    child: Column(children: [
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: Space.l, top: Space.xs),
-                        child: Text('xtune', style: Type.wordmark.copyWith(fontSize: 18)),
-                      ),
-                      for (var i = 0; i < tabs.length; i++)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(20),
-                            onTap: () => go(i),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                color: i == index ? Colors.white.withValues(alpha: 0.14) : Colors.transparent,
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Column(children: [
-                                Icon(tabs[i].icon, color: i == index ? X.accent : X.muted),
-                                const SizedBox(height: 4),
-                                Text(tabs[i].label,
-                                    style: Type.tab.copyWith(color: i == index ? X.accent : X.muted),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis),
-                              ]),
-                            ),
+            child: Row(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: 92,
+                    child: Glass(
+                      radius: 28,
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+                      color: X.glassStrong,
+                      child: Column(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: Space.l, top: Space.xs),
+                            child: Text('xtune', style: Type.wordmark.copyWith(fontSize: 18)),
                           ),
-                        ),
-                    ]),
+                          for (var i = 0; i < tabs.length; i++)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: () => go(i),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: i == index ? Colors.white.withValues(alpha: 0.14) : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      Icon(tabs[i].icon, color: i == index ? X.accent : X.muted),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        tabs[i].label,
+                                        style: Type.tab.copyWith(color: i == index ? X.accent : X.muted),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ),
-              Expanded(
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 760), child: body),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 760), child: body),
+                  ),
                 ),
-              ),
-            ]),
+              ],
+            ),
           ),
         ),
       );
@@ -185,7 +190,10 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
       backgroundColor: Colors.transparent,
       extendBody: true,
       body: Backdrop(child: SafeArea(bottom: false, child: body)),
-      bottomNavigationBar: SafeArea(top: false, child: FloatingTabBar(items: tabs, index: index, onTap: go)),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: FloatingTabBar(items: tabs, index: index, onTap: go),
+      ),
     );
   }
 }

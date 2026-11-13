@@ -33,6 +33,18 @@ Future<void> settle(WidgetTester tester, [int ms = 700]) async {
   }
 }
 
+/// Scrolls [f] into view and clear of the floating tab bar, so a tap lands on it.
+Future<void> reveal(WidgetTester tester, Finder f) async {
+  await tester.ensureVisible(f.first);
+  await settle(tester, 300);
+  final y = tester.getCenter(f.first).dy;
+  final h = tester.view.physicalSize.height / tester.view.devicePixelRatio;
+  if (y > h - 180) {
+    await tester.drag(f.first, Offset(0, -(y - h / 2)));
+    await settle(tester, 500);
+  }
+}
+
 Future<void> waitFor(WidgetTester tester, Finder f, {int seconds = 30}) async {
   for (var i = 0; i < seconds * 5; i++) {
     await tester.pump(const Duration(milliseconds: 200));
@@ -113,6 +125,66 @@ void main() {
     await tester.tap(find.text('Manage').first);
     await settle(tester);
     await shot(tester, '06-manage-empty');
+
+    // 1.1: a single config's speed test, from its sheet
+    await tester.tap(find.text('Configs').first);
+    await settle(tester);
+    await tester.longPress(find.text('Hysteria2').first);
+    await settle(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Test'));
+    await waitFor(tester, find.text('testing…'), seconds: 5);
+    for (var i = 0; i < 200 && find.text('testing…').evaluate().isNotEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    expect(find.text('testing…'), findsNothing);
+    expect(find.text('No answer: blocked here'), findsNothing); // Hysteria2 here is a working VLESS server
+    await shot(tester, '07-config-sheet');
+    await tester.tapAt(const Offset(10, 10)); // close the sheet
+    await settle(tester);
+
+    // routing rules from a preset
+    await tester.tap(find.text('Settings').first);
+    await settle(tester);
+    await reveal(tester, find.text('Routing rules'));
+    await tester.tap(find.text('Routing rules'));
+    await settle(tester);
+    await tester.tap(find.byTooltip('Presets'));
+    await settle(tester);
+    await tester.tap(find.text('Iran: domestic sites direct'));
+    await settle(tester, 1500);
+    expect(find.text('category-ir'), findsOneWidget);
+    await shot(tester, '08-rules');
+    await tester.tap(find.byTooltip('Back'));
+    await settle(tester);
+
+    // the usage page and the log
+    await reveal(tester, find.text('Usage'));
+    await tester.tap(find.text('Usage').first);
+    await settle(tester, 1200);
+    expect(find.text('By config'), findsOneWidget);
+    await shot(tester, '09-usage');
+    await tester.tap(find.byTooltip('Back'));
+    await settle(tester);
+    await reveal(tester, find.text('Connection log'));
+    await tester.tap(find.text('Connection log'));
+    await settle(tester, 1500);
+    expect(find.text('Nothing logged yet: connect first'), findsNothing);
+    await tester.tap(find.byTooltip('Back'));
+    await settle(tester);
+
+    // the light theme
+    await reveal(tester, find.text('Light'));
+    await tester.tap(find.text('Light'));
+    await settle(tester);
+    await shot(tester, '10-settings-light');
+    await tester.tap(find.text('Home').first);
+    await settle(tester, 1000);
+    await shot(tester, '11-home-light');
+    await tester.tap(find.text('Settings').first);
+    await settle(tester);
+    await reveal(tester, find.text('Dark'));
+    await tester.tap(find.text('Dark'));
+    await settle(tester);
 
     await tester.tap(find.text('Home').first);
     await settle(tester);

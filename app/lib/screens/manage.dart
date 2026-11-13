@@ -48,26 +48,31 @@ class _ManageScreenState extends State<ManageScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) => load(s));
     }
     if (srv == null) {
-      return XPage(title: T.s('manage'), children: [
-        const SizedBox(height: Space.xxl),
-        Glass(
-          padding: const EdgeInsets.all(Space.xxl),
-          child: Column(children: [
-            const Icon(Icons.dns_outlined, size: 48, color: X.accent),
-            const SizedBox(height: Space.m),
-            Text(T.s('noServer'), style: Type.title),
-            const SizedBox(height: Space.s),
-            Text(T.s('noServerHint'), textAlign: TextAlign.center, style: Type.secondary),
-            const SizedBox(height: Space.xl),
-            FilledButton.icon(
-              style: FilledButton.styleFrom(minimumSize: const Size(200, 52)),
-              onPressed: () => addServerDialog(context),
-              icon: const Icon(Icons.add_rounded),
-              label: Text(T.s('addServer')),
+      return XPage(
+        title: T.s('manage'),
+        children: [
+          const SizedBox(height: Space.xxl),
+          Glass(
+            padding: const EdgeInsets.all(Space.xxl),
+            child: Column(
+              children: [
+                Icon(Icons.dns_outlined, size: 48, color: X.accent),
+                const SizedBox(height: Space.m),
+                Text(T.s('noServer'), style: Type.title),
+                const SizedBox(height: Space.s),
+                Text(T.s('noServerHint'), textAlign: TextAlign.center, style: Type.secondary),
+                const SizedBox(height: Space.xl),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(minimumSize: const Size(200, 52)),
+                  onPressed: () => addServerDialog(context),
+                  icon: const Icon(Icons.add_rounded),
+                  label: Text(T.s('addServer')),
+                ),
+              ],
             ),
-          ]),
-        ),
-      ]);
+          ),
+        ],
+      );
     }
     final o = overview;
     return XPage(
@@ -79,23 +84,30 @@ class _ManageScreenState extends State<ManageScreen> {
           radius: Radii.card,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           onTap: () => _pickServer(context, s),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            if ((o?['country'] as String?)?.isNotEmpty == true) ...[
-              Badge2((o!['country'] as String).toUpperCase(), X.accent),
-              const SizedBox(width: Space.s),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if ((o?['country'] as String?)?.isNotEmpty == true) ...[
+                Badge2((o!['country'] as String).toUpperCase(), X.accent),
+                const SizedBox(width: Space.s),
+              ],
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(srv.name.isNotEmpty ? srv.name : srv.host, overflow: TextOverflow.ellipsis, style: Type.bodyStrong),
+              ),
+              const SizedBox(width: 6),
+              const Icon(Icons.expand_more_rounded, size: 18),
             ],
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 180),
-              child: Text(srv.name.isNotEmpty ? srv.name : srv.host, overflow: TextOverflow.ellipsis, style: Type.bodyStrong),
-            ),
-            const SizedBox(width: 6),
-            const Icon(Icons.expand_more_rounded, size: 18),
-          ]),
+          ),
         ),
       ),
       actions: [RoundIconButton(icon: Icons.refresh_rounded, tooltip: T.s('refresh'), onPressed: loading ? null : () => load(s))],
       children: [
-        if (loading && o == null) const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())),
+        if (loading && o == null)
+          const Padding(
+            padding: EdgeInsets.all(40),
+            child: Center(child: CircularProgressIndicator()),
+          ),
         if (error != null) Notice(error!),
         if (o != null) ..._dashboard(context, s, srv, o),
       ],
@@ -108,57 +120,81 @@ class _ManageScreenState extends State<ManageScreen> {
     final blockedSomewhere = <String, List<String>>{};
     for (final n in networks) {
       for (final id in (n['blocked'] as List? ?? [])) {
-        blockedSomewhere.putIfAbsent(id as String, () => []).add((n['name'] as String?)?.isNotEmpty == true ? n['name'] as String : n['asn'] as String);
+        blockedSomewhere
+            .putIfAbsent(id as String, () => [])
+            .add((n['name'] as String?)?.isNotEmpty == true ? n['name'] as String : n['asn'] as String);
       }
     }
     return [
-      Row(children: [
-        const Dot(X.accent),
-        const SizedBox(width: Space.s),
-        Expanded(
-          child: Text('${T.s('healthy')} · ${o['domain']?.toString().isNotEmpty == true ? o['domain'] : o['host']} · xtune ${o['version']}',
-              style: Type.secondary, overflow: TextOverflow.ellipsis),
-        ),
-      ]),
+      Row(
+        children: [
+          Dot(X.accent),
+          const SizedBox(width: Space.s),
+          Expanded(
+            child: Text(
+              '${T.s('healthy')} · ${o['domain']?.toString().isNotEmpty == true ? o['domain'] : o['host']} · xtune ${o['version']}',
+              style: Type.secondary,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
       const SizedBox(height: Space.m),
-      Row(children: [
-        Expanded(child: _Tile(T.s('online'), '${o['online']}', T.s('ofUsers', {'n': o['users']}))),
-        const SizedBox(width: Space.s),
-        Expanded(child: _Tile(T.s('trafficToday'), fmtBytes((o['todayBytes'] as num?) ?? 0), T.s('thisMonth', {'v': fmtBytes((o['monthBytes'] as num?) ?? 0)}))),
-      ]),
+      Row(
+        children: [
+          Expanded(child: _Tile(T.s('online'), '${o['online']}', T.s('ofUsers', {'n': o['users']}))),
+          const SizedBox(width: Space.s),
+          Expanded(
+            child: _Tile(
+              T.s('trafficToday'),
+              fmtBytes((o['todayBytes'] as num?) ?? 0),
+              T.s('thisMonth', {'v': fmtBytes((o['monthBytes'] as num?) ?? 0)}),
+            ),
+          ),
+        ],
+      ),
       const SizedBox(height: Space.m),
       Glass(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(child: Text(T.s('configs'), style: Type.bodyStrong)),
-            Text(T.s('configsLive', {'n': entries.length}), style: Type.caption),
-          ]),
-          const SizedBox(height: Space.s),
-          for (final e in entries)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5),
-              child: Row(children: [
-                Dot(blockedSomewhere.containsKey(e['id']) ? X.warn : X.accent),
-                const SizedBox(width: 10),
-                Expanded(child: Text('${e['id']}', style: Type.body.copyWith(fontSize: 14))),
-                Text(
-                  blockedSomewhere.containsKey(e['id']) ? 'blocked on ${blockedSomewhere[e['id']]!.join(', ')}' : '${e['kind']} · ${e['port']}',
-                  style: Type.caption.copyWith(color: blockedSomewhere.containsKey(e['id']) ? X.warn : X.muted),
-                ),
-              ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: Text(T.s('configs'), style: Type.bodyStrong)),
+                Text(T.s('configsLive', {'n': entries.length}), style: Type.caption),
+              ],
             ),
-        ]),
+            const SizedBox(height: Space.s),
+            for (final e in entries)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  children: [
+                    Dot(blockedSomewhere.containsKey(e['id']) ? X.warn : X.accent),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text('${e['id']}', style: Type.body.copyWith(fontSize: 14))),
+                    Text(
+                      blockedSomewhere.containsKey(e['id']) ? 'blocked on ${blockedSomewhere[e['id']]!.join(', ')}' : '${e['kind']} · ${e['port']}',
+                      style: Type.caption.copyWith(color: blockedSomewhere.containsKey(e['id']) ? X.warn : X.muted),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
       if (networks.isNotEmpty) ...[
         SectionLabel(T.s('networks')),
-        Group(children: [
-          for (final n in networks)
-            ListTile(
-              title: Text((n['name'] as String?)?.isNotEmpty == true ? n['name'] as String : 'AS${n['asn']}'),
-              subtitle: Text('best: ${(n['best'] as List? ?? []).take(3).join(', ')}'),
-              trailing: Text('AS${(n['asn'] as String).replaceFirst('AS', '')}', style: Type.caption),
-            ),
-        ]),
+        Group(
+          children: [
+            for (final n in networks)
+              ListTile(
+                title: Text((n['name'] as String?)?.isNotEmpty == true ? n['name'] as String : 'AS${n['asn']}'),
+                subtitle: Text('best: ${(n['best'] as List? ?? []).take(3).join(', ')}'),
+                trailing: Text('AS${(n['asn'] as String).replaceFirst('AS', '')}', style: Type.caption),
+              ),
+          ],
+        ),
       ],
       const SizedBox(height: Space.m),
       GridView.count(
@@ -170,8 +206,11 @@ class _ManageScreenState extends State<ManageScreen> {
         childAspectRatio: 0.95,
         children: [
           _Action(Icons.group_outlined, T.s('users'), () => _push(context, UsersPage(server: srv))),
-          _Action(Icons.monitor_heart_outlined, T.s('doctor'),
-              () => _push(context, ConsolePage(server: srv, title: T.s('doctor'), initial: const ['doctor'], runNow: true))),
+          _Action(
+            Icons.monitor_heart_outlined,
+            T.s('doctor'),
+            () => _push(context, ConsolePage(server: srv, title: T.s('doctor'), initial: const ['doctor'], runNow: true)),
+          ),
           _Action(Icons.notes_rounded, T.s('logs'), () => _push(context, LogsPage(server: srv))),
           _Action(Icons.terminal_rounded, T.s('console'), () => _push(context, ConsolePage(server: srv, title: T.s('console')))),
         ],
@@ -186,34 +225,40 @@ class _ManageScreenState extends State<ManageScreen> {
       context,
       title: T.s('servers'),
       padded: false,
-      builder: (ctx, _) => Column(mainAxisSize: MainAxisSize.min, children: [
-        for (final x in s.servers)
+      builder: (ctx, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final x in s.servers)
+            ListTile(
+              leading: Icon(
+                x.id == s.server?.id ? Icons.radio_button_checked : Icons.radio_button_off,
+                color: x.id == s.server?.id ? X.accent : X.muted,
+              ),
+              title: Text(x.name.isNotEmpty ? x.name : x.host),
+              subtitle: Text('${x.user}@${x.host}:${x.port}'),
+              onTap: () {
+                Navigator.pop(ctx);
+                s.selectServer(x);
+              },
+              trailing: IconButton(
+                tooltip: T.s('remove'),
+                icon: const Icon(Icons.delete_outline_rounded),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  s.removeServer(x);
+                },
+              ),
+            ),
           ListTile(
-            leading: Icon(x.id == s.server?.id ? Icons.radio_button_checked : Icons.radio_button_off, color: x.id == s.server?.id ? X.accent : X.muted),
-            title: Text(x.name.isNotEmpty ? x.name : x.host),
-            subtitle: Text('${x.user}@${x.host}:${x.port}'),
+            leading: const Icon(Icons.add_rounded),
+            title: Text(T.s('addServer')),
             onTap: () {
               Navigator.pop(ctx);
-              s.selectServer(x);
+              addServerDialog(context);
             },
-            trailing: IconButton(
-              tooltip: T.s('remove'),
-              icon: const Icon(Icons.delete_outline_rounded),
-              onPressed: () {
-                Navigator.pop(ctx);
-                s.removeServer(x);
-              },
-            ),
           ),
-        ListTile(
-          leading: const Icon(Icons.add_rounded),
-          title: Text(T.s('addServer')),
-          onTap: () {
-            Navigator.pop(ctx);
-            addServerDialog(context);
-          },
-        ),
-      ]),
+        ],
+      ),
     );
   }
 }
@@ -223,14 +268,17 @@ class _Tile extends StatelessWidget {
   final String label, value, sub;
   @override
   Widget build(BuildContext context) => Glass(
-        padding: const EdgeInsets.all(14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: Type.caption),
-          const SizedBox(height: Space.xs),
-          Text(value, style: Type.bigNumber),
-          Text(sub, style: Type.caption),
-        ]),
-      );
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Type.caption),
+        const SizedBox(height: Space.xs),
+        Text(value, style: Type.bigNumber),
+        Text(sub, style: Type.caption),
+      ],
+    ),
+  );
 }
 
 class _Action extends StatelessWidget {
@@ -240,15 +288,23 @@ class _Action extends StatelessWidget {
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => Glass(
-        radius: Radii.l,
-        padding: const EdgeInsets.symmetric(vertical: Space.m, horizontal: Space.xs),
-        onTap: onTap,
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(icon, size: 22),
-          const SizedBox(height: 6),
-          Text(label, style: Type.caption.copyWith(color: X.text), maxLines: 1, overflow: TextOverflow.ellipsis),
-        ]),
-      );
+    radius: Radii.l,
+    padding: const EdgeInsets.symmetric(vertical: Space.m, horizontal: Space.xs),
+    onTap: onTap,
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(icon, size: 22),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          style: Type.caption.copyWith(color: X.text),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    ),
+  );
 }
 
 Future<void> addServerDialog(BuildContext context) async {
@@ -260,68 +316,102 @@ Future<void> addServerDialog(BuildContext context) async {
   await showXSheet<void>(
     context,
     title: T.s('addServer'),
-    builder: (ctx, setState) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                TextField(controller: name, decoration: InputDecoration(labelText: T.s('name'), hintText: 'Frankfurt')),
-                const SizedBox(height: 10),
-                Row(children: [
-                  Expanded(
-                      flex: 3,
-                      child: TextField(controller: host, textDirection: TextDirection.ltr, keyboardType: TextInputType.url, decoration: InputDecoration(labelText: T.s('host')))),
-                  const SizedBox(width: 10),
-                  Expanded(child: TextField(controller: port, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: T.s('port')))),
-                ]),
-                const SizedBox(height: 10),
-                TextField(controller: user, textDirection: TextDirection.ltr, decoration: InputDecoration(labelText: T.s('user'))),
-                const SizedBox(height: 10),
-                TextField(controller: pass, obscureText: true, decoration: InputDecoration(labelText: T.s('password'))),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: key,
-                  minLines: 2,
-                  maxLines: 4,
-                  textDirection: TextDirection.ltr,
-                  style: Type.mono,
-                  decoration: InputDecoration(labelText: T.s('privateKey'), hintText: '-----BEGIN OPENSSH PRIVATE KEY-----'),
-                ),
-                if (err != null) ...[const SizedBox(height: 10), Text(err!, style: Type.secondary.copyWith(color: X.bad))],
-                const SizedBox(height: 16),
-                Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                  TextButton(onPressed: () => Navigator.pop(ctx), child: Text(T.s('cancel'))),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    style: FilledButton.styleFrom(minimumSize: const Size(96, 48), backgroundColor: X.accent, foregroundColor: X.bg),
-                    onPressed: busy
-                        ? null
-                        : () async {
-                            setState(() {
-                              busy = true;
-                              err = null;
-                            });
-                            try {
-                              final e = ServerEntry(
-                                  id: AppState.newId(),
-                                  name: name.text.trim(),
-                                  host: host.text.trim(),
-                                  port: int.tryParse(port.text.trim()) ?? 22,
-                                  user: user.text.trim().isEmpty ? 'root' : user.text.trim());
-                              final r = await s.addServer(e, password: pass.text, key: key.text.trim());
-                              if (ctx.mounted) Navigator.pop(ctx);
-                              if ((r['version'] as String?)?.isEmpty ?? true) {
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('xtune is not installed on this server: deploy it from xtune on a computer first')));
-                                }
-                              }
-                            } catch (e) {
-                              setState(() => err = e.toString());
-                            } finally {
-                              if (ctx.mounted) setState(() => busy = false);
-                            }
-                          },
-                    child: busy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : Text(T.s('add')),
-                  ),
-                ]),
-    ]),
+    builder: (ctx, setState) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          controller: name,
+          decoration: InputDecoration(labelText: T.s('name'), hintText: 'Frankfurt'),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: TextField(
+                controller: host,
+                textDirection: TextDirection.ltr,
+                keyboardType: TextInputType.url,
+                decoration: InputDecoration(labelText: T.s('host')),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: port,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(labelText: T.s('port')),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: user,
+          textDirection: TextDirection.ltr,
+          decoration: InputDecoration(labelText: T.s('user')),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: pass,
+          obscureText: true,
+          decoration: InputDecoration(labelText: T.s('password')),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: key,
+          minLines: 2,
+          maxLines: 4,
+          textDirection: TextDirection.ltr,
+          style: Type.mono,
+          decoration: InputDecoration(labelText: T.s('privateKey'), hintText: '-----BEGIN OPENSSH PRIVATE KEY-----'),
+        ),
+        if (err != null) ...[const SizedBox(height: 10), Text(err!, style: Type.secondary.copyWith(color: X.bad))],
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(T.s('cancel'))),
+            const SizedBox(width: 8),
+            FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size(96, 48), backgroundColor: X.accent, foregroundColor: X.bg),
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setState(() {
+                        busy = true;
+                        err = null;
+                      });
+                      try {
+                        final e = ServerEntry(
+                          id: AppState.newId(),
+                          name: name.text.trim(),
+                          host: host.text.trim(),
+                          port: int.tryParse(port.text.trim()) ?? 22,
+                          user: user.text.trim().isEmpty ? 'root' : user.text.trim(),
+                        );
+                        final r = await s.addServer(e, password: pass.text, key: key.text.trim());
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        if ((r['version'] as String?)?.isEmpty ?? true) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('xtune is not installed on this server: deploy it from xtune on a computer first')),
+                            );
+                          }
+                        }
+                      } catch (e) {
+                        setState(() => err = e.toString());
+                      } finally {
+                        if (ctx.mounted) setState(() => busy = false);
+                      }
+                    },
+              child: busy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : Text(T.s('add')),
+            ),
+          ],
+        ),
+      ],
+    ),
   );
 }
 
@@ -401,9 +491,17 @@ class _UsersPageState extends State<UsersPage> {
         const SizedBox(height: Space.m),
         Pills(labels: const ['All', 'Online', 'Expiring', 'Disabled'], selected: filter, onSelect: (i) => setState(() => filter = i)),
         const SizedBox(height: Space.m),
-        if (loading && users.isEmpty) const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())),
+        if (loading && users.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(40),
+            child: Center(child: CircularProgressIndicator()),
+          ),
         if (error != null) Notice(error!),
-        for (final u in shown) Padding(padding: const EdgeInsets.only(bottom: Space.s), child: _userCard(context, u)),
+        for (final u in shown)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s),
+            child: _userCard(context, u),
+          ),
       ],
     );
   }
@@ -421,23 +519,34 @@ class _UsersPageState extends State<UsersPage> {
       radius: 18,
       padding: const EdgeInsets.all(14),
       onTap: () => _userSheet(context, u),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Container(width: 8, height: 8, decoration: BoxDecoration(color: online > 0 ? X.accent : X.track, shape: BoxShape.circle)),
-          const SizedBox(width: 10),
-          Expanded(child: Text(u['name'] as String, style: Type.bodyStrong)),
-          Text(status != 'active' ? status : (days == null ? '' : '$days days left'),
-              style: Type.caption.copyWith(color: status != 'active' ? X.warn : X.muted)),
-        ]),
-        if (quota > 0) ...[const SizedBox(height: 8), Bar(fraction: frac.toDouble(), color: color, height: 6)],
-        const SizedBox(height: 8),
-        Row(children: [
-          Expanded(
-              child: Text(quota > 0 ? '${fmtBytes(used)} of ${fmtBytes(quota)}' : '${fmtBytes(used)} used',
-                  style: Type.caption)),
-          Text('$online online${(u['devices'] as num? ?? 0) > 0 ? ' of ${u['devices']}' : ''}', style: Type.caption),
-        ]),
-      ]),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(color: online > 0 ? X.accent : X.track, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: Text(u['name'] as String, style: Type.bodyStrong)),
+              Text(
+                status != 'active' ? status : (days == null ? '' : '$days days left'),
+                style: Type.caption.copyWith(color: status != 'active' ? X.warn : X.muted),
+              ),
+            ],
+          ),
+          if (quota > 0) ...[const SizedBox(height: 8), Bar(fraction: frac.toDouble(), color: color, height: 6)],
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(child: Text(quota > 0 ? '${fmtBytes(used)} of ${fmtBytes(quota)}' : '${fmtBytes(used)} used', style: Type.caption)),
+              Text('$online online${(u['devices'] as num? ?? 0) > 0 ? ' of ${u['devices']}' : ''}', style: Type.caption),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -451,21 +560,41 @@ class _UsersPageState extends State<UsersPage> {
         builder: (ctx, setState) => AlertDialog(
           title: Text(T.s('addUser')),
           content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: name, autofocus: true, textDirection: TextDirection.ltr, decoration: InputDecoration(labelText: T.s('name'))),
-              const SizedBox(height: 10),
-              TextField(controller: quota, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: T.s('quotaGb'))),
-              const SizedBox(height: 10),
-              TextField(controller: days, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: T.s('days'))),
-              const SizedBox(height: 10),
-              TextField(controller: devices, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: T.s('devicesLimit'))),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: monthly,
-                onChanged: (v) => setState(() => monthly = v),
-                title: const Text('Reset usage monthly'),
-              ),
-            ]),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  textDirection: TextDirection.ltr,
+                  decoration: InputDecoration(labelText: T.s('name')),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: quota,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: T.s('quotaGb')),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: days,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: T.s('days')),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: devices,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: T.s('devicesLimit')),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: monthly,
+                  onChanged: (v) => setState(() => monthly = v),
+                  title: const Text('Reset usage monthly'),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(T.s('cancel'))),
@@ -491,67 +620,74 @@ class _UsersPageState extends State<UsersPage> {
       context,
       title: name,
       padded: false,
-      builder: (ctx, _) => Column(mainAxisSize: MainAxisSize.min, children: [
-            ListTile(
-              leading: const Icon(Icons.qr_code_2_rounded),
-              title: Text(T.s('links')),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final r = await act('links', name);
-                if (r != null && context.mounted) _showLinks(context, Map<String, dynamic>.from(r as Map));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.update_rounded),
-              title: Text(T.s('renew')),
-              onTap: () {
-                Navigator.pop(ctx);
-                act('renew', name);
-              },
-            ),
-            ListTile(
-              leading: Icon(enabled ? Icons.pause_circle_outline : Icons.play_circle_outline),
-              title: Text(enabled ? T.s('disable') : T.s('enable')),
-              onTap: () {
-                Navigator.pop(ctx);
-                act(enabled ? 'disable' : 'enable', name);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.restart_alt_rounded),
-              title: Text(T.s('resetUsage')),
-              onTap: () {
-                Navigator.pop(ctx);
-                act('reset-usage', name);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.key_rounded),
-              title: Text(T.s('rotate')),
-              onTap: () {
-                Navigator.pop(ctx);
-                act('rotate', name);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline_rounded, color: X.bad),
-              title: Text(T.s('delete'), style: Type.body.copyWith(color: X.bad)),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final ok = await showDialog<bool>(
-                  context: context,
-                  builder: (c) => AlertDialog(
-                    content: Text(T.s('confirmDelete', {'name': name})),
-                    actions: [
-                      TextButton(onPressed: () => Navigator.pop(c, false), child: Text(T.s('cancel'))),
-                      FilledButton(style: FilledButton.styleFrom(backgroundColor: X.bad), onPressed: () => Navigator.pop(c, true), child: Text(T.s('delete'))),
-                    ],
-                  ),
-                );
-                if (ok == true) act('del', name);
-              },
-            ),
-      ]),
+      builder: (ctx, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.qr_code_2_rounded),
+            title: Text(T.s('links')),
+            onTap: () async {
+              Navigator.pop(ctx);
+              final r = await act('links', name);
+              if (r != null && context.mounted) _showLinks(context, Map<String, dynamic>.from(r as Map));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.update_rounded),
+            title: Text(T.s('renew')),
+            onTap: () {
+              Navigator.pop(ctx);
+              act('renew', name);
+            },
+          ),
+          ListTile(
+            leading: Icon(enabled ? Icons.pause_circle_outline : Icons.play_circle_outline),
+            title: Text(enabled ? T.s('disable') : T.s('enable')),
+            onTap: () {
+              Navigator.pop(ctx);
+              act(enabled ? 'disable' : 'enable', name);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.restart_alt_rounded),
+            title: Text(T.s('resetUsage')),
+            onTap: () {
+              Navigator.pop(ctx);
+              act('reset-usage', name);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.key_rounded),
+            title: Text(T.s('rotate')),
+            onTap: () {
+              Navigator.pop(ctx);
+              act('rotate', name);
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.delete_outline_rounded, color: X.bad),
+            title: Text(T.s('delete'), style: Type.body.copyWith(color: X.bad)),
+            onTap: () async {
+              Navigator.pop(ctx);
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (c) => AlertDialog(
+                  content: Text(T.s('confirmDelete', {'name': name})),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(c, false), child: Text(T.s('cancel'))),
+                    FilledButton(
+                      style: FilledButton.styleFrom(backgroundColor: X.bad),
+                      onPressed: () => Navigator.pop(c, true),
+                      child: Text(T.s('delete')),
+                    ),
+                  ],
+                ),
+              );
+              if (ok == true) act('del', name);
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -562,16 +698,25 @@ class _UsersPageState extends State<UsersPage> {
     showXSheet<void>(
       context,
       title: '${r['name']}',
-      builder: (ctx, _) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Text(sub != null ? 'Subscription link: one link for every app and the page' : '${links.length} links',
-                style: Type.secondary),
-            if (main.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Center(child: Container(padding: const EdgeInsets.all(Space.s), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(Radii.m)), child: QrImageView(data: main, size: 220))),
-              const SizedBox(height: 12),
-              SelectableText(main, textDirection: TextDirection.ltr, style: Type.caption),
-              const SizedBox(height: 12),
-              Row(children: [
+      builder: (ctx, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(sub != null ? 'Subscription link: one link for every app and the page' : '${links.length} links', style: Type.secondary),
+          if (main.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(Space.s),
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(Radii.m)),
+                child: QrImageView(data: main, size: 220),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SelectableText(main, textDirection: TextDirection.ltr, style: Type.caption),
+            const SizedBox(height: 12),
+            Row(
+              children: [
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: () => Clipboard.setData(ClipboardData(text: main)),
@@ -587,9 +732,11 @@ class _UsersPageState extends State<UsersPage> {
                     label: Text(T.s('share')),
                   ),
                 ),
-              ]),
-            ],
-      ]),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -638,23 +785,28 @@ class _ConsolePageState extends State<ConsolePage> {
   Widget build(BuildContext context) {
     return XPage.fill(
       title: widget.title,
-      body: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Directionality(
-          textDirection: TextDirection.ltr,
-          child: TextField(
-            controller: ctl,
-            onSubmitted: (_) => run(),
-            style: Type.mono.copyWith(fontSize: 14),
-            decoration: InputDecoration(
-              prefixText: 'xtune ',
-              hintText: 'users list',
-              suffixIcon: IconButton(tooltip: T.s('run'), onPressed: busy ? null : run, icon: const Icon(Icons.play_arrow_rounded)),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: TextField(
+              controller: ctl,
+              onSubmitted: (_) => run(),
+              style: Type.mono.copyWith(fontSize: 14),
+              decoration: InputDecoration(
+                prefixText: 'xtune ',
+                hintText: 'users list',
+                suffixIcon: IconButton(tooltip: T.s('run'), onPressed: busy ? null : run, icon: const Icon(Icons.play_arrow_rounded)),
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: Space.m),
-        Expanded(child: _Output(text: output, busy: busy)),
-      ]),
+          const SizedBox(height: Space.m),
+          Expanded(
+            child: _Output(text: output, busy: busy),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -667,14 +819,17 @@ class _Output extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Glass(
-        padding: const EdgeInsets.all(Space.m),
-        child: busy
-            ? const Center(child: CircularProgressIndicator())
-            : SingleChildScrollView(
-                reverse: tail,
-                child: Directionality(textDirection: TextDirection.ltr, child: SelectableText(text, style: Type.mono)),
-              ),
-      );
+    padding: const EdgeInsets.all(Space.m),
+    child: busy
+        ? const Center(child: CircularProgressIndicator())
+        : SingleChildScrollView(
+            reverse: tail,
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: SelectableText(text, style: Type.mono),
+            ),
+          ),
+  );
 }
 
 class LogsPage extends StatefulWidget {
@@ -712,18 +867,23 @@ class _LogsPageState extends State<LogsPage> {
     return XPage.fill(
       title: T.s('logs'),
       actions: [RoundIconButton(icon: Icons.refresh_rounded, tooltip: T.s('refresh'), onPressed: busy ? null : load)],
-      body: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Pills(
-          labels: const ['xray', 'sub', 'tunnels', 'awg'],
-          selected: units.indexOf(unit),
-          onSelect: (i) {
-            unit = units[i];
-            load();
-          },
-        ),
-        const SizedBox(height: Space.m),
-        Expanded(child: _Output(text: output, busy: busy, tail: true)),
-      ]),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Pills(
+            labels: const ['xray', 'sub', 'tunnels', 'awg'],
+            selected: units.indexOf(unit),
+            onSelect: (i) {
+              unit = units[i];
+              load();
+            },
+          ),
+          const SizedBox(height: Space.m),
+          Expanded(
+            child: _Output(text: output, busy: busy, tail: true),
+          ),
+        ],
+      ),
     );
   }
 }

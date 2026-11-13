@@ -1,32 +1,70 @@
-/// A subscription the user added: its link and the last profile fetched from it.
+/// A subscription the user added (or links they pasted: no URL), the last profile fetched from it,
+/// and what the user did to its configs.
 class Sub {
-  Sub({required this.id, required this.url, required this.profile, required this.fetched});
+  Sub({required this.id, required this.url, required this.profile, required this.fetched, Map<String, ConfigMeta>? meta, List<String>? pool})
+    : meta = meta ?? {},
+      pool = pool ?? [];
   final String id;
-  final String url;
+  final String url; // empty: pasted links, nothing to refresh
   Map<String, dynamic> profile;
   DateTime fetched;
+  final Map<String, ConfigMeta> meta; // by config ID
+  List<String> pool; // Auto's configs in priority order; empty: all
 
+  bool get local => url.isEmpty;
   String get name => (profile['name'] as String?)?.isNotEmpty == true ? profile['name'] as String : 'Subscription';
   String get user => profile['user'] as String? ?? '';
   String? get network => profile['network'] as String?;
-  List<Config> get configs =>
-      ((profile['configs'] as List?) ?? []).map((c) => Config(Map<String, dynamic>.from(c as Map))).toList();
+  List<Config> get allConfigs =>
+      ((profile['configs'] as List?) ?? []).map((c) => Config(Map<String, dynamic>.from(c as Map), meta[c['id']])).toList();
+  List<Config> get configs => allConfigs.where((c) => !c.hidden).toList();
   Usage get usage => Usage(Map<String, dynamic>.from((profile['usage'] as Map?) ?? {}));
+  ConfigMeta metaOf(String id) => meta.putIfAbsent(id, ConfigMeta.new);
 
-  Map<String, dynamic> toJson() => {'id': id, 'url': url, 'profile': profile, 'fetched': fetched.millisecondsSinceEpoch};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'url': url,
+    'profile': profile,
+    'fetched': fetched.millisecondsSinceEpoch,
+    'meta': meta.map((k, v) => MapEntry(k, v.toJson())),
+    'pool': pool,
+  };
   static Sub fromJson(Map<String, dynamic> j) => Sub(
-      id: j['id'] as String,
-      url: j['url'] as String,
-      profile: Map<String, dynamic>.from(j['profile'] as Map),
-      fetched: DateTime.fromMillisecondsSinceEpoch(j['fetched'] as int? ?? 0));
+    id: j['id'] as String,
+    url: j['url'] as String? ?? '',
+    profile: Map<String, dynamic>.from(j['profile'] as Map),
+    fetched: DateTime.fromMillisecondsSinceEpoch(j['fetched'] as int? ?? 0),
+    meta: ((j['meta'] as Map?) ?? {}).map((k, v) => MapEntry(k as String, ConfigMeta.fromJson(Map<String, dynamic>.from(v as Map)))),
+    pool: ((j['pool'] as List?) ?? []).cast<String>(),
+  );
+}
+
+/// The user's marks on a config: starred, hidden, renamed, and its own tweaks.
+class ConfigMeta {
+  bool star = false;
+  bool hidden = false;
+  String rename = '';
+  Map<String, dynamic> tweaks = {};
+
+  bool get empty => !star && !hidden && rename.isEmpty && tweaks.isEmpty;
+  Map<String, dynamic> toJson() => {'star': star, 'hidden': hidden, 'rename': rename, 'tweaks': tweaks};
+  static ConfigMeta fromJson(Map<String, dynamic> j) => ConfigMeta()
+    ..star = j['star'] == true
+    ..hidden = j['hidden'] == true
+    ..rename = j['rename'] as String? ?? ''
+    ..tweaks = Map<String, dynamic>.from((j['tweaks'] as Map?) ?? {});
 }
 
 class Config {
-  Config(this.j);
+  Config(this.j, [this.meta]);
   final Map<String, dynamic> j;
+  final ConfigMeta? meta;
   String get id => j['id'] as String? ?? '';
   String get key => j['key'] as String? ?? '';
-  String get name => j['name'] as String? ?? id;
+  String get serverName => j['name'] as String? ?? id;
+  String get name => meta?.rename.isNotEmpty == true ? meta!.rename : serverName;
+  bool get star => meta?.star ?? false;
+  bool get hidden => meta?.hidden ?? false;
   String get kind => j['kind'] as String? ?? '';
   String get label => (j['label'] as String?)?.isNotEmpty == true ? j['label'] as String : kind;
   String get engine => j['engine'] as String? ?? '';
@@ -44,11 +82,11 @@ class Config {
   }
 
   String get engineLabel => switch (engine) {
-        'xray' => 'Xray',
-        'awg' => 'AmneziaWG',
-        'ssh' => dnstt ? 'dnstt + SSH' : 'SSH',
-        _ => kind == 'mtproto' ? 'Telegram' : (kind == 'ikev2' ? 'System' : 'OpenVPN'),
-      };
+    'xray' => 'Xray',
+    'awg' => 'AmneziaWG',
+    'ssh' => dnstt ? 'dnstt + SSH' : 'SSH',
+    _ => kind == 'mtproto' ? 'Telegram' : (kind == 'ikev2' ? 'System' : 'OpenVPN'),
+  };
 }
 
 class Usage {
@@ -79,14 +117,27 @@ class ServerEntry {
 
   Map<String, dynamic> toJson() => {'id': id, 'name': name, 'host': host, 'port': port, 'user': user, 'hostKey': hostKey};
   static ServerEntry fromJson(Map<String, dynamic> j) => ServerEntry(
-      id: j['id'] as String,
-      name: j['name'] as String? ?? '',
-      host: j['host'] as String? ?? '',
-      port: j['port'] as int? ?? 22,
-      user: j['user'] as String? ?? 'root',
-      hostKey: j['hostKey'] as String? ?? '');
+    id: j['id'] as String,
+    name: j['name'] as String? ?? '',
+    host: j['host'] as String? ?? '',
+    port: j['port'] as int? ?? 22,
+    user: j['user'] as String? ?? 'root',
+    hostKey: j['hostKey'] as String? ?? '',
+  );
 }
 
+/// A routing rule: matching traffic goes direct, through the proxy, or nowhere.
+class RouteRule {
+  RouteRule({required this.match, required this.value, required this.action});
+  String match; // domain | full | keyword | geosite | ip | geoip | port
+  String value;
+  String action; // direct | proxy | block
+  Map<String, dynamic> toJson() => {'match': match, 'value': value, 'action': action};
+  static RouteRule fromJson(Map<String, dynamic> j) =>
+      RouteRule(match: j['match'] as String? ?? 'domain', value: j['value'] as String? ?? '', action: j['action'] as String? ?? 'direct');
+}
+
+/// The app's settings. Stored as JSON; a field missing in an older file reads as its default.
 class Settings {
   String mode = 'vpn'; // vpn (whole device) | proxy
   String? selected; // null: Auto
@@ -95,7 +146,6 @@ class Settings {
   bool blockAds = true;
   bool includeDnstt = false;
   bool shareResults = true;
-  String dns = 'https://1.1.1.1/dns-query';
   String lang = 'en';
   String sort = 'recommended'; // configs page: recommended | latency | name | type
   String perAppMode = 'off'; // Android: off | bypass (the listed apps skip the VPN) | only (only they use it)
@@ -103,48 +153,113 @@ class Settings {
   int socksPort = 10808;
   int httpPort = 10809;
 
+  // appearance
+  String theme = 'system'; // system | dark | black | light
+  String accent = 'green'; // green | blue | purple | orange
+
+  // connection
+  bool autoConnectLaunch = false;
+  bool autoConnectBoot = false; // Android
+  bool autoConnectWifi = false; // Android: on Wi-Fi networks not in trusted
+  List<String> trustedWifi = [];
+  bool smartReconnect = true;
+  bool killSwitch = false; // Linux desktops; Android uses always-on VPN
+  Map<String, dynamic> tweaks = {}; // for every config: fragment, fragLength, fragDelay, fingerprint, mtu, mux
+
+  // routing and DNS
+  String dns = 'https://1.1.1.1/dns-query';
+  String domesticDns = ''; // e.g. udp://217.218.155.155; empty: the same resolver
+  bool fakeDns = false;
+  bool ipv6 = false;
+  bool blockQuic = false;
+  bool proxyLan = false;
+  bool bypassPush = false;
+  List<String> bypassDomains = [];
+  List<RouteRule> rules = [];
+
+  // subscriptions
+  int autoUpdateHours = 6; // 0: never
+
   /// The apps Android leaves out of the VPN, for the bypass mode.
   List<String> get excludedApps => perAppMode == 'bypass' ? apps : const [];
 
   Map<String, dynamic> toJson() => {
-        'mode': mode,
-        'selected': selected,
-        'shareLan': shareLan,
-        'domestic': domestic,
-        'blockAds': blockAds,
-        'includeDnstt': includeDnstt,
-        'shareResults': shareResults,
-        'dns': dns,
-        'lang': lang,
-        'sort': sort,
-        'perAppMode': perAppMode,
-        'apps': apps,
-        'socksPort': socksPort,
-        'httpPort': httpPort,
-      };
+    'mode': mode,
+    'selected': selected,
+    'shareLan': shareLan,
+    'domestic': domestic,
+    'blockAds': blockAds,
+    'includeDnstt': includeDnstt,
+    'shareResults': shareResults,
+    'lang': lang,
+    'sort': sort,
+    'perAppMode': perAppMode,
+    'apps': apps,
+    'socksPort': socksPort,
+    'httpPort': httpPort,
+    'theme': theme,
+    'accent': accent,
+    'autoConnectLaunch': autoConnectLaunch,
+    'autoConnectBoot': autoConnectBoot,
+    'autoConnectWifi': autoConnectWifi,
+    'trustedWifi': trustedWifi,
+    'smartReconnect': smartReconnect,
+    'killSwitch': killSwitch,
+    'tweaks': tweaks,
+    'dns': dns,
+    'domesticDns': domesticDns,
+    'fakeDns': fakeDns,
+    'ipv6': ipv6,
+    'blockQuic': blockQuic,
+    'proxyLan': proxyLan,
+    'bypassPush': bypassPush,
+    'bypassDomains': bypassDomains,
+    'rules': rules.map((r) => r.toJson()).toList(),
+    'autoUpdateHours': autoUpdateHours,
+  };
 
   static Settings fromJson(Map<String, dynamic>? j) {
     final s = Settings();
     if (j == null) return s;
-    s.mode = j['mode'] as String? ?? s.mode;
+    T get<T>(String k, T d) => j[k] is T ? j[k] as T : d;
+    List<String> strings(String k) => ((j[k] as List?) ?? []).cast<String>();
+    s.mode = get('mode', s.mode);
     s.selected = j['selected'] as String?;
-    s.shareLan = j['shareLan'] as bool? ?? s.shareLan;
-    s.domestic = j['domestic'] as bool? ?? s.domestic;
-    s.blockAds = j['blockAds'] as bool? ?? s.blockAds;
-    s.includeDnstt = j['includeDnstt'] as bool? ?? s.includeDnstt;
-    s.shareResults = j['shareResults'] as bool? ?? s.shareResults;
-    s.dns = j['dns'] as String? ?? s.dns;
-    s.lang = j['lang'] as String? ?? s.lang;
-    s.sort = j['sort'] as String? ?? s.sort;
-    s.perAppMode = j['perAppMode'] as String? ?? s.perAppMode;
-    s.apps = ((j['apps'] as List?) ?? []).cast<String>();
-    final old = ((j['excludedApps'] as List?) ?? []).cast<String>(); // 1.0.0 had a bypass list only
+    s.shareLan = get('shareLan', s.shareLan);
+    s.domestic = get('domestic', s.domestic);
+    s.blockAds = get('blockAds', s.blockAds);
+    s.includeDnstt = get('includeDnstt', s.includeDnstt);
+    s.shareResults = get('shareResults', s.shareResults);
+    s.lang = get('lang', s.lang);
+    s.sort = get('sort', s.sort);
+    s.perAppMode = get('perAppMode', s.perAppMode);
+    s.apps = strings('apps');
+    final old = strings('excludedApps'); // 1.0.0 had a bypass list only
     if (s.apps.isEmpty && old.isNotEmpty) {
       s.apps = old;
       s.perAppMode = 'bypass';
     }
-    s.socksPort = j['socksPort'] as int? ?? s.socksPort;
-    s.httpPort = j['httpPort'] as int? ?? s.httpPort;
+    s.socksPort = get('socksPort', s.socksPort);
+    s.httpPort = get('httpPort', s.httpPort);
+    s.theme = get('theme', s.theme);
+    s.accent = get('accent', s.accent);
+    s.autoConnectLaunch = get('autoConnectLaunch', s.autoConnectLaunch);
+    s.autoConnectBoot = get('autoConnectBoot', s.autoConnectBoot);
+    s.autoConnectWifi = get('autoConnectWifi', s.autoConnectWifi);
+    s.trustedWifi = strings('trustedWifi');
+    s.smartReconnect = get('smartReconnect', s.smartReconnect);
+    s.killSwitch = get('killSwitch', s.killSwitch);
+    s.tweaks = Map<String, dynamic>.from(get<Map>('tweaks', {}));
+    s.dns = get('dns', s.dns);
+    s.domesticDns = get('domesticDns', s.domesticDns);
+    s.fakeDns = get('fakeDns', s.fakeDns);
+    s.ipv6 = get('ipv6', s.ipv6);
+    s.blockQuic = get('blockQuic', s.blockQuic);
+    s.proxyLan = get('proxyLan', s.proxyLan);
+    s.bypassPush = get('bypassPush', s.bypassPush);
+    s.bypassDomains = strings('bypassDomains');
+    s.rules = ((j['rules'] as List?) ?? []).map((r) => RouteRule.fromJson(Map<String, dynamic>.from(r as Map))).toList();
+    s.autoUpdateHours = get('autoUpdateHours', s.autoUpdateHours);
     return s;
   }
 }

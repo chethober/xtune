@@ -80,62 +80,90 @@ class _PowerButtonState extends State<PowerButton> with TickerProviderStateMixin
             return SizedBox(
               width: 232,
               height: 232,
-              child: Stack(alignment: Alignment.center, children: [
-                // the ring that goes out when the connection comes up
-                if (_ripple.isAnimating)
-                  Opacity(
-                    opacity: (1 - _ripple.value).clamp(0, 1),
-                    child: Container(
-                      width: 150 + 82 * Curves.easeOut.transform(_ripple.value),
-                      height: 150 + 82 * Curves.easeOut.transform(_ripple.value),
-                      decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: X.accent, width: 2)),
-                    ),
-                  ),
-                Transform.scale(
-                  scale: scale,
-                  child: AnimatedContainer(
-                    duration: Motion.slow,
-                    curve: Motion.curve,
-                    width: 208,
-                    height: 208,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: on
-                          ? RadialGradient(
-                              colors: [X.accent.withValues(alpha: 0.18 + 0.12 * breath), X.accent.withValues(alpha: 0.04), Colors.transparent],
-                              stops: const [0, 0.62, 0.7])
-                          : null,
-                      color: on ? null : X.glass,
-                      border: Border.all(color: on ? X.accent.withValues(alpha: 0.3 + 0.2 * breath) : X.edge),
-                    ),
-                    alignment: Alignment.center,
-                    child: Stack(alignment: Alignment.center, children: [
-                      if (widget.busy)
-                        Transform.rotate(
-                          angle: _spin.value * 2 * math.pi,
-                          child: const SizedBox(width: 176, height: 176, child: CustomPaint(painter: _ArcPainter())),
-                        ),
-                      AnimatedContainer(
-                        duration: Motion.slow,
-                        curve: Motion.curve,
-                        width: 150,
-                        height: 150,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  // the ring that goes out when the connection comes up
+                  if (_ripple.isAnimating)
+                    Opacity(
+                      opacity: (1 - _ripple.value).clamp(0, 1),
+                      child: Container(
+                        width: 150 + 82 * Curves.easeOut.transform(_ripple.value),
+                        height: 150 + 82 * Curves.easeOut.transform(_ripple.value),
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: on ? X.accent : X.track,
-                          boxShadow: on ? [BoxShadow(color: X.accent.withValues(alpha: 0.25 + 0.2 * breath), blurRadius: 30 + 20 * breath)] : null,
-                        ),
-                        child: AnimatedSwitcher(
-                          duration: Motion.normal,
-                          transitionBuilder: (c, a) => ScaleTransition(scale: a, child: FadeTransition(opacity: a, child: c)),
-                          child: Icon(Icons.power_settings_new_rounded,
-                              key: ValueKey(on), size: 64, color: on ? X.onAccent : (widget.busy ? X.accent : X.muted)),
+                          border: Border.all(color: X.accent, width: 2),
                         ),
                       ),
-                    ]),
+                    ),
+                  Transform.scale(
+                    scale: scale,
+                    child: AnimatedContainer(
+                      duration: Motion.slow,
+                      curve: Motion.curve,
+                      width: 208,
+                      height: 208,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: on
+                            ? RadialGradient(
+                                colors: [
+                                  X.accent.withValues(alpha: 0.18 + 0.12 * breath),
+                                  X.accent.withValues(alpha: 0.04),
+                                  Colors.transparent,
+                                ],
+                                stops: const [0, 0.62, 0.7],
+                              )
+                            : null,
+                        color: on ? null : X.glass,
+                        border: Border.all(color: on ? X.accent.withValues(alpha: 0.3 + 0.2 * breath) : X.edge),
+                      ),
+                      alignment: Alignment.center,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          if (widget.busy)
+                            Transform.rotate(
+                              angle: _spin.value * 2 * math.pi,
+                              child: const SizedBox(width: 176, height: 176, child: CustomPaint(painter: _ArcPainter())),
+                            ),
+                          AnimatedContainer(
+                            duration: Motion.slow,
+                            curve: Motion.curve,
+                            width: 150,
+                            height: 150,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: on ? X.accent : X.track,
+                              boxShadow: on
+                                  ? [
+                                      BoxShadow(
+                                        color: X.accent.withValues(alpha: 0.25 + 0.2 * breath),
+                                        blurRadius: 30 + 20 * breath,
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                            child: AnimatedSwitcher(
+                              duration: Motion.normal,
+                              transitionBuilder: (c, a) => ScaleTransition(
+                                scale: a,
+                                child: FadeTransition(opacity: a, child: c),
+                              ),
+                              child: Icon(
+                                Icons.power_settings_new_rounded,
+                                key: ValueKey(on),
+                                size: 64,
+                                color: on ? X.onAccent : (widget.busy ? X.accent : X.muted),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-              ]),
+                ],
+              ),
             );
           },
         ),

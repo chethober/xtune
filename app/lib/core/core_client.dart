@@ -24,8 +24,7 @@ abstract class CoreClient {
   Future<void> ensureElevated() async {}
 
   static CoreClient? _instance;
-  static CoreClient get instance =>
-      _instance ??= Platform.isAndroid ? AndroidCore() : DesktopCore();
+  static CoreClient get instance => _instance ??= Platform.isAndroid ? AndroidCore() : DesktopCore();
 
   static dynamic unwrap(String reply) {
     final m = jsonDecode(reply) as Map<String, dynamic>;
@@ -56,6 +55,9 @@ class AndroidCore extends CoreClient {
   }
 
   Future<void> stopVpn() => channel.invokeMethod('stopVpn');
+
+  /// Android-only actions: setAuto (boot and Wi-Fi auto-connect), askLocation, vpnSettings.
+  Future<dynamic> native(String method, [Map<String, dynamic> args = const {}]) => channel.invokeMethod(method, args);
 
   Future<List<Map<String, String>>> installedApps() async {
     final l = await channel.invokeMethod<List<dynamic>>('apps') ?? [];
