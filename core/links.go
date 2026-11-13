@@ -3,15 +3,18 @@ package core
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/tunnel"
 )
 
 // Share links from any provider: vless://, vmess://, trojan://, ss://, hysteria2:// (hy2://),
@@ -408,6 +411,65 @@ func wgOutbound(priv, pub, psk, endpoint string, addrs []string, mtu int) J {
 	return J{"protocol": "wireguard", "settings": J{"secretKey": priv, "address": clean, "peers": []J{peer}, "mtu": mtu}}
 }
 
+// awgConf is an AmneziaWG .conf as the in-process engine runs it (WireGuard's UAPI form, keys in
+// hex, the obfuscation values as given).
+func awgConf(vals map[string]string, name, host string) (protocols.ClientEntry, error) {
+	hexKey := func(k string) (string, error) {
+		b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(k))
+		if err != nil || len(b) != 32 {
+			return "", fmt.Errorf("not a WireGuard key: %q", k)
+		}
+		return hex.EncodeToString(b), nil
+	}
+	priv, err := hexKey(vals["interface.privatekey"])
+	if err != nil {
+		return protocols.ClientEntry{}, err
+	}
+	pub, err := hexKey(vals["peer.publickey"])
+	if err != nil {
+		return protocols.ClientEntry{}, err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "private_key=%s\n", priv)
+	for _, k := range []string{"jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"} {
+		if v := vals["interface."+k]; v != "" {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+		}
+	}
+	fmt.Fprintf(&b, "public_key=%s\n", pub)
+	if psk := vals["peer.presharedkey"]; psk != "" {
+		if h, err := hexKey(psk); err == nil {
+			fmt.Fprintf(&b, "preshared_key=%s\n", h)
+		}
+	}
+	keep := orStr(vals["peer.persistentkeepalive"], "25")
+	fmt.Fprintf(&b, "allowed_ip=0.0.0.0/0\npersistent_keepalive_interval=%s\n", keep)
+	addr := ""
+	for _, a := range strings.Split(vals["interface.address"], ",") {
+		a = strings.TrimSpace(a)
+		if p, err := netip.ParsePrefix(a); err == nil && p.Addr().Is4() {
+			addr = p.Addr().String()
+			break
+		}
+		if ip, err := netip.ParseAddr(a); err == nil && ip.Is4() {
+			addr = ip.String()
+			break
+		}
+	}
+	if addr == "" {
+		return protocols.ClientEntry{}, errors.New("an AmneziaWG config needs an IPv4 Address")
+	}
+	mtu, _ := strconv.Atoi(vals["interface.mtu"])
+	if mtu == 0 {
+		mtu = 1280
+	}
+	dns := strings.TrimSpace(strings.Split(vals["interface.dns"], ",")[0])
+	a := tunnel.AWG{UAPI: b.String(), Endpoint: vals["peer.endpoint"], Address: addr, MTU: mtu, DNS: dns}
+	id := slug(name + "-awg-" + host)
+	return protocols.ClientEntry{ID: id, Key: id, Name: "AmneziaWG · " + host, Kind: "amneziawg", Label: "AmneziaWG", Engine: "awg",
+		Server: host, AWG: &a}, nil
+}
+
 // parseWGConf reads a WireGuard .conf (one peer).
 func parseWGConf(text, name string) (protocols.ClientEntry, error) {
 	vals := map[string]string{}
@@ -434,10 +496,10 @@ func parseWGConf(text, name string) (protocols.ClientEntry, error) {
 	if priv == "" || pub == "" || ep == "" {
 		return protocols.ClientEntry{}, errors.New("a WireGuard config needs PrivateKey, PublicKey and Endpoint")
 	}
-	if strings.Contains(text, "Jc =") || strings.Contains(text, "Jc=") {
-		return protocols.ClientEntry{}, errors.New("AmneziaWG configs come with an xtune subscription")
-	}
 	host, _, _ := net.SplitHostPort(ep)
+	if vals["interface.jc"] != "" { // AmneziaWG: run in-process, like a subscription's
+		return awgConf(vals, name, host)
+	}
 	mtu, _ := strconv.Atoi(vals["interface.mtu"])
 	ob := wgOutbound(priv, pub, vals["peer.presharedkey"], ep, strings.Split(vals["interface.address"], ","), mtu)
 	n := "WireGuard · " + host

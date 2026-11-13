@@ -138,3 +138,53 @@ func (f *fakeSSH) port() int {
 	fmt.Sscan(p, &n)
 	return n
 }
+
+func TestKickAndCloudflareToken(t *testing.T) {
+	var mu sync.Mutex
+	var gotToken string
+	f := newFakeSSH(t, "root", "pw", func(cmd, stdin string) (string, int) {
+		switch {
+		case cmd == "true":
+			return "", 0
+		case cmd == "xtune 'users' '--minutes' '30' 'kick' 'ann' '198.51.100.2'", cmd == "xtune 'users' 'unblock' 'ann' '198.51.100.2'",
+			cmd == "xtune 'users' '--minutes' '60' 'kick' 'ann' '198.51.100.2'":
+			return "ok\n", 0
+		case cmd == "xtune cloudflare token":
+			mu.Lock()
+			gotToken = stdin
+			mu.Unlock()
+			return "Cloudflare: token saved\n", 0
+		}
+		return "unexpected " + cmd, 1
+	})
+	c := ServerConn{Host: "127.0.0.1", Port: f.port(), User: "root", Password: "pw"}
+	got, err := ConnectServer(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.HostKey = got.HostKey
+	for _, a := range []UserAction{{Action: "kick", Name: "ann", IP: "198.51.100.2", Minutes: 30}, {Action: "kick", Name: "ann", IP: "198.51.100.2"},
+		{Action: "unblock", Name: "ann", IP: "198.51.100.2"}} {
+		if _, err := DoUser(c, a); err != nil {
+			t.Errorf("%+v: %v", a, err)
+		}
+	}
+	if _, err := DoUser(c, UserAction{Action: "kick", Name: "ann", IP: "1.2.3.4; rm -rf /"}); err == nil {
+		t.Error("only an IP is passed on")
+	}
+	if _, err := SetCloudflareToken(c, "abc 123"); err == nil {
+		t.Error("a token has no spaces")
+	}
+	if _, err := SetCloudflareToken(c, " tok_ABC123 "); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.commands(), "tok_ABC123") || gotToken != "tok_ABC123\n" {
+		t.Errorf("the token goes on stdin, never in the command: %q / %q", f.commands(), gotToken)
+	}
+	if a, err := prepareArgs(TuneOptions{Zone: "example.com"}); err != nil || !strings.HasSuffix(strings.Join(a, " "), "--zone example.com") {
+		t.Errorf("zone: %v %v", a, err)
+	}
+	if _, err := prepareArgs(TuneOptions{Zone: "-x"}); err == nil {
+		t.Error("a zone is a domain")
+	}
+}

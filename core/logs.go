@@ -23,12 +23,16 @@ var (
 
 // SetDataDir is where the core keeps its log.
 func SetDataDir(dir string) {
-	dataMu.Lock()
-	defer dataMu.Unlock()
 	if dir != "" {
 		os.MkdirAll(dir, 0o700)
 	}
+	dataMu.Lock()
 	dataDir = dir
+	dataMu.Unlock()
+	// not under dataMu: record takes tlMu, then dataMu
+	tlMu.Lock()
+	tlLoaded = false // read the timeline kept there
+	tlMu.Unlock()
 }
 
 // logFile is Xray's log file, started afresh when it grows past a megabyte.

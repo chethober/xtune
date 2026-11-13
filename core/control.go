@@ -40,5 +40,6 @@ func NextConfig() (Status, error) {
 	ksMu.Lock()
 	selRev++
 	ksMu.Unlock()
+	record("switch", "Switched to "+next.Name+" (Next config)")
 	return CurrentStatus(), nil
 }

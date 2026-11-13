@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -36,15 +37,19 @@ type Options struct {
 	TunFd   int    `json:"tunFd,omitempty"`
 	TunName string `json:"tunName,omitempty"`
 	// Routes: the core sets the system's routes around the TUN interface (desktop).
-	Routes       bool   `json:"routes,omitempty"`
-	SystemProxy  bool   `json:"systemProxy,omitempty"` // desktop proxy mode: point the system proxy at it
-	SocksPort    int    `json:"socksPort,omitempty"`
-	HTTPPort     int    `json:"httpPort,omitempty"`
-	ShareLAN     bool   `json:"shareLan,omitempty"`
-	BlockAds     bool   `json:"blockAds,omitempty"`
-	Domestic     bool   `json:"domestic,omitempty"`     // the profile country's sites go direct
-	IncludeDNSTT bool   `json:"includeDnstt,omitempty"` // let Auto use the DNS tunnel too
-	LogLevel     string `json:"logLevel,omitempty"`
+	Routes       bool `json:"routes,omitempty"`
+	SystemProxy  bool `json:"systemProxy,omitempty"` // desktop proxy mode: point the system proxy at it
+	SocksPort    int  `json:"socksPort,omitempty"`
+	HTTPPort     int  `json:"httpPort,omitempty"`
+	ShareLAN     bool `json:"shareLan,omitempty"`
+	BlockAds     bool `json:"blockAds,omitempty"`
+	Domestic     bool `json:"domestic,omitempty"`     // the profile country's sites go direct
+	IncludeDNSTT bool `json:"includeDnstt,omitempty"` // let Auto use the DNS tunnel too
+	// AutoMode is how Auto picks: "" the lowest ping, checked every minute; latency: the lowest
+	// ping, checked every 15 s so it moves sooner (calls, games); stable: the steadiest (lowest
+	// spread of ping), for downloads and streams that dislike switching.
+	AutoMode string `json:"autoMode,omitempty"`
+	LogLevel string `json:"logLevel,omitempty"`
 
 	// DNS: the resolver for everything else (through the tunnel): https://… (DoH), tcp://IP or a
 	// plain IP (UDP); DomesticDNS answers for the domestic sites, directly; FakeDNS hands apps
@@ -111,9 +116,46 @@ func (t Tweaks) over(o Tweaks) Tweaks { // o's set fields win
 
 // Rule sends matching traffic direct, through the proxy, or nowhere.
 type Rule struct {
-	Match  string `json:"match"`  // domain (and its subdomains) | full | keyword | geosite | ip | geoip | port
-	Value  string `json:"value"`  // e.g. example.com, category-ir, 10.0.0.0/8, ir, 443 or 1000-2000
-	Action string `json:"action"` // direct | proxy | block
+	Match  string `json:"match"`            // domain (and its subdomains) | full | keyword | geosite | ip | geoip | port | app
+	Value  string `json:"value"`            // e.g. example.com, category-ir, 10.0.0.0/8, ir, 443 or 1000-2000; app: telegram.exe, firefox
+	Action string `json:"action"`           // direct | proxy | block | via (through Config, whatever Auto picks)
+	Config string `json:"config,omitempty"` // via: the config's ID
+}
+
+// appRules: Xray tells apps apart by their process on Linux and Windows; Android hides other
+// apps' connections from it (per-app routing there is the VPN's allow and deny lists).
+var appRules = runtime.GOOS == "linux" || runtime.GOOS == "windows"
+
+// viaTag is the outbound a "via" rule uses: the config's own when Auto runs it, else one of its
+// own, outside Auto's balancer.
+func viaTag(id string, configs []protocols.ClientEntry) string {
+	for _, c := range configs {
+		if c.ID == id {
+			return tagOf(c)
+		}
+	}
+	return "via-" + id
+}
+
+// viaExtras are the configs "via" rules need that the connection does not run already.
+func viaExtras(p *Profile, o Options, configs []protocols.ClientEntry) []protocols.ClientEntry {
+	running := map[string]bool{}
+	for _, c := range configs {
+		running[c.ID] = true
+	}
+	var out []protocols.ClientEntry
+	for _, r := range o.Rules {
+		if r.Action != "via" || running[r.Config] {
+			continue
+		}
+		for _, c := range p.Configs {
+			if c.ID == r.Config && usable(c) {
+				out = append(out, c)
+				running[c.ID] = true
+			}
+		}
+	}
+	return out
 }
 
 func (o *Options) defaults() {
@@ -274,7 +316,7 @@ func applyTweaks(ob J, t Tweaks) {
 }
 
 // ruleFor turns a user rule into an Xray routing rule; target is the proxy's outbound or balancer.
-func ruleFor(r Rule, target J) (J, error) {
+func ruleFor(r Rule, target J, configs []protocols.ClientEntry) (J, error) {
 	v := strings.TrimSpace(r.Value)
 	if v == "" {
 		return nil, errors.New("empty rule")
@@ -295,6 +337,17 @@ func ruleFor(r Rule, target J) (J, error) {
 		out["ip"] = []string{"geoip:" + v}
 	case "port":
 		out["port"] = v
+	case "app":
+		if !appRules {
+			return nil, errors.New("app rules work on Linux and Windows only")
+		}
+		var names []string
+		for _, n := range strings.Split(v, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+		out["process"] = names
 	default:
 		return nil, fmt.Errorf("unknown rule type %q", r.Match)
 	}
@@ -303,6 +356,11 @@ func ruleFor(r Rule, target J) (J, error) {
 		out["outboundTag"] = "direct"
 	case "block":
 		out["outboundTag"] = "block"
+	case "via":
+		if r.Config == "" {
+			return nil, errors.New("which config?")
+		}
+		out["outboundTag"] = viaTag(r.Config, configs)
 	default:
 		for k, x := range target {
 			out[k] = x
@@ -357,7 +415,8 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 
 	frags := map[string]Tweaks{} // fragmenting outbounds the tweaks use
 	var obs []J
-	for _, c := range configs {
+	extras := viaExtras(p, o, configs)
+	for _, c := range append(append([]protocols.ClientEntry{}, configs...), extras...) {
 		var ob J
 		if c.Engine == "xray" {
 			ob = clone(c.Outbound)
@@ -372,7 +431,7 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 		} else {
 			ob = J{"protocol": "socks", "settings": J{"servers": []J{{"address": "127.0.0.1", "port": ports[c.ID]}}}}
 		}
-		ob["tag"] = tagOf(c)
+		ob["tag"] = viaTag(c.ID, configs)
 		obs = append(obs, ob)
 	}
 	for _, f := range p.Frag {
@@ -395,7 +454,10 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 		rules = append(rules, J{"inboundTag": []string{"tun"}, "port": "53", "outboundTag": "dns-out"})
 	}
 	for _, r := range o.Rules {
-		if x, err := ruleFor(r, proxy); err == nil {
+		if r.Action == "via" && !hasConfig(configs, r.Config) && !hasConfig(extras, r.Config) {
+			continue // the config is gone from the subscription, or another app runs it
+		}
+		if x, err := ruleFor(r, proxy, configs); err == nil {
 			rules = append(rules, x)
 		}
 	}
@@ -456,10 +518,18 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 		cfg["routing"] = J{"domainStrategy": "AsIs", "rules": rules}
 		return cfg
 	}
+	strategy, interval, sampling := J{"type": "leastPing"}, "1m", 2
+	switch o.AutoMode {
+	case "latency":
+		interval, sampling = "15s", 4
+	case "stable":
+		strategy = J{"type": "leastLoad", "settings": J{"maxRTT": "2s", "tolerance": 0.2}}
+		sampling = 6
+	}
 	cfg["routing"] = J{"domainStrategy": "AsIs", "rules": rules,
-		"balancers": []J{{"tag": "auto", "selector": []string{"proxy-"}, "strategy": J{"type": "leastPing"}, "fallbackTag": tagOf(configs[0])}}}
+		"balancers": []J{{"tag": "auto", "selector": []string{"proxy-"}, "strategy": strategy, "fallbackTag": tagOf(configs[0])}}}
 	cfg["burstObservatory"] = J{"subjectSelector": []string{"proxy-"},
-		"pingConfig": J{"destination": orStr(p.Probe, protocols.ProbeURL), "interval": "1m", "timeout": "6s", "sampling": 2}}
+		"pingConfig": J{"destination": orStr(p.Probe, protocols.ProbeURL), "interval": interval, "timeout": "6s", "sampling": sampling}}
 	return cfg
 }
 
@@ -473,9 +543,11 @@ type Engine struct {
 	opts    Options
 	profile *Profile
 	configs []protocols.ClientEntry
+	extras  []protocols.ClientEntry // run for "via" rules only
 	since   time.Time
 	undo    func() // system routes or proxy settings to restore
 	lastErr string
+	shown   string // the config Auto used at the last status, to record when it moves
 }
 
 var engine Engine
@@ -621,7 +693,9 @@ func Start(p *Profile, o Options) error {
 		return err
 	}
 	ports := map[string]int{}
-	for i, c := range configs {
+	extras := viaExtras(p, o, configs)
+	all := append(append([]protocols.ClientEntry{}, configs...), extras...)
+	for i, c := range all {
 		if c.Engine == "xray" {
 			continue
 		}
@@ -629,7 +703,9 @@ func Start(p *Profile, o Options) error {
 			a := *c.AWG
 			a.MTU = t.MTU
 			c.AWG = &a
-			configs[i] = c
+			if i < len(configs) {
+				configs[i] = c
+			}
 		}
 		port, stop, err := localEngine(c)
 		if err != nil {
@@ -641,7 +717,7 @@ func Start(p *Profile, o Options) error {
 	var hosts map[string][]string
 	var bypass []netip.Addr
 	if o.Mode == "tun" {
-		hosts, bypass = serverHosts(configs)
+		hosts, bypass = serverHosts(all) // "via" configs' servers too, or their tunnels would loop
 		if o.TunFd > 0 {
 			os.Setenv("xray.tun.fd", fmt.Sprint(o.TunFd))
 		}
@@ -689,6 +765,7 @@ func Start(p *Profile, o Options) error {
 		ksMu.Unlock()
 	}
 	engine.inst, engine.closers, engine.opts, engine.profile, engine.configs = inst, closers, o, p, configs
+	engine.shown, engine.extras = "", extras
 	engine.since, engine.undo, engine.lastErr = time.Now(), undo, warning
 	ksMu.Lock()
 	watchGen++
@@ -734,6 +811,9 @@ func smartWatch(gen int, p *Profile, o Options) {
 			engine.mu.Lock()
 			engine.lastErr = "reconnecting for the new network: " + err.Error()
 			engine.mu.Unlock()
+			record("error", "Moved to "+orStr(n.Name, "AS"+asn)+", but reconnecting failed: "+err.Error())
+		} else {
+			record("network", "Moved to "+orStr(n.Name, "AS"+asn)+": reconnected with that network's best configs")
 		}
 		return // Start runs a new watcher
 	}
@@ -833,11 +913,12 @@ func CurrentStatus() (s Status) {
 	// straight to the router, past the listeners where Xray counts inbound traffic, so inbound
 	// counters stay at zero there. Sites that go direct are not tunnel traffic and are left out.
 	if m, ok := engine.inst.GetFeature(stats.ManagerType()).(stats.Manager); ok {
-		for _, c := range engine.configs {
-			if n := m.GetCounter("outbound>>>" + tagOf(c) + ">>>traffic>>>uplink"); n != nil {
+		for _, c := range append(append([]protocols.ClientEntry{}, engine.configs...), engine.extras...) {
+			tag := viaTag(c.ID, engine.configs)
+			if n := m.GetCounter("outbound>>>" + tag + ">>>traffic>>>uplink"); n != nil {
 				s.Up += n.Value()
 			}
-			if n := m.GetCounter("outbound>>>" + tagOf(c) + ">>>traffic>>>downlink"); n != nil {
+			if n := m.GetCounter("outbound>>>" + tag + ">>>traffic>>>downlink"); n != nil {
 				s.Down += n.Value()
 			}
 		}
@@ -868,7 +949,35 @@ func CurrentStatus() (s Status) {
 	} else if len(engine.configs) > 0 {
 		s.Active = engine.configs[0].ID // the fallback until health checks answer
 	}
+	if prev := engine.shown; prev != s.Active && prev != "" && len(s.Outbounds) > 0 {
+		why := "it answers faster"
+		for _, ob := range s.Outbounds {
+			if ob.ID == prev && !ob.Alive {
+				why = nameOf(engine.configs, prev) + " stopped answering"
+			}
+		}
+		record("switch", "Auto moved to "+nameOf(engine.configs, s.Active)+": "+why)
+	}
+	engine.shown = s.Active
 	return s
+}
+
+func hasConfig(cs []protocols.ClientEntry, id string) bool {
+	for _, c := range cs {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func nameOf(cs []protocols.ClientEntry, id string) string {
+	for _, c := range cs {
+		if c.ID == id {
+			return c.Name
+		}
+	}
+	return id
 }
 
 func sortedKeys[V any](m map[string]V) []string {

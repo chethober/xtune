@@ -22,6 +22,7 @@ type TuneOptions struct {
 	Protocols []string `json:"protocols,omitempty"` // ssh, dnstt, mtproto, awg, trojan, worker (with the deployed ones)
 	Depth     string   `json:"depth,omitempty"`     // smart (default) | deep
 	DNSDomain string   `json:"dnsDomain,omitempty"` // the DNS tunnel's zone, delegated to the server
+	Zone      string   `json:"zone,omitempty"`      // a Cloudflare zone: the direct and CDN domains get names in it
 	Network   string   `json:"network,omitempty"`   // this network's name in the rankings
 	Seconds   int      `json:"seconds,omitempty"`   // throughput test per config (default 4)
 }
@@ -116,6 +117,12 @@ func prepareArgs(o TuneOptions) ([]string, error) {
 			return nil, errors.New("the DNS tunnel's zone is a domain name")
 		}
 		args = append(args, "--dns-domain", o.DNSDomain)
+	}
+	if o.Zone != "" {
+		if strings.ContainsAny(o.Zone, " /\\'\"") || strings.HasPrefix(o.Zone, "-") || !strings.Contains(o.Zone, ".") {
+			return nil, errors.New("the Cloudflare zone is a domain name, like example.com")
+		}
+		args = append(args, "--zone", o.Zone)
 	}
 	return args, nil
 }

@@ -394,10 +394,12 @@ type UserAction struct {
 	Devices *int     `json:"devices,omitempty"`
 	Reset   *string  `json:"reset,omitempty"`
 	Plan    string   `json:"plan,omitempty"`
+	IP      string   `json:"ip,omitempty"`      // kick, unblock: the device
+	Minutes int      `json:"minutes,omitempty"` // kick: how long (default 60)
 }
 
 var userActions = map[string]bool{"add": true, "del": true, "enable": true, "disable": true, "renew": true,
-	"reset-usage": true, "rotate": true, "limit": true, "reset-sub": true, "links": true}
+	"reset-usage": true, "rotate": true, "limit": true, "reset-sub": true, "links": true, "kick": true, "unblock": true}
 
 func DoUser(c ServerConn, a UserAction) (string, error) {
 	if !userActions[a.Action] {
@@ -425,8 +427,35 @@ func DoUser(c ServerConn, a UserAction) (string, error) {
 	switch a.Action {
 	case "add", "links", "rotate", "reset-sub":
 		args = append(args, "--json")
+	case "kick", "unblock":
+		if net.ParseIP(a.IP) == nil {
+			return "", fmt.Errorf("%q is not an IP address", a.IP)
+		}
+		if a.Action == "kick" {
+			m := a.Minutes
+			if m <= 0 {
+				m = 60
+			}
+			args = append(args, "--minutes", strconv.Itoa(m))
+		}
+		return xtune(c, append(args, a.Action, a.Name, a.IP)...)
 	}
 	return xtune(c, append(args, a.Action, a.Name)...)
+}
+
+// SetCloudflareToken saves the server's Cloudflare API token. It goes on stdin, so it never shows
+// in the server's process list.
+func SetCloudflareToken(c ServerConn, token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" || strings.ContainsAny(token, " \n\r") {
+		return "", errors.New("paste the API token Cloudflare showed you")
+	}
+	r, err := server(c)
+	if err != nil {
+		return "", err
+	}
+	out, _, err := r.Transport.Exec("xtune cloudflare token", token+"\n", true)
+	return out, err
 }
 
 // Xtune runs any xtune command on the server: the app's console. Only the operator, who holds
