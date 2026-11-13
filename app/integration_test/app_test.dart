@@ -122,7 +122,7 @@ void main() {
     await settle(tester);
     await tester.tap(find.text('Check now'));
     await waitFor(tester, find.textContaining('configs tested'), seconds: 60);
-    expect(find.text('BLOCKED'), findsOneWidget); // r-tcp points nowhere
+    expect(find.text('BLOCKED'), findsNWidgets(2)); // r-tcp points nowhere; nothing answers on the MTProto port
     expect(find.text('WORKS'), findsNWidgets(2));
     await shot(tester, '04-check');
 
