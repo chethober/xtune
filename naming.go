@@ -29,6 +29,7 @@ func subImports(sub, name string) []protocols.NamedLink {
 	q := url.QueryEscape
 	frag := "#" + url.PathEscape(name)
 	return []protocols.NamedLink{
+		{Name: "xtune", URL: "xtune://import?url=" + q(sub) + "&name=" + q(name)},
 		{Name: "v2rayNG", URL: "v2rayng://install-sub?url=" + q(sub) + "&name=" + q(name)},
 		{Name: "Hiddify", URL: "hiddify://import/" + sub + frag},
 		{Name: "Streisand", URL: "streisand://import/" + sub + frag},

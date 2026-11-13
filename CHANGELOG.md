@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 - Endpoints for the xtune client app next to each subscription: `…/TOKEN/client`, the user's configs as JSON with
   what an app needs to connect to each (ordered for the app's network), and `POST …/TOKEN/report`, where the app
   sends what it measured, which joins that network's ranking. [Server →](docs/server.md#the-client-app)
+- The subscription page's one-tap import links include the xtune client app (`xtune://import?url=…`).
 - `pkg/tunnel`: the SSH (plain, TLS, CDN WebSocket, DNS tunnel) and AmneziaWG client, which tuning and the client
   app share.
 
