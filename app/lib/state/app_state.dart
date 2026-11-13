@@ -75,6 +75,15 @@ class AppState extends ChangeNotifier {
     _lastUp = (status['up'] as num?)?.toInt() ?? 0;
     _lastDown = (status['down'] as num?)?.toInt() ?? 0;
     await refreshNetwork();
+    if (Platform.isAndroid) {
+      try {
+        await (core as AndroidCore).native('setAuto', {
+          'boot': settings.autoConnectBoot,
+          'wifi': settings.autoConnectWifi,
+          'trusted': settings.trustedWifi,
+        });
+      } catch (_) {}
+    }
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => refreshStatus());
     _maintain = Timer.periodic(const Duration(minutes: 10), (_) => _maintenance());
     if (settings.autoConnectLaunch && !connected && sub != null) unawaited(connect());

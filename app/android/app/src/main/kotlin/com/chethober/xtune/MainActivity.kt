@@ -10,7 +10,6 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import mobile.Mobile
 import org.json.JSONObject
-import java.io.File
 import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
@@ -22,37 +21,14 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val VPN_REQUEST = 7001
-
-        /** Copies the geo databases out of the APK once per app version and tells the core where they are. */
-        fun setupCore(activity: Activity) {
-            val dir = File(activity.filesDir, "geo")
-            val stamp = File(dir, ".version")
-            val version = try {
-                activity.packageManager.getPackageInfo(activity.packageName, 0).let {
-                    if (Build.VERSION.SDK_INT >= 28) it.longVersionCode.toString() else @Suppress("DEPRECATION") it.versionCode.toString()
-                }
-            } catch (e: PackageManager.NameNotFoundException) {
-                "0"
-            }
-            if (!stamp.exists() || stamp.readText() != version) {
-                dir.mkdirs()
-                for (name in listOf("geoip.dat", "geosite.dat")) {
-                    try {
-                        activity.assets.open("geo/$name").use { input ->
-                            File(dir, name).outputStream().use { input.copyTo(it) }
-                        }
-                    } catch (_: Exception) {
-                    }
-                }
-                stamp.writeText(version)
-            }
-            Mobile.call("setup", JSONObject().put("assetDir", dir.absolutePath).toString())
-        }
+        private const val LOCATION_REQUEST = 7002
     }
+
+    private var locationResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        thread { setupCore(this) }
+        thread { Xtune.setup(applicationContext) }
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "xtune/core")
         channel!!.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -76,6 +52,24 @@ class MainActivity : FlutterActivity() {
                     } else {
                         startVpn()
                     }
+                }
+                "setAuto" -> {
+                    Xtune.setAuto(
+                        applicationContext,
+                        call.argument<Boolean>("boot") ?: false,
+                        call.argument<Boolean>("wifi") ?: false,
+                        call.argument<List<String>>("trusted") ?: emptyList()
+                    )
+                    result.success(null)
+                }
+                "askLocation" -> askLocation(result)
+                "vpnSettings" -> {
+                    try {
+                        startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
+                    } catch (_: Exception) {
+                        startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+                    }
+                    result.success(null)
                 }
                 "stopVpn" -> {
                     XtuneVpnService.stop(this)
@@ -111,6 +105,34 @@ class MainActivity : FlutterActivity() {
         } else {
             pendingResult?.success("{\"ok\":false,\"error\":\"VPN permission was not given\"}")
             pendingResult = null
+        }
+    }
+
+    /** Reading Wi-Fi names needs the location permission ("all the time" for it to work in the background). */
+    private fun askLocation(result: MethodChannel.Result) {
+        val fine = android.Manifest.permission.ACCESS_FINE_LOCATION
+        if (checkSelfPermission(fine) == PackageManager.PERMISSION_GRANTED) {
+            if (Build.VERSION.SDK_INT >= 29 &&
+                checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION), LOCATION_REQUEST + 1)
+            }
+            result.success(true)
+            return
+        }
+        locationResult = result
+        requestPermissions(arrayOf(fine), LOCATION_REQUEST)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == LOCATION_REQUEST) {
+            val ok = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            locationResult?.success(ok)
+            locationResult = null
+            if (ok && Build.VERSION.SDK_INT >= 29) {
+                requestPermissions(arrayOf(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION), LOCATION_REQUEST + 1)
+            }
         }
     }
 

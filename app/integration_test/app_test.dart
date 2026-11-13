@@ -35,6 +35,10 @@ Future<void> settle(WidgetTester tester, [int ms = 700]) async {
 
 /// Scrolls [f] into view and clear of the floating tab bar, so a tap lands on it.
 Future<void> reveal(WidgetTester tester, Finder f) async {
+  if (f.evaluate().isEmpty) {
+    // lists build their rows lazily: scroll the visible one until it appears
+    await tester.dragUntilVisible(f, find.byType(Scrollable).hitTestable().first, const Offset(0, -250));
+  }
   await tester.ensureVisible(f.first);
   await settle(tester, 300);
   final y = tester.getCenter(f.first).dy;
@@ -161,7 +165,7 @@ void main() {
     await reveal(tester, find.text('Usage'));
     await tester.tap(find.text('Usage').first);
     await settle(tester, 1200);
-    expect(find.text('By config'), findsOneWidget);
+    expect(find.text('BY CONFIG'), findsOneWidget);
     await shot(tester, '09-usage');
     await tester.tap(find.byTooltip('Back'));
     await settle(tester);
@@ -172,7 +176,9 @@ void main() {
     await tester.tap(find.byTooltip('Back'));
     await settle(tester);
 
-    // the light theme
+    // the light theme: back to the top of Settings
+    await tester.drag(find.text('Connection log'), const Offset(0, 4000));
+    await settle(tester, 800);
     await reveal(tester, find.text('Light'));
     await tester.tap(find.text('Light'));
     await settle(tester);

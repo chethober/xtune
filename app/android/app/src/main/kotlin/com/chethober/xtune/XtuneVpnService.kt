@@ -49,16 +49,31 @@ class XtuneVpnService : VpnService() {
             return START_NOT_STICKY
         }
         foreground()
-        val args = intent?.getStringExtra("args") ?: "{}"
-        val mode = intent?.getStringExtra("mode") ?: "off"
-        val apps = intent?.getStringArrayListExtra("apps") ?: arrayListOf()
+        var args = intent?.getStringExtra("args")
+        var mode = intent?.getStringExtra("mode") ?: "off"
+        var apps = intent?.getStringArrayListExtra("apps") ?: arrayListOf()
+        if (args != null) {
+            Xtune.saveLast(this, args, mode, apps)
+        } else {
+            // started by the system (always-on VPN) or with no arguments: the last connection
+            val p = Xtune.prefs(this)
+            args = p.getString("lastArgs", null)
+            if (args == null) {
+                shutdown()
+                return START_NOT_STICKY
+            }
+            mode = p.getString("lastMode", "off") ?: "off"
+            apps = org.json.JSONArray(p.getString("lastApps", "[]") ?: "[]").let { a -> ArrayList((0 until a.length()).map { a.getString(it) }) }
+        }
+        val connectArgs: String = args
         thread {
             val reply = try {
-                connect(args, mode, apps)
+                Xtune.setup(this)
+                connect(connectArgs, mode, apps)
             } catch (e: Exception) {
                 JSONObject().put("ok", false).put("error", e.message ?: e.toString()).toString()
             }
-            if (!JSONObject(reply).optBoolean("ok")) shutdown()
+            if (JSONObject(reply).optBoolean("ok")) Xtune.setRunning(this, true) else shutdown()
             onStarted?.invoke(reply)
             onStarted = null
         }
@@ -68,12 +83,17 @@ class XtuneVpnService : VpnService() {
     private fun connect(args: String, mode: String, apps: List<String>): String {
         Mobile.call("vpn.stop", "{}")
         tun?.close()
+        val j = JSONObject(args)
+        val opts = j.optJSONObject("options") ?: JSONObject()
         val b = Builder()
             .setSession("xtune")
             .setMtu(1500)
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
             .addDnsServer("1.1.1.1")
+        if (opts.optBoolean("ipv6")) {
+            b.addAddress("fd66:7874:756e::1", 126).addRoute("::", 0)
+        }
         // Android takes either an allow list or a deny list, not both. This app is never in the
         // VPN: in "only" mode it is simply not on the list.
         val chosen = apps.filter { it != packageName }
@@ -98,8 +118,6 @@ class XtuneVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= 29) b.setMetered(false)
         val pfd = b.establish() ?: throw IllegalStateException("Android did not create the VPN (permission revoked?)")
         tun = pfd
-        val j = JSONObject(args)
-        val opts = j.optJSONObject("options") ?: JSONObject()
         opts.put("mode", "tun").put("tunFd", pfd.fd).put("routes", false)
         j.put("options", opts)
         return Mobile.call("vpn.start", j.toString())
@@ -134,6 +152,7 @@ class XtuneVpnService : VpnService() {
 
     private fun shutdown() {
         Mobile.call("vpn.stop", "{}")
+        Xtune.setRunning(this, false)
         tun?.close()
         tun = null
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
@@ -146,6 +165,7 @@ class XtuneVpnService : VpnService() {
 
     override fun onDestroy() {
         Mobile.call("vpn.stop", "{}")
+        Xtune.setRunning(this, false)
         tun?.close()
         tun = null
         super.onDestroy()

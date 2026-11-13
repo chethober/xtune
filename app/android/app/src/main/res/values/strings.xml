@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_description">Connect and disconnect xtune</string>
+    <string name="tile_label">xtune</string>
+</resources>
