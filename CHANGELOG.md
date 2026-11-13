@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Endpoints for the xtune client app next to each subscription: `…/TOKEN/client`, the user's configs as JSON with
+  what an app needs to connect to each (ordered for the app's network), and `POST …/TOKEN/report`, where the app
+  sends what it measured, which joins that network's ranking. [Server →](docs/server.md#the-client-app)
+- `pkg/tunnel`: the SSH (plain, TLS, CDN WebSocket, DNS tunnel) and AmneziaWG client, which tuning and the client
+  app share.
+
 ### Fixed
 - Country flags follow where the server is, not where its IP block is registered: the server looks up its
   outbound address's country from Cloudflare's `/cdn-cgi/trace`, with Team Cymru's registry country only as a

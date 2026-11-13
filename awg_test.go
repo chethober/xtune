@@ -15,6 +15,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/chethober/xtune/pkg/protocols"
 	"github.com/chethober/xtune/pkg/state"
+	"github.com/chethober/xtune/pkg/tunnel"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
@@ -118,7 +119,7 @@ func awgTestServer(t *testing.T, c protocols.AWGConf, e state.Entry) *device.Dev
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := device.NewDevice(newNetTUN(tdev), conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
+	d := device.NewDevice(tunnel.NetTUN(tdev), conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
 	if err := d.IpcSet(c.UAPIServer(e)); err != nil {
 		t.Fatal(err)
 	}

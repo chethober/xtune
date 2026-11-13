@@ -293,9 +293,10 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	isPeer := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "peer"
 	isAdm := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "adm"
 	isMetrics := req.Method == http.MethodGet && (len(parts) == 2 || len(parts) == 3) && parts[1] == "metrics"
+	isReport := req.Method == http.MethodPost && len(parts) == 3 && parts[2] == "report"
 	isPub := len(parts) >= 3 && parts[1] == "pub" &&
 		(len(parts) == 3 && req.Method == http.MethodGet || len(parts) == 4 && req.Method == http.MethodPost)
-	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm && !isReport {
 		http.NotFound(w, req)
 		return
 	}
@@ -337,7 +338,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 4 || parts[0] != st.Sub.Path ||
-		len(parts) == 3 && parts[2] != "json" || len(parts) == 4 && parts[2] != "f" {
+		len(parts) == 3 && parts[2] != "json" && parts[2] != "client" && parts[2] != "report" || len(parts) == 4 && parts[2] != "f" {
 		http.NotFound(w, req)
 		return
 	}
@@ -351,16 +352,24 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
+	now := time.Now()
 	uu := us.Users[u.Name]
 	if uu == nil {
 		uu = &state.UserUsage{}
+	}
+	switch {
+	case isReport:
+		h.serveClientReport(w, req, *u, now)
+		return
+	case len(parts) == 3 && parts[2] == "client":
+		serveClientProfile(w, req, st, *u, uu, now)
+		return
 	}
 	// the de-facto standard headers clients use to show usage and expiry
 	hd.Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", uu.Up, uu.Down, u.Quota, u.Expires))
 	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(protocols.SubName(st, *u))))
 	hd.Set("Profile-Update-Interval", "6")
 	hd.Set("Profile-Web-Page-Url", SubURL(st, *u))
-	now := time.Now()
 	view, netName := st, ""
 	if len(st.Networks) > 0 { // the requester's network's best configs first
 		view, netName = forNetwork(st, netinfo.ASNOf(requesterIP(req, st), now), now)

@@ -55,6 +55,19 @@ name** to v2rayNG (`v2rayng://install-sub`), Hiddify and Streisand (`…://impor
 
 One Xray config per user with every deployed config behind a balancer: Xray health-checks them and uses the fastest working one, so a blocked config (or IP) fails over to the next, e.g. the CDN entry. Ads are blocked, and with `xtune country ir|cn|ru` that country's sites go direct.
 
+## The client app
+
+The [xtune client](https://github.com/chethober/xtune-client) (Android, Linux, Windows) imports a user's subscription
+link and reads two endpoints next to it:
+
+- `GET …/TOKEN/client`: the user's profile as JSON: every config on every server the subscription lists, with what
+  the app needs to connect (the Xray outbound, the SSH login and transport, the AmneziaWG keys), the user's usage
+  and expiry. It is ordered for the network the app says it is on (`?asn=`), like the subscription. It holds only
+  that user's secrets.
+- `POST …/TOKEN/report`: what the app measured from its network. It joins that network's
+  [ranking](tuning.md), so other subscribers there get the configs that work first. A user's reports count at most
+  every 10 minutes per network, and each moves a score halfway to what was measured.
+
 ## Alerts
 
 Optional Telegram bot or webhook (Slack, Discord, ...): a user at 80% and 100% of their quota, 3 days before and at expiry, and the deployed Xray not answering. Each alert is sent once.
