@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/netinfo"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/netinfo"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Tests never look anything up on the internet: lookups that a test does not stand in for fail.
@@ -291,6 +291,7 @@ func TestSubImports(t *testing.T) {
 		got[a.Name] = a.URL
 	}
 	want := map[string]string{
+		"xtune":     "xtune://import?url=https%3A%2F%2Fcdn.example.com%3A2053%2Fsubs%2Ftok&name=%F0%9F%87%A9%F0%9F%87%AA+Berlin+%26+co",
 		"v2rayNG":   "v2rayng://install-sub?url=https%3A%2F%2Fcdn.example.com%3A2053%2Fsubs%2Ftok&name=%F0%9F%87%A9%F0%9F%87%AA+Berlin+%26+co",
 		"Hiddify":   "hiddify://import/" + sub + "#%F0%9F%87%A9%F0%9F%87%AA%20Berlin%20&%20co",
 		"Streisand": "streisand://import/" + sub + "#%F0%9F%87%A9%F0%9F%87%AA%20Berlin%20&%20co",

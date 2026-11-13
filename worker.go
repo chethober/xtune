@@ -13,9 +13,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/chethober/xtune/internal/cloudflare"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/cloudflare"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // The Cloudflare Worker relay: clients speak VLESS (with VLESS Encryption) over WebSocket + TLS

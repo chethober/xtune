@@ -16,7 +16,7 @@ import (
 
 // testdata/vX.Y.Z.json is what release X.Y.Z wrote with every field set: state.json under
 // "state", usage.json under "usage" (made from each release's own types, see fill). The current
-// format is testdata/current.json; `go test ./internal/state -update` rewrites it after a change.
+// format is testdata/current.json; `go test ./pkg/state -update` rewrites it after a change.
 var update = flag.Bool("update", false, "rewrite testdata/current.json from the current types")
 
 // fill sets every exported field to a non-zero value, so the JSON shows each field.
@@ -138,7 +138,7 @@ func TestCurrentFixture(t *testing.T) {
 	// a field renamed or removed since the fixture was written breaks files on servers
 	if l := lost(generic(t, old), generic(t, b), ""); len(l) > 0 {
 		t.Errorf("the current types lost fields of testdata/current.json (a rename needs a migration and a Schema bump; "+
-			"after adding fields run go test ./internal/state -update):\n%s", strings.Join(l, "\n"))
+			"after adding fields run go test ./pkg/state -update):\n%s", strings.Join(l, "\n"))
 	}
 }
 

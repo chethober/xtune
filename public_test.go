@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 func publicServer(t *testing.T) (*remote.Server, *httptest.Server) {

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // REALITY targets (SNIs) are sites the server imitates; tuning picked the fastest ones from the

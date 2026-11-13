@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/chethober/xtune/internal/cloudflare"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/cloudflare"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // ---------------------------------------------------------------- plans (server)

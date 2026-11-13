@@ -13,7 +13,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 	"golang.org/x/crypto/ssh"
 	"www.bamsoftware.com/git/dnstt.git/noise"
 )

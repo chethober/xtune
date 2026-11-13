@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/cloudflare"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/cloudflare"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // The autopilot watches for the server's IP being blocked: every config that is reached at the

@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -25,11 +23,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	dnsttclient "github.com/chethober/xtune/internal/dnstt/client"
-	dnsttserver "github.com/chethober/xtune/internal/dnstt/server"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	dnsttserver "github.com/chethober/xtune/pkg/dnstt/server"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 	"golang.org/x/crypto/ssh"
 	"www.bamsoftware.com/git/dnstt.git/dns"
 )
@@ -465,149 +462,7 @@ func contains2s(xs []string, x string) bool {
 // connection, like a client app connecting anew, so reliability means what it means for the
 // Xray configs.
 func tunnelDial(st *state.State, e state.Entry, u state.User, k state.Knobs) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		raw, closeExtra, err := tunnelRaw(st, ctx, e, k)
-		if err != nil {
-			return nil, err
-		}
-		fail := func(err error) (net.Conn, error) {
-			raw.Close()
-			closeExtra()
-			return nil, err
-		}
-		if dl, ok := ctx.Deadline(); ok {
-			raw.SetDeadline(dl)
-		}
-		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(st.SSHHostPub))
-		if err != nil {
-			return fail(fmt.Errorf("server host key: %w", err))
-		}
-		sc, chans, reqs, err := ssh.NewClientConn(raw, addr, &ssh.ClientConfig{User: u.Name,
-			Auth: []ssh.AuthMethod{ssh.Password(protocols.TunnelPassword(u))}, HostKeyCallback: ssh.FixedHostKey(pub)})
-		if err != nil {
-			return fail(err)
-		}
-		cl := ssh.NewClient(sc, chans, reqs)
-		c, err := cl.DialContext(ctx, network, addr)
-		if err != nil {
-			cl.Close()
-			return fail(err)
-		}
-		raw.SetDeadline(time.Time{})
-		return &tunnelConn{Conn: c, close: func() { cl.Close(); raw.Close(); closeExtra() }}, nil
-	}
-}
-
-type tunnelConn struct {
-	net.Conn
-	close func()
-	once  sync.Once
-}
-
-func (t *tunnelConn) Close() error {
-	err := t.Conn.Close()
-	t.once.Do(t.close)
-	return err
-}
-
-// tunnelRaw opens the transport SSH runs over, payload included. closeExtra releases a DNS
-// tunnel session.
-func tunnelRaw(st *state.State, ctx context.Context, e state.Entry, k state.Knobs) (net.Conn, func(), error) {
-	nop := func() {}
-	if e.Kind == "dnstt" {
-		pub, err := hex.DecodeString(st.DNSTTPub)
-		if err != nil {
-			return nil, nop, err
-		}
-		timeout := 30 * time.Second
-		if dl, ok := ctx.Deadline(); ok {
-			timeout = time.Until(dl)
-		}
-		s, err := dnsttclient.Dial(orStr(k.Resolver, protocols.DNSResolvers[0]), pub, st.DNSDomain, timeout)
-		if err != nil {
-			return nil, nop, err
-		}
-		c, err := s.Open()
-		if err != nil {
-			s.Close()
-			return nil, nop, err
-		}
-		return c, func() { s.Close() }, nil
-	}
-	host := st.Addr()
-	if e.CDN() {
-		host = st.CDNDomain
-	}
-	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", protocols.HostPort(host, e.Port))
-	if err != nil {
-		return nil, nop, err
-	}
-	if dl, ok := ctx.Deadline(); ok {
-		c.SetDeadline(dl)
-	}
-	switch e.Kind {
-	case "ssh-tls": // self-signed: pin it
-		tc := tls.Client(c, &tls.Config{ServerName: orStr(e.SNI, st.CertSNI), InsecureSkipVerify: true,
-			VerifyPeerCertificate: pinCert(st.CertHash)})
-		if err := tc.HandshakeContext(ctx); err != nil {
-			c.Close()
-			return nil, nop, err
-		}
-		c = tc
-	case "cdn-ssh": // the CDN's own certificate
-		tc := tls.Client(c, &tls.Config{ServerName: st.CDNDomain})
-		if err := tc.HandshakeContext(ctx); err != nil {
-			c.Close()
-			return nil, nop, err
-		}
-		c = tc
-	}
-	if k.Mode == "ws" || e.CDN() {
-		wsHost := orStr(e.SNI, "www.bing.com")
-		if e.CDN() {
-			wsHost = st.CDNDomain
-		}
-		if c, err = wsUpgrade(c, wsHost); err != nil {
-			return nil, nop, err
-		}
-	}
-	return c, nop, nil
-}
-
-func pinCert(hash string) func([][]byte, [][]*x509.Certificate) error {
-	return func(raw [][]byte, _ [][]*x509.Certificate) error {
-		if len(raw) == 0 {
-			return errors.New("no certificate")
-		}
-		sum := sha256.Sum256(raw[0])
-		if hex.EncodeToString(sum[:]) != hash {
-			return errors.New("certificate does not match the deployment's")
-		}
-		return nil
-	}
-}
-
-// wsUpgrade sends a WebSocket upgrade request and waits for the answer; SSH follows unframed,
-// as HTTP Injector style clients do.
-func wsUpgrade(c net.Conn, host string) (net.Conn, error) {
-	key := base64.StdEncoding.EncodeToString([]byte(randHex(8)))
-	req := "GET / HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
-		"Sec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: Mozilla/5.0\r\n\r\n"
-	if _, err := io.WriteString(c, req); err != nil {
-		c.Close()
-		return nil, err
-	}
-	br := bufio.NewReader(c)
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-	if resp.StatusCode != 101 && resp.StatusCode != 200 {
-		c.Close()
-		return nil, fmt.Errorf("upgrade refused: HTTP %d", resp.StatusCode)
-	}
-	return &bufConn{Conn: c, r: br}, nil
+	return protocols.SSHClient(st, e, u, k).DialFresh(nil)
 }
 
 // localResolvers adds the resolvers this machine is configured with: on many censored networks

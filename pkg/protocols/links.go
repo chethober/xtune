@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // Share links and subscriptions: every server a subscription lists (this one, its relays and the

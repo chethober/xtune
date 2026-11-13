@@ -3,6 +3,11 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to tag and release from this commit (e.g. 1.1.0)"
+        required: true
 
 permissions:
   contents: write
@@ -14,6 +19,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          v="v${{ inputs.version }}"
+          v="${v#vv}"; v="v${v#v}"
+          git tag "$v"
+          git push origin "$v"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

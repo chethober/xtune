@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 // VPNSubnet is each VPN entry's client address range.

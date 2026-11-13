@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 func TestParseBackupSchemas(t *testing.T) {

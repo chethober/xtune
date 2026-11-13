@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chethober/xtune/internal/netinfo"
+	"github.com/chethober/xtune/pkg/netinfo"
 )
 
 type networkRoundTrip func(*http.Request) (*http.Response, error)

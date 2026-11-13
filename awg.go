@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
@@ -17,17 +16,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
-	awgtun "github.com/amnezia-vpn/amneziawg-go/tun"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
-	wgtun "golang.zx2c4.com/wireguard/tun"
-	"golang.zx2c4.com/wireguard/tun/netstack"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
+	"github.com/chethober/xtune/pkg/tunnel"
 )
 
 // AmneziaWG is WireGuard with the handshake disguised: junk packets before it, padded handshake
@@ -309,107 +304,12 @@ func writeAWGStats(c protocols.AWGConf, devs map[string]*device.Device, boot str
 
 // ---------------------------------------------------------------- client
 
-// uapiClient is a client's device config for entry e, connecting to endpoint (an IP:port).
-func uapiClient(st *state.State, e state.Entry, u state.User, k state.Knobs, endpoint string) string {
-	p := *st.AWG
-	priv, _ := protocols.AWGUserKey(u)
-	jc, jmin, jmax, i1 := protocols.AWGClientParams(p, k.Mode)
-	var b strings.Builder
-	fmt.Fprintf(&b, "private_key=%s\njc=%d\njmin=%d\njmax=%d\n", protocols.B64hex(priv), jc, jmin, jmax)
-	protocols.UAPIShared(p, &b)
-	if i1 != "" {
-		fmt.Fprintf(&b, "i1=%s\n", i1)
+// awgDial connects as u through an in-process AmneziaWG client (pkg/tunnel).
+func awgDial(st *state.State, e state.Entry, u state.User, k state.Knobs) *tunnel.AWGDialer {
+	if st.AWG == nil {
+		return tunnel.AWG{}.Dialer() // fails: no AmneziaWG settings
 	}
-	fmt.Fprintf(&b, "public_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n",
-		protocols.B64hex(p.Public), endpoint)
-	return b.String()
-}
-
-// awgDialer connects as u through an in-process AmneziaWG client on a userspace network stack.
-// The tunnel comes up on the first dial; names resolve through it (1.1.1.1), as in the apps.
-type awgDialer struct {
-	st   *state.State
-	e    state.Entry
-	u    state.User
-	k    state.Knobs
-	once sync.Once
-	dev  *device.Device
-	tnet *netstack.Net
-	err  error
-}
-
-func awgDial(st *state.State, e state.Entry, u state.User, k state.Knobs) *awgDialer {
-	return &awgDialer{st: st, e: e, u: u, k: k}
-}
-
-func (a *awgDialer) start() {
-	if a.st.AWG == nil {
-		a.err = errors.New("no AmneziaWG settings")
-		return
-	}
-	host := a.st.Addr()
-	ip, err := netip.ParseAddr(host)
-	if err != nil {
-		ips, err := net.LookupHost(host)
-		if err != nil || len(ips) == 0 {
-			a.err = fmt.Errorf("resolve %s: %v", host, err)
-			return
-		}
-		ip, _ = netip.ParseAddr(ips[0])
-	}
-	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{protocols.AWGAddr(a.e, a.u)}, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, protocols.WGMTU(a.k))
-	if err != nil {
-		a.err = err
-		return
-	}
-	d := device.NewDevice(newNetTUN(tdev), conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
-	if err := d.IpcSet(uapiClient(a.st, a.e, a.u, a.k, netip.AddrPortFrom(ip, uint16(a.e.Port)).String())); err != nil {
-		d.Close()
-		a.err = err
-		return
-	}
-	if err := d.Up(); err != nil {
-		d.Close()
-		a.err = err
-		return
-	}
-	a.dev, a.tnet = d, tnet
-}
-
-// netTUN adapts WireGuard's userspace network stack to amneziawg-go, whose TUN interface is the
-// same but for its own Event type. (amneziawg-go's own copy of the stack needs mid-2025 gvisor,
-// whose Go module builds carry a test file the go command refuses.)
-type netTUN struct {
-	wgtun.Device
-	events chan awgtun.Event
-}
-
-func newNetTUN(d wgtun.Device) *netTUN {
-	t := &netTUN{Device: d, events: make(chan awgtun.Event, 10)}
-	go func() {
-		for ev := range d.Events() {
-			t.events <- awgtun.Event(ev)
-		}
-		close(t.events)
-	}()
-	return t
-}
-
-func (t *netTUN) Events() <-chan awgtun.Event { return t.events }
-
-func (a *awgDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	a.once.Do(a.start)
-	if a.err != nil {
-		return nil, a.err
-	}
-	return a.tnet.DialContext(ctx, network, addr)
-}
-
-func (a *awgDialer) Close() {
-	a.once.Do(func() { a.err = errors.New("closed") })
-	if a.dev != nil {
-		a.dev.Close()
-	}
+	return protocols.AWGClient(st, e, u, k).Dialer()
 }
 
 // ---------------------------------------------------------------- profiles

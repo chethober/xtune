@@ -17,7 +17,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/state"
 )
 
 func randHex(n int) string { b := make([]byte, n); rand.Read(b); return hex.EncodeToString(b) }

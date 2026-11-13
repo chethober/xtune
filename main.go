@@ -19,10 +19,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/chethober/xtune/internal/netinfo"
-	"github.com/chethober/xtune/internal/protocols"
-	"github.com/chethober/xtune/internal/remote"
-	"github.com/chethober/xtune/internal/state"
+	"github.com/chethober/xtune/pkg/netinfo"
+	"github.com/chethober/xtune/pkg/protocols"
+	"github.com/chethober/xtune/pkg/remote"
+	"github.com/chethober/xtune/pkg/state"
 	"golang.org/x/term"
 )
 
@@ -392,14 +392,25 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
 	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
+	var err error
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
+	prepare := fs.Bool("prepare", false, "on the server: start the test matrix and print it for the xtune app to measure (then xtune deploy REPORT)")
+	discard := fs.Bool("discard", false, "on the server: stop a prepared or shared test and forget it")
 	parse(fs, args)
+	if *discard {
+		return discardTest()
+	}
+	if *prepare {
+		if o.Protocols, err = parseProtocols(*protocols); err != nil {
+			return err
+		}
+		return prepareTune(c, o, flagsSet(fs))
+	}
 	o.KeepTest = *share != ""
 	if *only != "" {
 		o.Only = strings.Split(*only, ",")
 	}
-	var err error
 	if o.Protocols, err = parseProtocols(*protocols); err != nil {
 		return err
 	}
