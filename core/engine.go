@@ -800,6 +800,7 @@ type Status struct {
 	Since      int64           `json:"since,omitempty"`
 	Selected   string          `json:"selected,omitempty"`
 	Active     string          `json:"active,omitempty"` // the config in use (Auto: the fastest alive)
+	ActiveName string          `json:"activeName,omitempty"`
 	Outbounds  []OutboundState `json:"outbounds,omitempty"`
 	Up         int64           `json:"up"`
 	Down       int64           `json:"down"`
@@ -807,15 +808,23 @@ type Status struct {
 	KillSwitch bool            `json:"killSwitch,omitempty"` // traffic is blocked outside the tunnel
 	ASN        string          `json:"asn,omitempty"`        // the network the profile is ranked for
 	ProfileRev int             `json:"profileRev"`           // changes when smart reconnect swaps the profile
+	SelRev     int             `json:"selRev"`               // changes when the notification switches config
 }
 
-func CurrentStatus() Status {
+func CurrentStatus() (s Status) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
-	s := Status{Error: engine.lastErr}
+	s = Status{Error: engine.lastErr}
 	ksMu.Lock()
-	s.KillSwitch, s.ASN, s.ProfileRev = ksUndo != nil, watchASN, profileRev
+	s.KillSwitch, s.ASN, s.ProfileRev, s.SelRev = ksUndo != nil, watchASN, profileRev, selRev
 	ksMu.Unlock()
+	defer func() { // named result: every return below carries the name
+		for _, c := range engine.configs {
+			if c.ID == s.Active {
+				s.ActiveName = c.Name
+			}
+		}
+	}()
 	if engine.inst == nil {
 		return s
 	}

@@ -215,6 +215,8 @@ class _StatusText extends StatelessWidget {
         ? T.s('connecting')
         : on
         ? '${fmtDuration(elapsed)} · ${state.settings.selected == null ? T.s('auto') : (state.activeConfig?.name ?? '')}'
+        : state.pausedUntil > DateTime.now().millisecondsSinceEpoch
+        ? T.s('pausedUntil', {'t': TimeOfDay.fromDateTime(DateTime.fromMillisecondsSinceEpoch(state.pausedUntil)).format(context)})
         : T.s('tapToConnect');
     return Column(
       children: [

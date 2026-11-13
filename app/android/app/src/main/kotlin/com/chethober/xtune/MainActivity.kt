@@ -22,6 +22,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val VPN_REQUEST = 7001
         private const val LOCATION_REQUEST = 7002
+        private const val NOTIFY_REQUEST = 7004
     }
 
     private var locationResult: MethodChannel.Result? = null
@@ -71,6 +72,11 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(null)
                 }
+                "setLang" -> {
+                    Xtune.prefs(applicationContext).edit().putString("lang", call.argument<String>("lang") ?: "en").apply()
+                    result.success(null)
+                }
+                "paused" -> result.success(XtuneVpnService.pausedUntil)
                 "stopVpn" -> {
                     XtuneVpnService.stop(this)
                     result.success(null)
@@ -92,7 +98,12 @@ class MainActivity : FlutterActivity() {
     private fun startVpn() {
         val result = pendingResult ?: return
         pendingResult = null
-        XtuneVpnService.onStarted = { reply -> runOnUiThread { result.success(reply) } }
+        XtuneVpnService.onStarted = { reply ->
+            runOnUiThread {
+                result.success(reply)
+                askNotifications() // after the VPN consent dialog, never on top of it
+            }
+        }
         XtuneVpnService.start(this, pendingArgs ?: "{}", pendingMode, pendingApps)
     }
 
@@ -105,6 +116,15 @@ class MainActivity : FlutterActivity() {
         } else {
             pendingResult?.success("{\"ok\":false,\"error\":\"VPN permission was not given\"}")
             pendingResult = null
+        }
+    }
+
+    /** The connection's notification (its speeds and buttons) needs this on Android 13 and later. */
+    private fun askNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), NOTIFY_REQUEST)
         }
     }
 

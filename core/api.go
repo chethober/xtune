@@ -159,6 +159,7 @@ var handlers = map[string]handler{
 		return BuildConfig(in.Profile, in.Options, cs, map[string]int{}, nil), nil
 	},
 
+	"vpn.next": func(a []byte) (any, error) { return NextConfig() },
 	"probe.start": func(a []byte) (any, error) {
 		in, err := decode[struct {
 			Profile *Profile     `json:"profile"`

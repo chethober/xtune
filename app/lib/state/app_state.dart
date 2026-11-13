@@ -38,7 +38,10 @@ class AppState extends ChangeNotifier {
 
   /// Traffic this device moved: day (yyyy-mm-dd) -> subscription ID -> config ID -> bytes.
   Map<String, Map<String, Map<String, int>>> history = {};
-  int _lastUp = 0, _lastDown = 0, _lastSince = 0, _profileRev = 0;
+  int _lastUp = 0, _lastDown = 0, _lastSince = 0, _profileRev = 0, _selRev = -1;
+
+  /// Android: paused from the notification until then (ms since the epoch); 0 when not paused.
+  int pausedUntil = 0;
   bool _historyDirty = false;
   Timer? _maintain;
 
@@ -83,6 +86,7 @@ class AppState extends ChangeNotifier {
           'trusted': settings.trustedWifi,
         });
       } catch (_) {}
+      await _syncLang();
     }
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => refreshStatus());
     _maintain = Timer.periodic(const Duration(minutes: 10), (_) => _maintenance());
@@ -138,6 +142,15 @@ class AppState extends ChangeNotifier {
     f(settings);
     notifyListeners();
     await _save();
+    await _syncLang();
+  }
+
+  /// The connection's notification speaks the app's language, not the phone's.
+  Future<void> _syncLang() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await (core as AndroidCore).native('setLang', {'lang': settings.lang});
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------ network and subscriptions
@@ -233,6 +246,19 @@ class AppState extends ChangeNotifier {
       final s = await core.call('vpn.status');
       status = Map<String, dynamic>.from(s as Map);
       _countTraffic();
+      // the notification's Next config switched: keep that choice for the next connect
+      final sel = (status['selRev'] as num?)?.toInt() ?? 0;
+      if (_selRev >= 0 && sel != _selRev && connected) {
+        final id = status['selected'] as String? ?? '';
+        settings.selected = id.isEmpty ? null : id;
+        unawaited(_save());
+      }
+      _selRev = sel;
+      if (Platform.isAndroid) {
+        try {
+          pausedUntil = connected ? 0 : ((await (core as AndroidCore).native('paused')) as num?)?.toInt() ?? 0;
+        } catch (_) {}
+      }
       final rev = (status['profileRev'] as num?)?.toInt() ?? 0;
       if (rev != _profileRev) {
         _profileRev = rev;
