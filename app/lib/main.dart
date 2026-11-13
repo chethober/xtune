@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -16,6 +17,11 @@ import 'ui/i18n.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    for (final f in ['Inter', 'Vazirmatn', 'JetBrainsMono']) {
+      yield LicenseEntryWithLineBreaks([f], await rootBundle.loadString('assets/fonts/$f-OFL.txt'));
+    }
+  });
   final state = AppState(CoreClient.instance);
   await state.init();
   runApp(XtuneApp(state: state));
@@ -42,7 +48,7 @@ class XtuneApp extends StatelessWidget {
           return MaterialApp(
             title: 'xtune',
             debugShowCheckedModeBanner: false,
-            theme: X.theme(T.lang),
+            theme: appTheme(),
             builder: (context, child) =>
                 Directionality(textDirection: T.rtl ? TextDirection.rtl : TextDirection.ltr, child: child!),
             home: const Shell(),
@@ -133,9 +139,9 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
                     padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
                     color: X.glassStrong,
                     child: Column(children: [
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 16, top: 4),
-                        child: Text('xtune', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: Space.l, top: Space.xs),
+                        child: Text('xtune', style: Type.wordmark.copyWith(fontSize: 18)),
                       ),
                       for (var i = 0; i < tabs.length; i++)
                         Padding(
@@ -153,7 +159,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
                                 Icon(tabs[i].icon, color: i == index ? X.accent : X.muted),
                                 const SizedBox(height: 4),
                                 Text(tabs[i].label,
-                                    style: TextStyle(fontSize: 11, color: i == index ? X.accent : X.muted),
+                                    style: Type.tab.copyWith(color: i == index ? X.accent : X.muted),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis),
                               ]),

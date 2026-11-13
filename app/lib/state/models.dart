@@ -97,7 +97,14 @@ class Settings {
   bool shareResults = true;
   String dns = 'https://1.1.1.1/dns-query';
   String lang = 'en';
-  List<String> excludedApps = [];
+  String sort = 'recommended'; // configs page: recommended | latency | name | type
+  String perAppMode = 'off'; // Android: off | bypass (the listed apps skip the VPN) | only (only they use it)
+  List<String> apps = [];
+  int socksPort = 10808;
+  int httpPort = 10809;
+
+  /// The apps Android leaves out of the VPN, for the bypass mode.
+  List<String> get excludedApps => perAppMode == 'bypass' ? apps : const [];
 
   Map<String, dynamic> toJson() => {
         'mode': mode,
@@ -109,7 +116,11 @@ class Settings {
         'shareResults': shareResults,
         'dns': dns,
         'lang': lang,
-        'excludedApps': excludedApps,
+        'sort': sort,
+        'perAppMode': perAppMode,
+        'apps': apps,
+        'socksPort': socksPort,
+        'httpPort': httpPort,
       };
 
   static Settings fromJson(Map<String, dynamic>? j) {
@@ -124,7 +135,16 @@ class Settings {
     s.shareResults = j['shareResults'] as bool? ?? s.shareResults;
     s.dns = j['dns'] as String? ?? s.dns;
     s.lang = j['lang'] as String? ?? s.lang;
-    s.excludedApps = ((j['excludedApps'] as List?) ?? []).cast<String>();
+    s.sort = j['sort'] as String? ?? s.sort;
+    s.perAppMode = j['perAppMode'] as String? ?? s.perAppMode;
+    s.apps = ((j['apps'] as List?) ?? []).cast<String>();
+    final old = ((j['excludedApps'] as List?) ?? []).cast<String>(); // 1.0.0 had a bypass list only
+    if (s.apps.isEmpty && old.isNotEmpty) {
+      s.apps = old;
+      s.perAppMode = 'bypass';
+    }
+    s.socksPort = j['socksPort'] as int? ?? s.socksPort;
+    s.httpPort = j['httpPort'] as int? ?? s.httpPort;
     return s;
   }
 }

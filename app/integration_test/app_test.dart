@@ -17,13 +17,20 @@ const sub = 'http://127.0.0.1:18080/p/tok';
 Future<void> shot(WidgetTester tester, String name) async {
   final dir = Platform.environment['XTUNE_SHOTS'];
   if (dir == null) return;
-  await tester.pumpAndSettle(const Duration(milliseconds: 200));
+  await settle(tester);
   final boundary = tester.renderObject<RenderRepaintBoundary>(find.byType(RepaintBoundary).first);
   await tester.runAsync(() async {
     final img = await boundary.toImage(pixelRatio: 2);
     final png = await img.toByteData(format: ui.ImageByteFormat.png);
     await File('$dir/$name.png').writeAsBytes(png!.buffer.asUint8List());
   });
+}
+
+/// Lets animations run for a while (the connected glow never settles, so pumpAndSettle would wait forever).
+Future<void> settle(WidgetTester tester, [int ms = 700]) async {
+  for (var i = 0; i < ms ~/ 50; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
 }
 
 Future<void> waitFor(WidgetTester tester, Finder f, {int seconds = 30}) async {
@@ -63,20 +70,20 @@ void main() {
     await shot(tester, '01-empty');
 
     await tester.tap(find.text('Add subscription').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.enterText(find.byType(TextField).first, sub);
     await tester.tap(find.widgetWithText(FilledButton, 'Add'));
     await waitFor(tester, find.text('DE · dev'));
 
     // proxy mode: whole-device mode would ask for administrator rights
     await tester.tap(find.text('Settings').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(find.text('Proxy only'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     await shot(tester, '05-settings');
 
     await tester.tap(find.text('Home').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(find.bySemanticsLabel('Connect'));
     await waitFor(tester, find.text('Connected'));
 
@@ -90,13 +97,13 @@ void main() {
     await shot(tester, '02-home-connected');
 
     await tester.tap(find.text('Configs').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('REALITY · XHTTP'), findsOneWidget);
     expect(find.text('Telegram proxy'), findsOneWidget);
     await shot(tester, '03-configs');
 
     await tester.tap(find.text('Check').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(find.text('Check now'));
     await waitFor(tester, find.textContaining('configs tested'), seconds: 60);
     expect(find.text('BLOCKED'), findsOneWidget); // r-tcp points nowhere
@@ -104,11 +111,11 @@ void main() {
     await shot(tester, '04-check');
 
     await tester.tap(find.text('Manage').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     await shot(tester, '06-manage-empty');
 
     await tester.tap(find.text('Home').first);
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(find.bySemanticsLabel('Disconnect'));
     await waitFor(tester, find.text('Not connected'));
   });

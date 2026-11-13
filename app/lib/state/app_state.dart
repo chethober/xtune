@@ -146,6 +146,8 @@ class AppState extends ChangeNotifier {
         'domestic': settings.domestic,
         'includeDnstt': settings.includeDnstt,
         'dns': settings.dns,
+        'socksPort': settings.socksPort,
+        'httpPort': settings.httpPort,
       };
 
   Future<void> refreshStatus() async {
@@ -173,7 +175,7 @@ class AppState extends ChangeNotifier {
       } catch (_) {} // offline from here is fine: the saved profile works
       final opts = _options();
       if (Platform.isAndroid && settings.mode == 'vpn') {
-        await (core as AndroidCore).startVpn(s.profile, opts, settings.excludedApps);
+        await (core as AndroidCore).startVpn(s.profile, opts, settings.perAppMode, settings.apps);
       } else {
         if (settings.mode == 'vpn') {
           await core.ensureElevated();

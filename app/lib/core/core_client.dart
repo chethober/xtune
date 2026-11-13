@@ -45,10 +45,12 @@ class AndroidCore extends CoreClient {
   }
 
   /// Asks for the VPN permission if needed, then starts the VPN service with this connection.
-  Future<dynamic> startVpn(Map<String, dynamic> profile, Map<String, dynamic> options, List<String> excludedApps) async {
+  /// perAppMode: off, bypass (apps skip the VPN) or only (only apps use it).
+  Future<dynamic> startVpn(Map<String, dynamic> profile, Map<String, dynamic> options, String perAppMode, List<String> apps) async {
     final reply = await channel.invokeMethod<String>('startVpn', {
       'args': jsonEncode({'profile': profile, 'options': options}),
-      'excluded': excludedApps,
+      'perAppMode': perAppMode,
+      'apps': apps,
     });
     return CoreClient.unwrap(reply ?? '{"ok":false,"error":"no reply"}');
   }

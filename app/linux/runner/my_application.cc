@@ -34,6 +34,15 @@ static void my_application_activate(GApplication* application) {
   // gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
 
   gtk_window_set_title(window, "xtune");
+  {
+    // the icon ships next to the program (packaging/linux/xtune.png)
+    g_autofree gchar* exe = g_file_read_link("/proc/self/exe", nullptr);
+    if (exe != nullptr) {
+      g_autofree gchar* dir = g_path_get_dirname(exe);
+      g_autofree gchar* icon = g_build_filename(dir, "xtune.png", nullptr);
+      gtk_window_set_icon_from_file(window, icon, nullptr);
+    }
+  }
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(

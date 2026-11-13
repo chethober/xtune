@@ -29,9 +29,10 @@ class XtuneVpnService : VpnService() {
         @Volatile
         var onStarted: ((String) -> Unit)? = null
 
-        fun start(context: Context, args: String, excluded: ArrayList<String>) {
+        /** mode: off, bypass (apps skip the VPN) or only (only apps use it). */
+        fun start(context: Context, args: String, mode: String, apps: ArrayList<String>) {
             val i = Intent(context, XtuneVpnService::class.java).setAction(ACTION_START)
-                .putExtra("args", args).putStringArrayListExtra("excluded", excluded)
+                .putExtra("args", args).putExtra("mode", mode).putStringArrayListExtra("apps", apps)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
 
@@ -49,10 +50,11 @@ class XtuneVpnService : VpnService() {
         }
         foreground()
         val args = intent?.getStringExtra("args") ?: "{}"
-        val excluded = intent?.getStringArrayListExtra("excluded") ?: arrayListOf()
+        val mode = intent?.getStringExtra("mode") ?: "off"
+        val apps = intent?.getStringArrayListExtra("apps") ?: arrayListOf()
         thread {
             val reply = try {
-                connect(args, excluded)
+                connect(args, mode, apps)
             } catch (e: Exception) {
                 JSONObject().put("ok", false).put("error", e.message ?: e.toString()).toString()
             }
@@ -63,7 +65,7 @@ class XtuneVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
-    private fun connect(args: String, excluded: List<String>): String {
+    private fun connect(args: String, mode: String, apps: List<String>): String {
         Mobile.call("vpn.stop", "{}")
         tun?.close()
         val b = Builder()
@@ -72,11 +74,25 @@ class XtuneVpnService : VpnService() {
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
             .addDnsServer("1.1.1.1")
-        b.addDisallowedApplication(packageName)
-        for (p in excluded) {
-            try {
-                b.addDisallowedApplication(p)
-            } catch (_: Exception) {
+        // Android takes either an allow list or a deny list, not both. This app is never in the
+        // VPN: in "only" mode it is simply not on the list.
+        val chosen = apps.filter { it != packageName }
+        if (mode == "only" && chosen.isNotEmpty()) {
+            for (p in chosen) {
+                try {
+                    b.addAllowedApplication(p)
+                } catch (_: Exception) {
+                }
+            }
+        } else {
+            b.addDisallowedApplication(packageName)
+            if (mode == "bypass") {
+                for (p in chosen) {
+                    try {
+                        b.addDisallowedApplication(p)
+                    } catch (_: Exception) {
+                    }
+                }
             }
         }
         if (Build.VERSION.SDK_INT >= 29) b.setMetered(false)

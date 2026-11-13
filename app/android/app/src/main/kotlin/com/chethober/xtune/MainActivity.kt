@@ -16,7 +16,8 @@ import kotlin.concurrent.thread
 class MainActivity : FlutterActivity() {
     private var pendingResult: MethodChannel.Result? = null
     private var pendingArgs: String? = null
-    private var pendingExcluded: ArrayList<String> = arrayListOf()
+    private var pendingMode: String = "off"
+    private var pendingApps: ArrayList<String> = arrayListOf()
     private var channel: MethodChannel? = null
 
     companion object {
@@ -66,7 +67,8 @@ class MainActivity : FlutterActivity() {
                 }
                 "startVpn" -> {
                     pendingArgs = call.argument<String>("args")
-                    pendingExcluded = ArrayList(call.argument<List<String>>("excluded") ?: emptyList())
+                    pendingMode = call.argument<String>("perAppMode") ?: "off"
+                    pendingApps = ArrayList(call.argument<List<String>>("apps") ?: emptyList())
                     pendingResult = result
                     val consent = VpnService.prepare(this)
                     if (consent != null) {
@@ -97,7 +99,7 @@ class MainActivity : FlutterActivity() {
         val result = pendingResult ?: return
         pendingResult = null
         XtuneVpnService.onStarted = { reply -> runOnUiThread { result.success(reply) } }
-        XtuneVpnService.start(this, pendingArgs ?: "{}", pendingExcluded)
+        XtuneVpnService.start(this, pendingArgs ?: "{}", pendingMode, pendingApps)
     }
 
     @Deprecated("Deprecated in Java")

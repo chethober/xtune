@@ -7,9 +7,8 @@ import '../state/app_state.dart';
 import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
+import '../ui/power_button.dart';
 import 'add_sub.dart';
-
-const bottomPad = 112.0;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.onOpenConfigs});
@@ -57,61 +56,48 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
     final sub = s.sub;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, bottomPad),
+    return XPage(
+      title: 'xtune',
+      leading: Text('xtune', style: Type.wordmark),
+      actions: [if (sub != null) _SubChip(state: s)],
       children: [
-        Row(children: [
-          const Text('xtune', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -0.5)),
-          const Spacer(),
-          if (sub != null) _SubChip(state: s),
-        ]),
         if (s.network != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const Icon(Icons.wifi_rounded, size: 14, color: X.muted),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text('${s.network!['name'] ?? ''} · ${s.network!['asn'] ?? ''}',
-                    style: const TextStyle(fontSize: 13, color: X.muted), overflow: TextOverflow.ellipsis),
-              ),
-            ]),
-          ),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.wifi_rounded, size: 14, color: X.muted),
+            const SizedBox(width: 6),
+            Flexible(child: Text('${s.network!['name'] ?? ''} · ${s.network!['asn'] ?? ''}', style: Type.secondary, overflow: TextOverflow.ellipsis)),
+          ]),
         if (sub == null) ...[
-          const SizedBox(height: 60),
+          const SizedBox(height: 48),
           _EmptyState(onAdd: () => showAddSub(context)),
         ] else ...[
-          const SizedBox(height: 24),
-          Center(child: _PowerButton(state: s)),
-          const SizedBox(height: 18),
+          const SizedBox(height: Space.l),
+          Center(
+            child: PowerButton(
+              on: s.connected,
+              busy: s.busy,
+              label: s.connected ? T.s('disconnect') : T.s('connect'),
+              onTap: s.busy ? null : s.toggle,
+            ),
+          ),
+          const SizedBox(height: Space.s),
           _StatusText(state: s),
-          const SizedBox(height: 22),
+          const SizedBox(height: Space.xl),
           Segmented(
             labels: [T.s('auto'), T.s('pick')],
             selected: s.settings.selected == null ? 0 : 1,
             onSelect: (i) => i == 0 ? s.select(null) : widget.onOpenConfigs(),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: Space.m),
           _UsingNow(state: s, up: _upRate, down: _downRate),
-          const SizedBox(height: 12),
+          const SizedBox(height: Space.m),
           _UsageCard(sub: sub),
         ],
         if (s.connected && (s.status['error'] as String?)?.isNotEmpty == true) ...[
-          const SizedBox(height: 12),
-          Text(s.status['error'] as String, style: const TextStyle(fontSize: 12, color: X.warn)),
+          const SizedBox(height: Space.m),
+          Notice(s.status['error'] as String, color: X.warn, icon: Icons.info_outline_rounded),
         ],
-        if (s.error != null) ...[
-          const SizedBox(height: 12),
-          Glass(
-            color: X.bad.withValues(alpha: 0.12),
-            border: X.bad.withValues(alpha: 0.4),
-            child: Row(children: [
-              const Icon(Icons.error_outline_rounded, color: X.bad),
-              const SizedBox(width: 12),
-              Expanded(child: Text(s.error!, style: const TextStyle(fontSize: 13))),
-            ]),
-          ),
-        ],
+        if (s.error != null) ...[const SizedBox(height: Space.m), Notice(s.error!)],
       ],
     );
   }
@@ -123,9 +109,8 @@ class _SubChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sub = state.sub!;
     return Glass(
-      radius: 22,
+      radius: Radii.card,
       padding: EdgeInsets.zero,
       onTap: () => _pickSub(context, state),
       child: Padding(
@@ -133,7 +118,7 @@ class _SubChip extends StatelessWidget {
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 190),
-            child: Text(sub.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+            child: Text(state.sub!.name, overflow: TextOverflow.ellipsis, style: Type.body.copyWith(fontSize: 14)),
           ),
           const SizedBox(width: 6),
           const Icon(Icons.expand_more_rounded, size: 18),
@@ -144,37 +129,30 @@ class _SubChip extends StatelessWidget {
 }
 
 void _pickSub(BuildContext context, AppState state) {
-  showModalBottomSheet<void>(
-    context: context,
-    backgroundColor: Colors.transparent,
-    builder: (ctx) => Padding(
-      padding: const EdgeInsets.all(12),
-      child: Glass(
-        color: const Color(0xE6151B24),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          for (final s in state.subs)
-            ListTile(
-              leading: Icon(s.id == state.sub?.id ? Icons.radio_button_checked : Icons.radio_button_off,
-                  color: s.id == state.sub?.id ? X.accent : X.muted),
-              title: Text(s.name),
-              subtitle: Text(s.user, style: const TextStyle(color: X.muted)),
-              onTap: () {
-                Navigator.pop(ctx);
-                state.selectSub(s);
-              },
-            ),
-          ListTile(
-            leading: const Icon(Icons.add_rounded),
-            title: Text(T.s('addSub')),
-            onTap: () {
-              Navigator.pop(ctx);
-              showAddSub(context);
-            },
-          ),
-        ]),
+  showXSheet<void>(
+    context,
+    title: T.s('subscriptions'),
+    padded: false,
+    builder: (ctx, _) => Column(mainAxisSize: MainAxisSize.min, children: [
+      for (final s in state.subs)
+        ListTile(
+          leading: Icon(s.id == state.sub?.id ? Icons.radio_button_checked : Icons.radio_button_off, color: s.id == state.sub?.id ? X.accent : X.muted),
+          title: Text(s.name),
+          subtitle: Text(s.user),
+          onTap: () {
+            Navigator.pop(ctx);
+            state.selectSub(s);
+          },
+        ),
+      ListTile(
+        leading: const Icon(Icons.add_rounded),
+        title: Text(T.s('addSub')),
+        onTap: () {
+          Navigator.pop(ctx);
+          showAddSub(context);
+        },
       ),
-    ),
+    ]),
   );
 }
 
@@ -185,65 +163,21 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Glass(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(Space.xxl),
       child: Column(children: [
         const Icon(Icons.link_rounded, size: 48, color: X.accent),
-        const SizedBox(height: 12),
-        Text(T.s('noSub'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Text(T.s('noSubHint'), textAlign: TextAlign.center, style: const TextStyle(color: X.muted)),
-        const SizedBox(height: 20),
+        const SizedBox(height: Space.m),
+        Text(T.s('noSub'), style: Type.title),
+        const SizedBox(height: Space.s),
+        Text(T.s('noSubHint'), textAlign: TextAlign.center, style: Type.secondary),
+        const SizedBox(height: Space.xl),
         FilledButton.icon(
-          style: FilledButton.styleFrom(minimumSize: const Size(200, 52), backgroundColor: X.accent, foregroundColor: X.bg),
+          style: FilledButton.styleFrom(minimumSize: const Size(200, 52)),
           onPressed: onAdd,
           icon: const Icon(Icons.add_rounded),
           label: Text(T.s('addSub')),
         ),
       ]),
-    );
-  }
-}
-
-class _PowerButton extends StatelessWidget {
-  const _PowerButton({required this.state});
-  final AppState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final on = state.connected;
-    return Semantics(
-      button: true,
-      label: on ? T.s('disconnect') : T.s('connect'),
-      child: GestureDetector(
-        onTap: state.busy ? null : state.toggle,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          width: 208,
-          height: 208,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: on
-                ? RadialGradient(colors: [X.accent.withValues(alpha: 0.25), X.accent.withValues(alpha: 0.05), Colors.transparent], stops: const [0, 0.62, 0.7])
-                : null,
-            color: on ? null : X.glass,
-            border: Border.all(color: on ? X.accent.withValues(alpha: 0.4) : X.edge),
-          ),
-          alignment: Alignment.center,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            width: 150,
-            height: 150,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: on ? X.accent : X.track,
-              boxShadow: on ? [BoxShadow(color: X.accent.withValues(alpha: 0.35), blurRadius: 40)] : null,
-            ),
-            child: state.busy
-                ? const Center(child: SizedBox(width: 44, height: 44, child: CircularProgressIndicator(strokeWidth: 3)))
-                : Icon(Icons.power_settings_new_rounded, size: 64, color: on ? X.bg : X.muted),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -263,10 +197,12 @@ class _StatusText extends StatelessWidget {
             ? '${fmtDuration(elapsed)} · ${state.settings.selected == null ? T.s('auto') : (state.activeConfig?.name ?? '')}'
             : T.s('tapToConnect');
     return Column(children: [
-      Text(on ? T.s('connected') : T.s('notConnected'),
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600, color: on ? X.accent : X.text)),
-      const SizedBox(height: 4),
-      Text(sub, style: const TextStyle(fontSize: 14, color: X.muted, fontFeatures: [FontFeature.tabularFigures()])),
+      AnimatedSwitcher(
+        duration: Motion.normal,
+        child: Text(on ? T.s('connected') : T.s('notConnected'), key: ValueKey(on), style: Type.statusBig.copyWith(color: on ? X.accent : X.text)),
+      ),
+      const SizedBox(height: Space.xs),
+      Text(sub, style: Type.secondary.copyWith(fontSize: 14, fontFeatures: const [FontFeature.tabularFigures()])),
     ]);
   }
 }
@@ -291,22 +227,23 @@ class _UsingNow extends StatelessWidget {
         Row(children: [
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(T.s('usingNow').toUpperCase(), style: const TextStyle(fontSize: 12, color: X.muted, letterSpacing: 0.6)),
+              Text(T.s('usingNow').toUpperCase(), style: Type.overline),
               const SizedBox(height: 2),
-              Text(state.connected ? (c?.label ?? '—') : '—', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              AnimatedSwitcher(
+                duration: Motion.normal,
+                child: Text(state.connected ? (c?.label ?? '—') : '—', key: ValueKey(c?.id), style: Type.headline),
+              ),
             ]),
           ),
-          if (state.connected && delay != null && delay > 0)
-            Text('$delay ms', style: const TextStyle(fontSize: 14, color: X.accent, fontWeight: FontWeight.w600)),
+          if (state.connected && delay != null && delay > 0) Text('$delay ms', style: Type.number.copyWith(color: X.accent)),
         ]),
         if (state.connected && alive.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          Text('${T.s('bestHere')} ${T.s('nextIfDrops', {'next': alive.join(', ')})}',
-              style: const TextStyle(fontSize: 13, color: X.muted, height: 1.4)),
+          const SizedBox(height: Space.s),
+          Text('${T.s('bestHere')} ${T.s('nextIfDrops', {'next': alive.join(', ')})}', style: Type.secondary),
         ],
-        const SizedBox(height: 12),
-        const Divider(height: 1, color: X.edge),
-        const SizedBox(height: 10),
+        const SizedBox(height: Space.m),
+        const Divider(),
+        const SizedBox(height: Space.s),
         Row(children: [
           Expanded(child: _Stat(label: T.s('down'), value: '${fmtBytes(down)}/s')),
           Expanded(child: _Stat(label: T.s('up'), value: '${fmtBytes(up)}/s')),
@@ -321,9 +258,9 @@ class _Stat extends StatelessWidget {
   final String label, value;
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(fontSize: 12, color: X.muted)),
+        Text(label, style: Type.caption),
         const SizedBox(height: 2),
-        Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, fontFeatures: [FontFeature.tabularFigures()])),
+        Text(value, style: Type.stat),
       ]);
 }
 
@@ -342,19 +279,20 @@ class _UsageCard extends StatelessWidget {
         Row(children: [
           Expanded(
             child: Text(
-                u.quota > 0 ? T.s('ofQuota', {'used': fmtBytes(u.used), 'quota': fmtBytes(u.quota)}) : T.s('used', {'used': fmtBytes(u.used)}),
-                style: const TextStyle(fontWeight: FontWeight.w600)),
+              u.quota > 0 ? T.s('ofQuota', {'used': fmtBytes(u.used), 'quota': fmtBytes(u.quota)}) : T.s('used', {'used': fmtBytes(u.used)}),
+              style: Type.bodyStrong,
+            ),
           ),
-          if (resets != null) Text(T.s('resetsIn', {'n': resets}), style: const TextStyle(color: X.muted, fontSize: 13)),
+          if (resets != null) Text(T.s('resetsIn', {'n': resets}), style: Type.secondary),
         ]),
-        if (u.quota > 0) ...[const SizedBox(height: 10), Bar(fraction: u.fraction, color: color)],
-        const SizedBox(height: 10),
+        if (u.quota > 0) ...[const SizedBox(height: Space.s), Bar(fraction: u.fraction, color: color)],
+        const SizedBox(height: Space.s),
         Text(
           [
             if (u.devices > 0) T.s('devices', {'n': u.devices}),
             days == null ? T.s('neverExpires') : (days < 0 ? T.s('expired') : T.s('expiresIn', {'n': days})),
           ].join(' · '),
-          style: TextStyle(fontSize: 13, color: days != null && days < 3 ? X.warn : X.muted),
+          style: Type.secondary.copyWith(color: days != null && days < 3 ? X.warn : X.muted),
         ),
       ]),
     );

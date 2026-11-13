@@ -3,7 +3,6 @@ import 'package:material_ui/material_ui.dart';
 import '../main.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
-import 'home.dart' show bottomPad;
 
 class CheckScreen extends StatelessWidget {
   const CheckScreen({super.key});
@@ -37,80 +36,58 @@ class CheckScreen extends StatelessWidget {
       return ((a['warmMs'] as num?) ?? 99999).compareTo((b['warmMs'] as num?) ?? 99999);
     });
 
-    return ListView(
-      padding: const EdgeInsets.only(bottom: bottomPad),
+    return XPage(
+      title: T.s('checkTitle'),
+      subtitle: T.s('checkHint', {'net': net}),
       children: [
-        ScreenTitle(T.s('checkTitle'), subtitle: T.s('checkHint', {'net': net})),
         if (check != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-            child: Glass(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(
-                  running ? T.s('testing', {'n': finished, 'total': tested.length}) : T.s('done', {'n': tested.length}),
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 12),
-                Bar(fraction: tested.isEmpty ? 1 : finished / tested.length),
-                const SizedBox(height: 12),
-                Row(children: [
-                  Expanded(child: _Count(ok, T.s('work'), X.accent)),
-                  Expanded(child: _Count(warn, T.s('throttled'), X.warn)),
-                  Expanded(child: _Count(bad, T.s('blocked'), X.bad)),
-                ]),
-                if (s.reportMessage != null) ...[
-                  const SizedBox(height: 10),
-                  Text(s.reportMessage!, style: const TextStyle(fontSize: 12, color: X.muted)),
-                ],
+          Glass(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(running ? T.s('testing', {'n': finished, 'total': tested.length}) : T.s('done', {'n': tested.length}), style: Type.bodyStrong),
+              const SizedBox(height: Space.m),
+              Bar(fraction: tested.isEmpty ? 1 : finished / tested.length),
+              const SizedBox(height: Space.m),
+              Row(children: [
+                Expanded(child: _Count(ok, T.s('work'), X.accent)),
+                Expanded(child: _Count(warn, T.s('throttled'), X.warn)),
+                Expanded(child: _Count(bad, T.s('blocked'), X.bad)),
               ]),
-            ),
+              if (s.reportMessage != null) ...[const SizedBox(height: Space.s), Text(s.reportMessage!, style: Type.caption)],
+            ]),
           ),
-        if (results.isNotEmpty) Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: SectionLabel(T.s('resultsSoFar'))),
+        if (results.isNotEmpty) SectionLabel(T.s('resultsSoFar')),
         for (final r in results)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 11),
-              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: X.track))),
-              child: Row(children: [
-                Badge2(badge(r['state'] as String).$1, badge(r['state'] as String).$2),
-                const SizedBox(width: 12),
-                Expanded(
-                    flex: 3,
-                    child: Text(r['name'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 8),
-                Flexible(
-                    flex: 2,
-                    child: Text(_detail(r),
-                        textAlign: TextAlign.end, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: X.muted))),
-              ]),
-            ),
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 11),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: X.track))),
+            child: Row(children: [
+              AnimatedSwitcher(
+                duration: Motion.normal,
+                child: Badge2(badge(r['state'] as String).$1, badge(r['state'] as String).$2, key: ValueKey(r['state'])),
+              ),
+              const SizedBox(width: Space.m),
+              Expanded(flex: 3, child: Text(r['name'] as String? ?? '', style: Type.body, overflow: TextOverflow.ellipsis)),
+              const SizedBox(width: Space.s),
+              Flexible(
+                flex: 2,
+                child: Text(_detail(r), textAlign: TextAlign.end, maxLines: 1, overflow: TextOverflow.ellipsis, style: Type.secondary),
+              ),
+            ]),
           ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-          child: Column(children: [
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              value: s.settings.shareResults,
-              onChanged: (v) => s.updateSettings((x) => x.shareResults = v ?? true),
-              title: Text(T.s('shareResults'), style: const TextStyle(fontSize: 13, color: X.muted)),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: running
-                  ? OutlinedButton(
-                      style: OutlinedButton.styleFrom(foregroundColor: X.text, side: const BorderSide(color: X.edge), backgroundColor: X.glass),
-                      onPressed: s.stopCheck,
-                      child: Text(T.s('stop')))
-                  : FilledButton(
-                      style: FilledButton.styleFrom(backgroundColor: X.accent, foregroundColor: X.bg),
-                      onPressed: s.sub == null ? null : s.startCheck,
-                      child: Text(check == null ? T.s('checkStart') : T.s('checkAgain'))),
-            ),
-          ]),
+        const SizedBox(height: Space.l),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          value: s.settings.shareResults,
+          onChanged: (v) => s.updateSettings((x) => x.shareResults = v ?? true),
+          title: Text(T.s('shareResults'), style: Type.secondary),
+        ),
+        const SizedBox(height: Space.s),
+        SizedBox(
+          height: 52,
+          child: running
+              ? OutlinedButton(onPressed: s.stopCheck, child: Text(T.s('stop')))
+              : FilledButton(onPressed: s.sub == null ? null : s.startCheck, child: Text(check == null ? T.s('checkStart') : T.s('checkAgain'))),
         ),
       ],
     );
@@ -148,7 +125,11 @@ class _Count extends StatelessWidget {
   final Color color;
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('$n', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: color)),
-        Text(label, style: const TextStyle(fontSize: 12, color: X.muted)),
+        TweenAnimationBuilder<int>(
+          tween: IntTween(end: n),
+          duration: Motion.normal,
+          builder: (_, v, _) => Text('$v', style: Type.stat.copyWith(fontSize: 20, color: color)),
+        ),
+        Text(label, style: Type.caption),
       ]);
 }

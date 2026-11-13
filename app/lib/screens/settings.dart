@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -8,7 +9,6 @@ import '../main.dart';
 import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
-import 'home.dart' show bottomPad;
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -17,53 +17,76 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
     final st = s.settings;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, bottomPad),
+    Future<void> reconnect() async {
+      if (s.connected) await s.connect();
+    }
+
+    return XPage(
+      title: T.s('settings'),
       children: [
-        Padding(padding: const EdgeInsets.only(left: 0), child: ScreenTitle(T.s('settings'))),
         Segmented(
           labels: [T.s('modeVpn'), T.s('modeProxy')],
           selected: st.mode == 'vpn' ? 0 : 1,
           onSelect: (i) async {
             await s.updateSettings((x) => x.mode = i == 0 ? 'vpn' : 'proxy');
-            if (s.connected) await s.connect();
+            await reconnect();
           },
         ),
-        if (st.mode == 'vpn' && !Platform.isAndroid)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
-            child: Text(T.s('adminNeeded'), style: const TextStyle(fontSize: 12, color: X.muted)),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Space.xs, Space.s, Space.xs, 0),
+          child: Text(
+            st.mode == 'vpn'
+                ? (Platform.isAndroid ? T.s('modeVpnHint') : T.s('adminNeeded'))
+                : T.s('modeProxyHint', {'socks': st.socksPort, 'http': st.httpPort}),
+            style: Type.caption,
           ),
-        if (st.mode == 'proxy')
-          const Padding(
-            padding: EdgeInsets.fromLTRB(4, 8, 4, 0),
-            child: Text('SOCKS 127.0.0.1:10808 · HTTP 127.0.0.1:10809', style: TextStyle(fontSize: 12, color: X.muted)),
-          ),
+        ),
         SectionLabel(T.s('routing')),
-        _Group(children: [
-          _Switch(T.s('domestic'), T.s('domesticHint'), st.domestic, (v) => s.updateSettings((x) => x.domestic = v)),
-          _Switch(T.s('blockAds'), T.s('blockAdsHint'), st.blockAds, (v) => s.updateSettings((x) => x.blockAds = v)),
-          _Switch(T.s('dnstt'), T.s('dnsttHint'), st.includeDnstt, (v) => s.updateSettings((x) => x.includeDnstt = v)),
-          if (st.mode == 'proxy') _Switch(T.s('shareLan'), T.s('shareLanHint'), st.shareLan, (v) => s.updateSettings((x) => x.shareLan = v)),
-          if (Platform.isAndroid)
-            _Value(T.s('perApp'), T.s('perAppHint', {'n': st.excludedApps.length}), '', () => _pickApps(context)),
+        Group(children: [
+          _Switch(T.s('domestic'), T.s('domesticHint'), st.domestic, (v) => s.updateSettings((x) => x.domestic = v).then((_) => reconnect())),
+          _Switch(T.s('blockAds'), T.s('blockAdsHint'), st.blockAds, (v) => s.updateSettings((x) => x.blockAds = v).then((_) => reconnect())),
+          _Switch(T.s('dnstt'), T.s('dnsttHint'), st.includeDnstt, (v) => s.updateSettings((x) => x.includeDnstt = v).then((_) => reconnect())),
+        ]),
+        if (Platform.isAndroid) ...[
+          SectionLabel(T.s('perApp')),
+          Group(children: [
+            Padding(
+              padding: const EdgeInsets.all(Space.m),
+              child: Segmented(
+                labels: [T.s('perAppOff'), T.s('perAppBypass'), T.s('perAppOnly')],
+                selected: ['off', 'bypass', 'only'].indexOf(st.perAppMode).clamp(0, 2),
+                onSelect: (i) => s.updateSettings((x) => x.perAppMode = ['off', 'bypass', 'only'][i]).then((_) => reconnect()),
+              ),
+            ),
+            if (st.perAppMode != 'off')
+              _Value(
+                st.perAppMode == 'bypass' ? T.s('perAppBypassTitle') : T.s('perAppOnlyTitle'),
+                st.perAppMode == 'bypass' ? T.s('perAppBypassHint') : T.s('perAppOnlyHint'),
+                T.s('nApps', {'n': st.apps.length}),
+                () => _pickApps(context),
+              ),
+          ]),
+        ],
+        SectionLabel(T.s('localProxy')),
+        Group(children: [
+          _Value(T.s('socksPort'), T.s('socksPortHint'), '${st.socksPort}', () => _editPort(context, socks: true)),
+          _Value(T.s('httpPort'), T.s('httpPortHint'), '${st.httpPort}', () => _editPort(context, socks: false)),
+          _Switch(T.s('shareLan'), T.s('shareLanHint'), st.shareLan, (v) => s.updateSettings((x) => x.shareLan = v).then((_) => reconnect())),
         ]),
         SectionLabel(T.s('app')),
-        _Group(children: [
-          _Value(T.s('dns'), 'DNS over HTTPS, through the tunnel', Uri.tryParse(st.dns)?.host ?? st.dns, () => _editDns(context)),
+        Group(children: [
+          _Value(T.s('dns'), T.s('dnsHint'), Uri.tryParse(st.dns)?.host ?? st.dns, () => _editDns(context)),
           _Value(T.s('language'), 'English, فارسی', T.languages[st.lang] ?? st.lang, () => _pickLang(context)),
         ]),
         SectionLabel(T.s('subscriptions')),
-        _Group(children: [
+        Group(children: [
           for (final sub in s.subs) _SubRow(sub: sub),
-          if (s.subs.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('—', style: TextStyle(color: X.muted))),
+          if (s.subs.isEmpty) Padding(padding: const EdgeInsets.all(Space.l), child: Text('—', style: Type.secondary)),
         ]),
-        const SizedBox(height: 20),
+        const SizedBox(height: Space.xl),
         FutureBuilder(
           future: CoreClient.instance.call('version'),
-          builder: (_, snap) => Center(
-            child: Text('xtune client ${(snap.data as Map?)?['version'] ?? ''}', style: const TextStyle(fontSize: 12, color: X.muted)),
-          ),
+          builder: (_, snap) => Center(child: Text('xtune client ${(snap.data as Map?)?['version'] ?? ''}', style: Type.caption)),
         ),
       ],
     );
@@ -73,29 +96,81 @@ class SettingsScreen extends StatelessWidget {
     final s = AppScope.of(context);
     final apps = await (CoreClient.instance as AndroidCore).installedApps();
     if (!context.mounted) return;
-    final excluded = {...s.settings.excludedApps};
-    await showModalBottomSheet<void>(
+    final chosen = {...s.settings.apps};
+    var query = '';
+    await showXSheet<void>(
+      context,
+      title: s.settings.perAppMode == 'bypass' ? T.s('perAppBypassTitle') : T.s('perAppOnlyTitle'),
+      padded: false,
+      builder: (ctx, setState) {
+        final shown = apps
+            .where((a) => query.isEmpty || (a['label'] ?? '').toLowerCase().contains(query) || a['package']!.contains(query))
+            .toList()
+          ..sort((a, b) {
+            final ca = chosen.contains(a['package']) ? 0 : 1, cb = chosen.contains(b['package']) ? 0 : 1;
+            return ca != cb ? ca - cb : (a['label'] ?? '').toLowerCase().compareTo((b['label'] ?? '').toLowerCase());
+          });
+        return Column(mainAxisSize: MainAxisSize.min, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Space.l, 0, Space.l, Space.s),
+            child: TextField(
+              onChanged: (v) => setState(() => query = v.trim().toLowerCase()),
+              decoration: InputDecoration(prefixIcon: const Icon(Icons.search_rounded), hintText: T.s('search')),
+            ),
+          ),
+          for (final a in shown)
+            CheckboxListTile(
+              value: chosen.contains(a['package']),
+              title: Text(a['label'] ?? a['package']!),
+              subtitle: Text(a['package']!, style: Type.caption.copyWith(fontSize: 11)),
+              onChanged: (v) => setState(() => v == true ? chosen.add(a['package']!) : chosen.remove(a['package'])),
+            ),
+        ]);
+      },
+    );
+    await s.updateSettings((x) => x.apps = chosen.toList());
+    if (s.connected) await s.connect();
+  }
+
+  static Future<void> _editPort(BuildContext context, {required bool socks}) async {
+    final s = AppScope.of(context);
+    final ctl = TextEditingController(text: '${socks ? s.settings.socksPort : s.settings.httpPort}');
+    String? err;
+    final v = await showDialog<int>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xF0151B24),
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.8,
-          builder: (ctx, scroll) => ListView(controller: scroll, children: [
-            Padding(padding: const EdgeInsets.all(16), child: Text(T.s('perApp'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600))),
-            for (final a in apps)
-              CheckboxListTile(
-                value: excluded.contains(a['package']),
-                title: Text(a['label'] ?? a['package']!),
-                subtitle: Text(a['package']!, style: const TextStyle(fontSize: 11, color: X.muted)),
-                onChanged: (v) => setState(() => v == true ? excluded.add(a['package']!) : excluded.remove(a['package'])),
-              ),
-          ]),
+        builder: (ctx, setState) => AlertDialog(
+          title: Text(socks ? T.s('socksPort') : T.s('httpPort')),
+          content: TextField(
+            controller: ctl,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: InputDecoration(hintText: socks ? '10808' : '10809', errorText: err),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(T.s('cancel'))),
+            FilledButton(
+              onPressed: () {
+                final p = int.tryParse(ctl.text) ?? 0;
+                final other = socks ? s.settings.httpPort : s.settings.socksPort;
+                if (p < 1024 || p > 65535) {
+                  setState(() => err = T.s('portRange'));
+                } else if (p == other) {
+                  setState(() => err = T.s('portSame'));
+                } else {
+                  Navigator.pop(ctx, p);
+                }
+              },
+              child: const Text('OK'),
+            ),
+          ],
         ),
       ),
     );
-    await s.updateSettings((x) => x.excludedApps = excluded.toList());
+    if (v == null) return;
+    await s.updateSettings((x) => socks ? x.socksPort = v : x.httpPort = v);
+    if (s.connected) await s.connect();
   }
 
   static Future<void> _editDns(BuildContext context) async {
@@ -112,7 +187,10 @@ class SettingsScreen extends StatelessWidget {
         ],
       ),
     );
-    if (v != null && v.startsWith('https://')) await s.updateSettings((x) => x.dns = v);
+    if (v != null && v.startsWith('https://')) {
+      await s.updateSettings((x) => x.dns = v);
+      if (s.connected) await s.connect();
+    }
   }
 
   static Future<void> _pickLang(BuildContext context) async {
@@ -121,30 +199,10 @@ class SettingsScreen extends StatelessWidget {
       context: context,
       builder: (ctx) => SimpleDialog(
         title: Text(T.s('language')),
-        children: [
-          for (final e in T.languages.entries) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, e.key), child: Text(e.value)),
-        ],
+        children: [for (final e in T.languages.entries) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, e.key), child: Text(e.value))],
       ),
     );
     if (v != null) await s.updateSettings((x) => x.lang = v);
-  }
-}
-
-class _Group extends StatelessWidget {
-  const _Group({required this.children});
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Glass(
-      padding: EdgeInsets.zero,
-      child: Column(children: [
-        for (var i = 0; i < children.length; i++) ...[
-          if (i > 0) const Divider(height: 1, color: X.edge),
-          children[i],
-        ],
-      ]),
-    );
   }
 }
 
@@ -155,13 +213,7 @@ class _Switch extends StatelessWidget {
   final ValueChanged<bool> onChanged;
 
   @override
-  Widget build(BuildContext context) => SwitchListTile(
-        value: value,
-        onChanged: onChanged,
-        activeTrackColor: X.accent,
-        title: Text(label, style: const TextStyle(fontSize: 15)),
-        subtitle: Text(hint, style: const TextStyle(fontSize: 12, color: X.muted)),
-      );
+  Widget build(BuildContext context) => SwitchListTile(value: value, onChanged: onChanged, title: Text(label), subtitle: Text(hint));
 }
 
 class _Value extends StatelessWidget {
@@ -172,9 +224,13 @@ class _Value extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ListTile(
         onTap: onTap,
-        title: Text(label, style: const TextStyle(fontSize: 15)),
-        subtitle: Text(hint, style: const TextStyle(fontSize: 12, color: X.muted)),
-        trailing: Text(value, style: const TextStyle(color: X.muted)),
+        title: Text(label),
+        subtitle: Text(hint),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(value, style: Type.secondary),
+          const SizedBox(width: Space.xs),
+          const Icon(Icons.chevron_right_rounded, color: X.muted, size: 20),
+        ]),
       );
 }
 
@@ -187,7 +243,7 @@ class _SubRow extends StatelessWidget {
     final s = AppScope.of(context);
     return ListTile(
       title: Text(sub.name),
-      subtitle: Text('${sub.user} · ${sub.configs.length} configs', style: const TextStyle(fontSize: 12, color: X.muted)),
+      subtitle: Text('${sub.user} · ${T.s('nConfigs', {'n': sub.configs.length})}'),
       trailing: PopupMenuButton<String>(
         onSelected: (v) async {
           switch (v) {
