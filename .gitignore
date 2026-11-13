@@ -1,0 +1,10 @@
+core/testdata/geo/
+build/
+.dart_tool/
+*.iml
+.idea/
+app/android/app/libs/
+app/assets/core/
+app/android/key.properties
+*.jks
+*.keystore
