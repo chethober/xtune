@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -362,22 +361,14 @@ func Start(p *Profile, o Options) error {
 	}
 	cfg := BuildConfig(p, o, configs, ports, hosts)
 	b, _ := json.Marshal(cfg)
-	xc, err := xcore.LoadConfig("json", bytes.NewReader(b))
+	inst, err := startXray(b)
 	if err != nil {
-		return fail(fmt.Errorf("config: %w", err))
-	}
-	inst, err := xcore.New(xc)
-	if err != nil {
-		return fail(fmt.Errorf("start: %w", err))
-	}
-	if err := inst.Start(); err != nil {
-		inst.Close()
-		return fail(fmt.Errorf("start: %w", err))
+		return fail(err)
 	}
 	var undo func()
 	if o.Mode == "tun" && o.Routes {
 		if undo, err = setRoutes(o.TunName, bypass); err != nil {
-			inst.Close()
+			closeXray(inst)
 			return fail(fmt.Errorf("routes: %w", err))
 		}
 	}
@@ -402,7 +393,7 @@ func Stop() {
 		engine.undo = nil
 	}
 	if engine.inst != nil {
-		engine.inst.Close()
+		closeXray(engine.inst)
 		engine.inst = nil
 	}
 	for _, c := range engine.closers {

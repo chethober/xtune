@@ -318,23 +318,44 @@ func transportFor(p *Profile, c protocols.ClientEntry, timeout time.Duration) (h
 		cfg := J{"log": J{"loglevel": "none"}, "outbounds": obs,
 			"inbounds": []J{{"tag": "in", "listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": J{"udp": false}}}}
 		b, _ := json.Marshal(cfg)
-		xc, err := xcore.LoadConfig("json", bytes.NewReader(b))
+		inst, err := startXray(b)
 		if err != nil {
-			return nil, nil, err
-		}
-		inst, err := xcore.New(xc)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := inst.Start(); err != nil {
-			inst.Close()
 			return nil, nil, err
 		}
 		pu, _ := url.Parse("socks5h://127.0.0.1:" + strconv.Itoa(port))
 		base.Proxy = http.ProxyURL(pu)
-		return base, func() { base.CloseIdleConnections(); inst.Close() }, nil
+		return base, func() { base.CloseIdleConnections(); closeXray(inst) }, nil
 	}
 	return nil, nil, errors.New("runs in another app")
+}
+
+// xrayMu serializes creating and closing Xray instances: xray-core sets process-wide state (its
+// system dialer) as an instance is built, so the check's parallel probes and the connection
+// must not build theirs at the same moment. Running instances do not need it.
+var xrayMu sync.Mutex
+
+func startXray(config []byte) (*xcore.Instance, error) {
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
+	xc, err := xcore.LoadConfig("json", bytes.NewReader(config))
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	inst, err := xcore.New(xc)
+	if err != nil {
+		return nil, fmt.Errorf("start: %w", err)
+	}
+	if err := inst.Start(); err != nil {
+		inst.Close()
+		return nil, fmt.Errorf("start: %w", err)
+	}
+	return inst, nil
+}
+
+func closeXray(inst *xcore.Instance) {
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
+	inst.Close()
 }
 
 func freePort() (int, error) {
