@@ -23,7 +23,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     env:
       FROM: ${{ inputs.from || 'v1.2.0' }}
       TO: ${{ inputs.to || 'v1.3.0' }}
@@ -42,18 +42,19 @@ jobs:
           ls -la apks
       - uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 33
           arch: x86_64
-          target: google_apis
+          target: default
+          emulator-boot-timeout: 600
           disable-animations: true
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           script: |
             adb logcat -c
-            if [ -f apks/from.apk ]; then adb install apks/from.apk; fi
-            adb install -r apks/to.apk 2>&1 | tee install.txt
+            if [ -f apks/from.apk ]; then timeout 180 adb install apks/from.apk; fi
+            timeout 180 adb install -r apks/to.apk 2>&1 | tee install.txt
             grep -q Success install.txt || { echo "::error::the update was refused: $(cat install.txt)"; adb logcat -d | grep -iE "PackageManager|PackageInstaller|INSTALL_" | tail -40; exit 1; }
             adb shell dumpsys package com.chethober.xtune | grep -E "versionCode|versionName" | head -3
-            adb shell am start -W -n com.chethober.xtune/.MainActivity
+            timeout 60 adb shell am start -n com.chethober.xtune/.MainActivity
             sleep 20
             adb logcat -d > logcat.txt
             grep -E "FATAL EXCEPTION|AndroidRuntime" -A 30 logcat.txt | head -80 || true
