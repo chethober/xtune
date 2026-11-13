@@ -68,6 +68,14 @@ link and reads two endpoints next to it:
   [ranking](tuning.md), so other subscribers there get the configs that work first. A user's reports count at most
   every 10 minutes per network, and each moves a score halfway to what was measured.
 
+The app also manages the operator's own servers over SSH (users, doctor, logs, a console) and can **tune** them:
+it runs `xtune tune --prepare [--protocols ssh,dnstt,mtproto,awg] [--depth smart]` on the server, which starts the
+test matrix and prints it as a client profile (the test user only, no server secrets); the app measures every
+variant from the phone's network, uploads its report and runs `xtune deploy -n N REPORT` there. Users and their
+links are kept, as with any tune. OpenVPN and IKEv2 variants are left out, since other apps run them. `xtune tune
+--discard` stops a prepared test before its two hours are up. The app updates xtune (`xtune self-update`) and
+Xray (`xtune xray update`) the same way.
+
 ## Alerts
 
 Optional Telegram bot or webhook (Slack, Discord, ...): a user at 80% and 100% of their quota, 3 days before and at expiry, and the deployed Xray not answering. Each alert is sent once.

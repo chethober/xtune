@@ -38,7 +38,8 @@ type Pending struct {
 	ID       string       `json:"id"`
 	Created  int64        `json:"created"`
 	Network  string       `json:"network,omitempty"`
-	ASN      string       `json:"asn,omitempty"` // the tuning network's, for the per-network rankings
+	ASN      string       `json:"asn,omitempty"`      // the tuning network's, for the per-network rankings
+	Prepared bool         `json:"prepared,omitempty"` // tune --prepare: nothing measured here, the reports are all there is
 	State    *state.State `json:"state"`
 	Variants []*Variant   `json:"variants"`
 }
@@ -258,6 +259,12 @@ func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (
 		own.Score[v.Label] = v.Score
 	}
 	nets := []netScores{own}
+	if p.Prepared {
+		if len(reports) == 0 {
+			return nil, fmt.Errorf("this tune was prepared for the xtune app: deploy it with the app's report")
+		}
+		nets = nil
+	}
 	for _, rep := range reports {
 		if rep.ID != p.ID {
 			return nil, fmt.Errorf("the report from %q is for another tune (%s, waiting: %s)", rep.Network, rep.ID, p.ID)
@@ -269,6 +276,7 @@ func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (
 		nets = append(nets, ns)
 	}
 	chosen, uncovered := mergeChoice(p.Variants, nets, n)
+	chosen = withFamilies(chosen, p.Variants, nets)
 	for i, v := range chosen {
 		chosen[i] = domainVariant(v, p.Variants)
 	}
@@ -296,9 +304,11 @@ func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (
 	for _, v := range chosen {
 		labels[v.Entry.ID] = v.Label
 	}
-	scores, addrs := variantRank(st.Entries, p.Variants)
-	if err := RecordNetwork(r, netinfo.Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
-		fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
+	if !p.Prepared {
+		scores, addrs := variantRank(st.Entries, p.Variants)
+		if err := RecordNetwork(r, netinfo.Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
+			fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
+		}
 	}
 	for _, rep := range reports {
 		scores, addrs := labelRank(st.Entries, labels, rep.Results)

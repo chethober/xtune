@@ -124,7 +124,7 @@ func cmdDeploy(args []string) error {
 		}
 		reps = append(reps, &rep)
 	}
-	r, err := connect(c)
+	r, err := target(c) // on the server itself, for a tune the xtune app measured
 	if err != nil {
 		return err
 	}

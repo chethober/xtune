@@ -64,37 +64,44 @@ func ClientProfileFor(st *state.State, u state.User) ClientProfile {
 	p := ClientProfile{V: ClientProfileVersion, Name: SubName(st, u), User: u.Name, Country: st.Country, Probe: ProbeURL, Frag: FragOutbounds()}
 	for _, s := range subServers(st) {
 		for _, e := range linkEntries(s) {
-			k := e.Knobs()
-			c := ClientEntry{ID: e.ID, Key: state.EntryKey(e), Name: ConfigName(s, e, u), Kind: e.Kind, Label: KindLabel(e.Kind),
-				Server: DialAddr(s, e, k), Link: Link(s, e, u, k)}
-			switch {
-			case e.Xray():
-				c.Engine, c.Outbound = "xray", Outbound(s, e, u, k, "proxy-"+e.ID)
-			case e.Kind == "amneziawg":
-				if s.AWG == nil {
-					continue
-				}
-				a := AWGClient(s, e, u, k)
-				c.Engine, c.AWG = "awg", &a
-			case e.SSH() && e.Kind != "mtproto":
-				sc := SSHClient(s, e, u, k)
-				c.Engine, c.SSH = "ssh", &sc
-				if sc.DNSTT != nil {
-					c.Server = ""
-				}
-			default: // OpenVPN, IKEv2, MTProto
-				c.Engine = "handoff"
-				if e.Kind == "mtproto" {
-					c.Link = MTProtoLink(s, e, u)
-				}
-				if fs := profiles(s, e, u); len(fs) > 0 {
-					c.File = &fs[0]
-				}
+			if c, ok := ClientEntryFor(s, e, u, e.Knobs(), "proxy-"+e.ID); ok {
+				p.Configs = append(p.Configs, c)
 			}
-			p.Configs = append(p.Configs, c)
 		}
 	}
 	return p
+}
+
+// ClientEntryFor is u's config for entry e on server s with client settings k; tag names its Xray
+// outbound. False when s cannot serve it to an app (AmneziaWG without its keys).
+func ClientEntryFor(s *state.State, e state.Entry, u state.User, k state.Knobs, tag string) (ClientEntry, bool) {
+	c := ClientEntry{ID: e.ID, Key: state.EntryKey(e), Name: ConfigName(s, e, u), Kind: e.Kind, Label: KindLabel(e.Kind),
+		Server: DialAddr(s, e, k), Link: Link(s, e, u, k)}
+	switch {
+	case e.Xray():
+		c.Engine, c.Outbound = "xray", Outbound(s, e, u, k, tag)
+	case e.Kind == "amneziawg":
+		if s.AWG == nil {
+			return c, false
+		}
+		a := AWGClient(s, e, u, k)
+		c.Engine, c.AWG = "awg", &a
+	case e.SSH() && e.Kind != "mtproto":
+		sc := SSHClient(s, e, u, k)
+		c.Engine, c.SSH = "ssh", &sc
+		if sc.DNSTT != nil {
+			c.Server = ""
+		}
+	default: // OpenVPN, IKEv2, MTProto
+		c.Engine = "handoff"
+		if e.Kind == "mtproto" {
+			c.Link = MTProtoLink(s, e, u)
+		}
+		if fs := profiles(s, e, u); len(fs) > 0 {
+			c.File = &fs[0]
+		}
+	}
+	return c, true
 }
 
 // SSHClient is u's connection to an SSH entry (ssh, ssh-tls, cdn-ssh, dnstt).

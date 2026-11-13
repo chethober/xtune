@@ -56,6 +56,7 @@ type TuneOpts struct {
 	Cloudflare                    string   // API token ("" = the deployment's): DNS records for new domains, the Worker relay
 	Zone                          string   // Cloudflare zone: domains not given get random names in it
 	CleanIPs                      int      // CDN and Worker configs: also measure them through this many clean edge IPs
+	Prepare                       bool     // start the test matrix without measuring it: an app measures it (tune --prepare)
 	Log                           func(string)
 
 	deployed *state.State  // the server's deployment, if any
@@ -1124,6 +1125,9 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 
 	vs := supportedKnobs(o.XrayBin, st, ExpandVariants(entries, o.Depth, o.Resolvers...), o.Log)
 	vs = addCleanIPVariants(st, entries, vs, o.CleanIPs, o.Log)
+	if o.Prepare {
+		return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Network: netw, NetName: o.Network}, nil
+	}
 	if err := RunTests(o, st, tuneUser, vs); err != nil {
 		return nil, err
 	}

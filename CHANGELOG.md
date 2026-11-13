@@ -5,13 +5,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-13
+
 ### Added
+- Tuning from the xtune client app: `xtune tune --prepare` (run on the server, which the app does over SSH) starts
+  the test matrix for the deployed protocols and any asked for (`--protocols ssh,dnstt,mtproto,awg`) without
+  measuring it, and prints it as a client profile, one config per variant. The app measures them from its own
+  network and `xtune deploy REPORT`, now also run on the server itself, deploys from that report alone. `xtune tune
+  --discard` stops a prepared or shared test. [Server →](docs/server.md#the-client-app)
+- A deploy merged from several networks keeps one config of each opt-in protocol (SSH, DNS tunnel, MTProto,
+  AmneziaWG, …) that worked on some network, as a single network's deploy already did.
 - Endpoints for the xtune client app next to each subscription: `…/TOKEN/client`, the user's configs as JSON with
   what an app needs to connect to each (ordered for the app's network), and `POST …/TOKEN/report`, where the app
   sends what it measured, which joins that network's ranking. [Server →](docs/server.md#the-client-app)
 - The subscription page's one-tap import links include the xtune client app (`xtune://import?url=…`).
 - `pkg/tunnel`: the SSH (plain, TLS, CDN WebSocket, DNS tunnel) and AmneziaWG client, which tuning and the client
   app share.
+- `protocols.ClientEntryFor`: one config of a client profile, for any entry and client settings.
 
 ### Fixed
 - Country flags follow where the server is, not where its IP block is registered: the server looks up its
