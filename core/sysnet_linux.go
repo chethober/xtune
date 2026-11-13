@@ -133,3 +133,30 @@ func setSystemProxy(httpPort, socksPort int) (func(), error) {
 	}
 	return func() { run("gsettings", "set", "org.gnome.system.proxy", "mode", orStr(oldMode, "none")) }, nil
 }
+
+// enableKillSwitch adds blackhole routes under the tunnel's own (a higher metric loses to them
+// while the tunnel is up): when the TUN interface goes away, its routes go with it and traffic
+// meets the blackhole instead of the normal default route. The servers' and the local network's
+// more specific routes still win. Only Disconnect removes it.
+func enableKillSwitch() (func(), error) {
+	var undo []func()
+	for _, r := range [][]string{{"-4", "0.0.0.0/1"}, {"-4", "128.0.0.0/1"}, {"-6", "::/1"}, {"-6", "8000::/1"}} {
+		args := []string{r[0], "route", "replace", "blackhole", r[1], "metric", "4242"}
+		if err := run("ip", args...); err != nil {
+			if r[0] == "-6" {
+				continue // no IPv6 here
+			}
+			for _, u := range undo {
+				u()
+			}
+			return nil, err
+		}
+		fam, dst := r[0], r[1]
+		undo = append(undo, func() { run("ip", fam, "route", "del", "blackhole", dst, "metric", "4242") })
+	}
+	return func() {
+		for _, u := range undo {
+			u()
+		}
+	}, nil
+}

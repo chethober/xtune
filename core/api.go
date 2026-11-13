@@ -63,12 +63,16 @@ var handlers = map[string]handler{
 	"setup": func(a []byte) (any, error) {
 		in, err := decode[struct {
 			AssetDir string `json:"assetDir"`
+			DataDir  string `json:"dataDir"`
 		}](a)
 		if err != nil {
 			return nil, err
 		}
 		if in.AssetDir != "" {
 			os.Setenv("xray.location.asset", in.AssetDir)
+		}
+		if in.DataDir != "" {
+			SetDataDir(in.DataDir)
 		}
 		return nil, nil
 	},
@@ -84,6 +88,28 @@ var handlers = map[string]handler{
 		}
 		u, err := NormalizeSubURL(in.URL)
 		return map[string]string{"url": u}, err
+	},
+	"profile.import": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			Text string `json:"text"`
+			ASN  string `json:"asn"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return Import(in.Text, in.ASN)
+	},
+	"logs.tail": func(a []byte) (any, error) {
+		in, _ := decode[struct {
+			Bytes int64 `json:"bytes"`
+		}](a)
+		return map[string]string{"log": LogTail(in.Bytes)}, nil
+	},
+	"diag.bundle": func(a []byte) (any, error) {
+		in, _ := decode[struct {
+			App map[string]any `json:"app"`
+		}](a)
+		return map[string]string{"text": Diagnostics(in.App)}, nil
 	},
 	"profile.fetch": func(a []byte) (any, error) {
 		in, err := decode[struct {
@@ -112,7 +138,11 @@ var handlers = map[string]handler{
 		}
 		return CurrentStatus(), nil
 	},
-	"vpn.stop":   func([]byte) (any, error) { Stop(); return CurrentStatus(), nil },
+	"vpn.stop": func([]byte) (any, error) { Disconnect(); return CurrentStatus(), nil },
+	"vpn.profile": func([]byte) (any, error) {
+		p, rev := CurrentProfile()
+		return map[string]any{"profile": p, "rev": rev}, nil
+	},
 	"vpn.status": func([]byte) (any, error) { return CurrentStatus(), nil },
 	"vpn.config": func(a []byte) (any, error) { // the Xray config a connection would use, for the logs screen
 		in, err := decode[struct {

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chethober/xtune/pkg/protocols"
@@ -28,6 +29,9 @@ type J = protocols.J
 type Options struct {
 	Mode     string `json:"mode"`     // "tun" (the whole device) | "proxy" (local SOCKS/HTTP only)
 	Selected string `json:"selected"` // a config ID, or "" for Auto: the fastest working one
+	// Pool limits Auto to these configs, in priority order (the first is the fallback while health
+	// checks have not answered). Empty: every config the app can run.
+	Pool []string `json:"pool,omitempty"`
 	// Android hands its VpnService descriptor over; desktops create an interface of this name.
 	TunFd   int    `json:"tunFd,omitempty"`
 	TunName string `json:"tunName,omitempty"`
@@ -40,8 +44,76 @@ type Options struct {
 	BlockAds     bool   `json:"blockAds,omitempty"`
 	Domestic     bool   `json:"domestic,omitempty"`     // the profile country's sites go direct
 	IncludeDNSTT bool   `json:"includeDnstt,omitempty"` // let Auto use the DNS tunnel too
-	DNS          string `json:"dns,omitempty"`          // DoH URL, through the tunnel
 	LogLevel     string `json:"logLevel,omitempty"`
+
+	// DNS: the resolver for everything else (through the tunnel): https://… (DoH), tcp://IP or a
+	// plain IP (UDP); DomesticDNS answers for the domestic sites, directly; FakeDNS hands apps
+	// placeholder addresses so connections start without waiting for a lookup (TUN mode).
+	DNS         string `json:"dns,omitempty"`
+	DomesticDNS string `json:"domesticDns,omitempty"`
+	FakeDNS     bool   `json:"fakeDns,omitempty"`
+
+	IPv6      bool `json:"ipv6,omitempty"`      // resolve and route IPv6 (else IPv4 only)
+	BlockQUIC bool `json:"blockQuic,omitempty"` // apps fall back from QUIC (UDP 443) to TCP
+	// ProxyLAN sends local-network addresses through the proxy too (normally they go direct).
+	ProxyLAN      bool     `json:"proxyLan,omitempty"`
+	BypassPush    bool     `json:"bypassPush,omitempty"`    // Apple and Google push go direct
+	BypassDomains []string `json:"bypassDomains,omitempty"` // your own list that goes direct
+	Rules         []Rule   `json:"rules,omitempty"`         // your rules, before everything else
+
+	Tweaks       Tweaks            `json:"tweaks"`                 // for every config
+	ConfigTweaks map[string]Tweaks `json:"configTweaks,omitempty"` // per config ID, over Tweaks
+
+	// KillSwitch (Linux desktops): no traffic leaves outside the tunnel while it reconnects or if
+	// the engine stops unexpectedly; only Disconnect lifts it. Android has its own (always-on VPN).
+	KillSwitch bool `json:"killSwitch,omitempty"`
+	// Smart reconnect: watch which network the device is on and, when it changes, fetch the
+	// subscription's ranking for the new network and reconnect with its best configs.
+	SmartURL string `json:"smartUrl,omitempty"`
+	ASN      string `json:"asn,omitempty"` // the network the profile was fetched for
+}
+
+// Tweaks change how configs connect, to get past filtering by hand.
+type Tweaks struct {
+	Fragment    string `json:"fragment,omitempty"`    // "" (as the server set it) | "on" | "off"
+	FragLength  string `json:"fragLength,omitempty"`  // bytes per fragment, e.g. "100-200"
+	FragDelay   string `json:"fragDelay,omitempty"`   // ms between fragments, e.g. "10-20"
+	Fingerprint string `json:"fingerprint,omitempty"` // uTLS: chrome, firefox, safari, ios, android, edge, randomized
+	MTU         int    `json:"mtu,omitempty"`         // WireGuard and AmneziaWG
+	Mux         string `json:"mux,omitempty"`         // "" | "on" | "off"
+	MuxConc     int    `json:"muxConcurrency,omitempty"`
+}
+
+func (t Tweaks) over(o Tweaks) Tweaks { // o's set fields win
+	if o.Fragment != "" {
+		t.Fragment = o.Fragment
+	}
+	if o.FragLength != "" {
+		t.FragLength = o.FragLength
+	}
+	if o.FragDelay != "" {
+		t.FragDelay = o.FragDelay
+	}
+	if o.Fingerprint != "" {
+		t.Fingerprint = o.Fingerprint
+	}
+	if o.MTU != 0 {
+		t.MTU = o.MTU
+	}
+	if o.Mux != "" {
+		t.Mux = o.Mux
+	}
+	if o.MuxConc != 0 {
+		t.MuxConc = o.MuxConc
+	}
+	return t
+}
+
+// Rule sends matching traffic direct, through the proxy, or nowhere.
+type Rule struct {
+	Match  string `json:"match"`  // domain (and its subdomains) | full | keyword | geosite | ip | geoip | port
+	Value  string `json:"value"`  // e.g. example.com, category-ir, 10.0.0.0/8, ir, 443 or 1000-2000
+	Action string `json:"action"` // direct | proxy | block
 }
 
 func (o *Options) defaults() {
@@ -78,29 +150,43 @@ func usable(c protocols.ClientEntry) bool {
 	return false
 }
 
-// chosen are the configs a connection uses: the selected one, or Auto's set.
+// chosen are the configs a connection uses: the selected one, or Auto's set (the pool, in its
+// order, when one is set).
 func chosen(p *Profile, o Options) ([]protocols.ClientEntry, error) {
-	var out []protocols.ClientEntry
+	byID := map[string]protocols.ClientEntry{}
 	for _, c := range p.Configs {
-		if !usable(c) {
-			continue
+		if usable(c) {
+			byID[c.ID] = c
 		}
-		if o.Selected != "" {
-			if c.ID == o.Selected {
-				return []protocols.ClientEntry{c}, nil
-			}
-			continue
-		}
-		if c.SSH != nil && c.SSH.DNSTT != nil && !o.IncludeDNSTT {
-			continue // slow: only when asked for
-		}
-		out = append(out, c)
 	}
 	if o.Selected != "" {
+		if c, ok := byID[o.Selected]; ok {
+			return []protocols.ClientEntry{c}, nil
+		}
+		for _, c := range p.Configs {
+			if c.ID == o.Selected {
+				return nil, fmt.Errorf("%s runs in another app", c.Name)
+			}
+		}
 		return nil, fmt.Errorf("config %q is not in this subscription", o.Selected)
 	}
+	var out []protocols.ClientEntry
+	if len(o.Pool) > 0 {
+		for _, id := range o.Pool {
+			if c, ok := byID[id]; ok {
+				out = append(out, c)
+			}
+		}
+	} else {
+		for _, c := range p.Configs {
+			if _, ok := byID[c.ID]; !ok || c.SSH != nil && c.SSH.DNSTT != nil && !o.IncludeDNSTT {
+				continue // the DNS tunnel is slow: only when asked for
+			}
+			out = append(out, c)
+		}
+	}
 	if len(out) == 0 {
-		return nil, errors.New("no config this app can run")
+		return nil, errors.New("no config this app can run (check the Auto pool)")
 	}
 	return out, nil
 }
@@ -115,6 +201,134 @@ func clone(j J) J {
 	return out
 }
 
+func sub(m J, key string) J {
+	v, _ := m[key].(map[string]any)
+	if v == nil {
+		v = J{}
+		m[key] = v
+	}
+	return v
+}
+
+// fragTagFor names the outbound that fragments TLS hellos the way t says; configs with the same
+// fragment settings share one.
+func fragTagFor(t Tweaks) string {
+	return "frag-tweak-" + slug(orStr(t.FragLength, "100-200")+"-"+orStr(t.FragDelay, "10-20"))
+}
+
+// applyTweaks changes one Xray outbound as t says.
+func applyTweaks(ob J, t Tweaks) {
+	proto, _ := ob["protocol"].(string)
+	ss, _ := ob["streamSettings"].(map[string]any)
+	network := ""
+	if ss != nil {
+		network, _ = ss["network"].(string)
+	}
+	if t.Fingerprint != "" && ss != nil {
+		for _, k := range []string{"realitySettings", "tlsSettings"} {
+			if m, ok := ss[k].(map[string]any); ok {
+				if _, h3 := m["alpn"].([]any); h3 && network == "hysteria" {
+					continue // QUIC: uTLS fingerprints are for TCP
+				}
+				m["fingerprint"] = t.Fingerprint
+			}
+		}
+	}
+	tcpish := network != "hysteria" && network != "kcp" && proto != "wireguard" && proto != "hysteria"
+	switch t.Fragment {
+	case "on":
+		if tcpish {
+			sub(sub(ob, "streamSettings"), "sockopt")["dialerProxy"] = fragTagFor(t)
+		}
+	case "off":
+		if ss != nil {
+			if so, ok := ss["sockopt"].(map[string]any); ok {
+				delete(so, "dialerProxy")
+			}
+		}
+	}
+	if t.MTU > 0 && proto == "wireguard" {
+		sub(ob, "settings")["mtu"] = t.MTU
+	}
+	switch t.Mux {
+	case "on":
+		flow := ""
+		if s, ok := ob["settings"].(map[string]any); ok {
+			if vn, ok := s["vnext"].([]any); ok && len(vn) > 0 {
+				if us, ok := vn[0].(map[string]any)["users"].([]any); ok && len(us) > 0 {
+					flow, _ = us[0].(map[string]any)["flow"].(string)
+				}
+			}
+		}
+		// Vision and XHTTP do their own thing; Mux would break or slow them
+		if (proto == "vless" || proto == "vmess" || proto == "trojan") && flow == "" && network != "xhttp" {
+			c := t.MuxConc
+			if c <= 0 {
+				c = 8
+			}
+			ob["mux"] = J{"enabled": true, "concurrency": c, "xudpConcurrency": c}
+		}
+	case "off":
+		delete(ob, "mux")
+	}
+}
+
+// ruleFor turns a user rule into an Xray routing rule; target is the proxy's outbound or balancer.
+func ruleFor(r Rule, target J) (J, error) {
+	v := strings.TrimSpace(r.Value)
+	if v == "" {
+		return nil, errors.New("empty rule")
+	}
+	out := J{}
+	switch r.Match {
+	case "domain":
+		out["domain"] = []string{"domain:" + v}
+	case "full":
+		out["domain"] = []string{"full:" + v}
+	case "keyword":
+		out["domain"] = []string{"keyword:" + v}
+	case "geosite":
+		out["domain"] = []string{"geosite:" + v}
+	case "ip":
+		out["ip"] = []string{v}
+	case "geoip":
+		out["ip"] = []string{"geoip:" + v}
+	case "port":
+		out["port"] = v
+	default:
+		return nil, fmt.Errorf("unknown rule type %q", r.Match)
+	}
+	switch r.Action {
+	case "direct":
+		out["outboundTag"] = "direct"
+	case "block":
+		out["outboundTag"] = "block"
+	default:
+		for k, x := range target {
+			out[k] = x
+		}
+	}
+	return out, nil
+}
+
+// pushDomains are Apple's and Google's push services: notifications arrive sooner, and keep
+// arriving when a config is blocked, when they go direct.
+var pushDomains = []string{"domain:push.apple.com", "domain:push-apple.com.akadns.net", "full:mtalk.google.com", "full:mtalk4.google.com",
+	"full:alt1-mtalk.google.com", "full:alt2-mtalk.google.com", "full:alt3-mtalk.google.com", "domain:firebaseinstallations.googleapis.com"}
+
+// dnsServer turns a resolver setting into Xray's form: https:// stays, tcp://, udp:// and plain
+// IPs become what Xray reads.
+func dnsServer(s string) string {
+	s = strings.TrimSpace(s)
+	switch {
+	case strings.HasPrefix(s, "udp://"):
+		return strings.TrimPrefix(s, "udp://")
+	case s == "system":
+		return "localhost"
+	}
+	return s
+}
+
 // BuildConfig is the Xray config for a connection. ports are the local SOCKS ports of the
 // non-Xray configs; hosts are server names resolved beforehand (for TUN mode, where a lookup
 // through the system would loop back into the tunnel).
@@ -124,33 +338,36 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 	if o.ShareLAN {
 		listen = "0.0.0.0"
 	}
+	query := "UseIPv4"
+	if o.IPv6 {
+		query = "UseIP"
+	}
 	sniff := J{"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true}
 	var inbounds []J
 	if o.Mode == "tun" {
-		inbounds = append(inbounds, J{"tag": "tun", "port": 0, "protocol": "tun", "settings": J{"name": o.TunName, "MTU": 1500},
-			"sniffing": sniff})
+		tunSniff := sniff
+		if o.FakeDNS { // the placeholder address must be swapped back for the name
+			tunSniff = J{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}, "routeOnly": false}
+		}
+		inbounds = append(inbounds, J{"tag": "tun", "port": 0, "protocol": "tun", "settings": J{"name": o.TunName, "MTU": 1500}, "sniffing": tunSniff})
 	}
 	inbounds = append(inbounds,
 		J{"tag": "socks", "listen": listen, "port": o.SocksPort, "protocol": "socks", "settings": J{"udp": true}, "sniffing": sniff},
 		J{"tag": "http", "listen": listen, "port": o.HTTPPort, "protocol": "http"})
 
+	frags := map[string]Tweaks{} // fragmenting outbounds the tweaks use
 	var obs []J
 	for _, c := range configs {
 		var ob J
 		if c.Engine == "xray" {
 			ob = clone(c.Outbound)
+			t := o.Tweaks.over(o.ConfigTweaks[c.ID])
+			applyTweaks(ob, t)
+			if t.Fragment == "on" {
+				frags[fragTagFor(t)] = t
+			}
 			if o.Mode == "tun" && len(hosts) > 0 { // resolve the server through Xray's DNS (its hosts table)
-				ss, _ := ob["streamSettings"].(map[string]any)
-				if ss == nil {
-					ss = map[string]any{}
-					ob["streamSettings"] = ss
-				}
-				so, _ := ss["sockopt"].(map[string]any)
-				if so == nil {
-					so = map[string]any{}
-					ss["sockopt"] = so
-				}
-				so["domainStrategy"] = "UseIPv4"
+				sub(sub(ob, "streamSettings"), "sockopt")["domainStrategy"] = query
 			}
 		} else {
 			ob = J{"protocol": "socks", "settings": J{"servers": []J{{"address": "127.0.0.1", "port": ports[c.ID]}}}}
@@ -161,33 +378,84 @@ func BuildConfig(p *Profile, o Options, configs []protocols.ClientEntry, ports m
 	for _, f := range p.Frag {
 		obs = append(obs, clone(f))
 	}
-	obs = append(obs, J{"tag": "direct", "protocol": "freedom", "settings": J{"domainStrategy": "UseIPv4"}},
+	for _, tag := range sortedKeys(frags) {
+		t := frags[tag]
+		obs = append(obs, J{"tag": tag, "protocol": "freedom", "settings": J{"fragment": J{"packets": "tlshello",
+			"length": orStr(t.FragLength, "100-200"), "interval": orStr(t.FragDelay, "10-20")}}})
+	}
+	obs = append(obs, J{"tag": "direct", "protocol": "freedom", "settings": J{"domainStrategy": query}},
 		J{"tag": "block", "protocol": "blackhole"}, J{"tag": "dns-out", "protocol": "dns"})
 
+	proxy := J{"balancerTag": "auto"}
+	if len(configs) == 1 {
+		proxy = J{"outboundTag": tagOf(configs[0])}
+	}
 	rules := []J{}
 	if o.Mode == "tun" {
 		rules = append(rules, J{"inboundTag": []string{"tun"}, "port": "53", "outboundTag": "dns-out"})
 	}
-	rules = append(rules, J{"ip": []string{"geoip:private"}, "outboundTag": "direct"})
+	for _, r := range o.Rules {
+		if x, err := ruleFor(r, proxy); err == nil {
+			rules = append(rules, x)
+		}
+	}
+	if o.BlockQUIC {
+		rules = append(rules, J{"network": "udp", "port": "443", "outboundTag": "block"})
+	}
+	if !o.IPv6 {
+		rules = append(rules, J{"ip": []string{"::/0"}, "outboundTag": "block"}) // nothing leaks out over IPv6
+	}
+	if !o.ProxyLAN {
+		rules = append(rules, J{"ip": []string{"geoip:private"}, "outboundTag": "direct"})
+	}
+	if o.BypassPush {
+		rules = append(rules, J{"domain": pushDomains, "outboundTag": "direct"})
+	}
+	var bypass []string
+	for _, d := range o.BypassDomains {
+		if d = strings.TrimSpace(strings.TrimPrefix(d, "*.")); d != "" {
+			bypass = append(bypass, "domain:"+d)
+		}
+	}
+	if len(bypass) > 0 {
+		rules = append(rules, J{"domain": bypass, "outboundTag": "direct"})
+	}
 	if o.BlockAds {
 		rules = append(rules, J{"domain": []string{"geosite:category-ads-all"}, "outboundTag": "block"})
 	}
-	if c, ok := protocols.Countries[p.Country]; ok && o.Domestic {
-		rules = append(rules, J{"domain": []string{c[0]}, "outboundTag": "direct"}, J{"ip": []string{c[1]}, "outboundTag": "direct"})
+	country, hasCountry := protocols.Countries[p.Country]
+	if hasCountry && o.Domestic {
+		rules = append(rules, J{"domain": []string{country[0]}, "outboundTag": "direct"}, J{"ip": []string{country[1]}, "outboundTag": "direct"})
 	}
+	catchAll := J{"network": "tcp,udp"}
+	for k, v := range proxy {
+		catchAll[k] = v
+	}
+	rules = append(rules, catchAll)
+
 	cfg := J{"log": J{"loglevel": o.LogLevel}, "inbounds": inbounds, "outbounds": obs,
 		"stats": J{}, "policy": J{"system": J{"statsInboundUplink": true, "statsInboundDownlink": true}}}
-	dns := J{"servers": []any{o.DNS}, "queryStrategy": "UseIPv4", "tag": "dns-internal"}
+	if f := logFile(); f != "" {
+		cfg["log"].(J)["error"] = f
+	}
+	var servers []any
+	if o.FakeDNS && o.Mode == "tun" {
+		servers = append(servers, "fakedns")
+		cfg["fakedns"] = []J{{"ipPool": "198.18.0.0/15", "poolSize": 65535}}
+	}
+	if o.DomesticDNS != "" && hasCountry && o.Domestic {
+		servers = append(servers, J{"address": dnsServer(o.DomesticDNS), "domains": []string{country[0]}, "skipFallback": true})
+	}
+	servers = append(servers, dnsServer(o.DNS))
+	dns := J{"servers": servers, "queryStrategy": query, "tag": "dns-internal"}
 	if len(hosts) > 0 {
 		dns["hosts"] = hosts
 	}
 	cfg["dns"] = dns
 	if len(configs) == 1 {
-		rules = append(rules, J{"network": "tcp,udp", "outboundTag": tagOf(configs[0])})
 		cfg["routing"] = J{"domainStrategy": "AsIs", "rules": rules}
 		return cfg
 	}
-	rules = append(rules, J{"network": "tcp,udp", "balancerTag": "auto"})
 	cfg["routing"] = J{"domainStrategy": "AsIs", "rules": rules,
 		"balancers": []J{{"tag": "auto", "selector": []string{"proxy-"}, "strategy": J{"type": "leastPing"}, "fallbackTag": tagOf(configs[0])}}}
 	cfg["burstObservatory"] = J{"subjectSelector": []string{"proxy-"},
@@ -211,6 +479,19 @@ type Engine struct {
 }
 
 var engine Engine
+
+// Kept across the restarts smart reconnect and setting changes make; only Disconnect ends them.
+var (
+	ksMu       sync.Mutex
+	ksUndo     func() // the kill switch's routes
+	watchGen   int    // the current smart-reconnect watcher; older ones stop
+	profileRev int    // bumped when smart reconnect swaps the profile, so the app picks it up
+	watchASN   string // the network the running profile is for
+)
+
+// lookupHosts are what CurrentNetwork asks; on desktops in TUN mode they go around the tunnel, or
+// the device would see the server's network instead of its own.
+var lookupHosts = []string{"speed.cloudflare.com", "ipinfo.io"}
 
 // localEngine starts the in-process client for a non-Xray config behind a SOCKS port.
 func localEngine(c protocols.ClientEntry) (int, func(), error) {
@@ -340,9 +621,15 @@ func Start(p *Profile, o Options) error {
 		return err
 	}
 	ports := map[string]int{}
-	for _, c := range configs {
+	for i, c := range configs {
 		if c.Engine == "xray" {
 			continue
+		}
+		if t := o.Tweaks.over(o.ConfigTweaks[c.ID]); t.MTU > 0 && c.AWG != nil {
+			a := *c.AWG
+			a.MTU = t.MTU
+			c.AWG = &a
+			configs[i] = c
 		}
 		port, stop, err := localEngine(c)
 		if err != nil {
@@ -357,6 +644,17 @@ func Start(p *Profile, o Options) error {
 		hosts, bypass = serverHosts(configs)
 		if o.TunFd > 0 {
 			os.Setenv("xray.tun.fd", fmt.Sprint(o.TunFd))
+		}
+		if o.Routes {
+			for _, h := range lookupHosts {
+				if ips, err := net.LookupHost(h); err == nil {
+					for _, ip := range ips {
+						if a, err := netip.ParseAddr(ip); err == nil && a.Is4() {
+							bypass = append(bypass, a)
+						}
+					}
+				}
+			}
 		}
 	}
 	cfg := BuildConfig(p, o, configs, ports, hosts)
@@ -379,12 +677,98 @@ func Start(p *Profile, o Options) error {
 			warning = fmt.Sprintf("connected, but the system proxy was not set (%v): point apps at 127.0.0.1:%d", err, o.HTTPPort)
 		}
 	}
+	if o.KillSwitch && o.Mode == "tun" {
+		ksMu.Lock()
+		if ksUndo == nil {
+			if u, err := enableKillSwitch(); err != nil {
+				warning = "kill switch: " + err.Error()
+			} else {
+				ksUndo = u
+			}
+		}
+		ksMu.Unlock()
+	}
 	engine.inst, engine.closers, engine.opts, engine.profile, engine.configs = inst, closers, o, p, configs
 	engine.since, engine.undo, engine.lastErr = time.Now(), undo, warning
+	ksMu.Lock()
+	watchGen++
+	gen := watchGen
+	watchASN = trimAS(o.ASN)
+	ksMu.Unlock()
+	if o.SmartURL != "" {
+		go smartWatch(gen, p, o)
+	}
 	return nil
 }
 
-// Stop disconnects and restores what Start changed.
+// smartWatch reconnects when the device moves to another network: it fetches the subscription's
+// ranking for the new network and restarts with it (Auto then starts from that network's best).
+func smartWatch(gen int, p *Profile, o Options) {
+	t := time.NewTicker(time.Duration(smartInterval.Load()))
+	defer t.Stop()
+	for range t.C {
+		ksMu.Lock()
+		current, last := gen == watchGen, watchASN
+		ksMu.Unlock()
+		if !current {
+			return
+		}
+		n, err := CurrentNetwork()
+		asn := trimAS(n.ASN)
+		if err != nil || asn == "" || asn == last {
+			continue
+		}
+		np, err := FetchProfile(o.SmartURL, asn)
+		if err != nil {
+			continue // try again next time; the running connection carries on
+		}
+		ksMu.Lock()
+		if gen != watchGen {
+			ksMu.Unlock()
+			return
+		}
+		profileRev++
+		ksMu.Unlock()
+		o.ASN = asn
+		if err := Start(np, o); err != nil {
+			engine.mu.Lock()
+			engine.lastErr = "reconnecting for the new network: " + err.Error()
+			engine.mu.Unlock()
+		}
+		return // Start runs a new watcher
+	}
+}
+
+// smartInterval is how often smart reconnect looks at the network (an atomic: tests shorten it).
+var smartInterval = func() *atomic.Int64 { var v atomic.Int64; v.Store(int64(30 * time.Second)); return &v }()
+
+// Disconnect is the user's Disconnect: it stops the connection, the smart-reconnect watcher and
+// the kill switch.
+func Disconnect() {
+	ksMu.Lock()
+	watchGen++
+	ksMu.Unlock()
+	Stop()
+	ksMu.Lock()
+	if ksUndo != nil {
+		ksUndo()
+		ksUndo = nil
+	}
+	ksMu.Unlock()
+}
+
+// CurrentProfile is the running connection's profile (smart reconnect may have swapped it) and its
+// revision.
+func CurrentProfile() (*Profile, int) {
+	engine.mu.Lock()
+	p := engine.profile
+	engine.mu.Unlock()
+	ksMu.Lock()
+	defer ksMu.Unlock()
+	return p, profileRev
+}
+
+// Stop disconnects and restores what Start changed (the kill switch stays: see Disconnect).
 func Stop() {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -411,21 +795,27 @@ type OutboundState struct {
 
 // Status is what the app shows while connected.
 type Status struct {
-	Running   bool            `json:"running"`
-	Mode      string          `json:"mode,omitempty"`
-	Since     int64           `json:"since,omitempty"`
-	Selected  string          `json:"selected,omitempty"`
-	Active    string          `json:"active,omitempty"` // the config in use (Auto: the fastest alive)
-	Outbounds []OutboundState `json:"outbounds,omitempty"`
-	Up        int64           `json:"up"`
-	Down      int64           `json:"down"`
-	Error     string          `json:"error,omitempty"`
+	Running    bool            `json:"running"`
+	Mode       string          `json:"mode,omitempty"`
+	Since      int64           `json:"since,omitempty"`
+	Selected   string          `json:"selected,omitempty"`
+	Active     string          `json:"active,omitempty"` // the config in use (Auto: the fastest alive)
+	Outbounds  []OutboundState `json:"outbounds,omitempty"`
+	Up         int64           `json:"up"`
+	Down       int64           `json:"down"`
+	Error      string          `json:"error,omitempty"`
+	KillSwitch bool            `json:"killSwitch,omitempty"` // traffic is blocked outside the tunnel
+	ASN        string          `json:"asn,omitempty"`        // the network the profile is ranked for
+	ProfileRev int             `json:"profileRev"`           // changes when smart reconnect swaps the profile
 }
 
 func CurrentStatus() Status {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	s := Status{Error: engine.lastErr}
+	ksMu.Lock()
+	s.KillSwitch, s.ASN, s.ProfileRev = ksUndo != nil, watchASN, profileRev
+	ksMu.Unlock()
 	if engine.inst == nil {
 		return s
 	}
@@ -467,4 +857,13 @@ func CurrentStatus() Status {
 		s.Active = engine.configs[0].ID // the fallback until health checks answer
 	}
 	return s
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

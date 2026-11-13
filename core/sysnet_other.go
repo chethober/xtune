@@ -14,3 +14,7 @@ func setRoutes(tun string, bypass []netip.Addr) (func(), error) {
 func setSystemProxy(httpPort, socksPort int) (func(), error) {
 	return nil, errors.New("setting the system proxy is not supported on this platform")
 }
+
+func enableKillSwitch() (func(), error) {
+	return nil, errors.New("the kill switch here is the system's: on Android, turn on always-on VPN and block connections without VPN")
+}

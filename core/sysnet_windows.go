@@ -144,3 +144,7 @@ func setSystemProxy(httpPort, socksPort int) (func(), error) {
 		refreshProxy()
 	}, nil
 }
+
+func enableKillSwitch() (func(), error) {
+	return nil, errors.New("the kill switch is not available on Windows yet")
+}
