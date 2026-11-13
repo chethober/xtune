@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: version to build (no release is published)
+        description: version to build, e.g. v1.0.1
         default: v0.0.0-test
+      publish:
+        description: publish a release (creating the tag at this commit)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -125,7 +129,7 @@ jobs:
           path: dist/
 
   publish:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || inputs.publish
     needs: [android, linux, windows]
     runs-on: ubuntu-latest
     permissions:
@@ -140,6 +144,8 @@ jobs:
         run: cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
