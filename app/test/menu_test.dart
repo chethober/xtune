@@ -15,6 +15,7 @@ void main() {
     X.p = Palette.of(theme, 'green', theme == 'light' ? Brightness.light : Brightness.dark);
     await t.pumpWidget(
       MaterialApp(
+        debugShowCheckedModeBanner: false,
         theme: appTheme(),
         home: Scaffold(
           backgroundColor: Colors.transparent,

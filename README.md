@@ -11,10 +11,29 @@ The app for [xtune](https://github.com/chethober/xtune) servers, on **Android, L
   after a few seconds. Results go back to the server (if you allow it), so everyone on your network gets the working
   configs first.
 - **Manage**: for whoever runs the server: users with quotas and expiry, their links and QR codes, the server's
-  configs and which networks block them, logs, and a console for any `xtune` command. Over SSH; the server's host
-  key is pinned on first use.
+  configs and which networks block them, **tuning from your phone** (the server starts test configs, your phone
+  measures them on your network, the best are deployed), updates, logs, and a console for any `xtune` command.
+  Over SSH; the server's host key is pinned on first use.
 - Whole-device VPN or a local proxy (SOCKS `127.0.0.1:10808`, HTTP `127.0.0.1:10809`), domestic sites direct, ad
-  blocking, per-app exclusions on Android, English and Persian.
+  blocking, your own routing rules, per-app exclusions on Android, an app lock, a leak test, and English and Persian.
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/home.png" width="200" alt="Home: connected with Auto, the config in use and the subscription's usage">
+  <img src="docs/screenshots/configs.png" width="200" alt="Configs: every config with its latency on this network">
+  <img src="docs/screenshots/check.png" width="200" alt="Check: which configs work, are throttled or blocked here">
+  <img src="docs/screenshots/tune.png" width="200" alt="Tune: the server's test configs measured from the phone, ready to deploy">
+</p>
+<p align="center">
+  <img src="docs/screenshots/users.png" width="200" alt="Users: quotas, expiry and who is online">
+  <img src="docs/screenshots/settings.png" width="200" alt="Settings: mode, theme, accent colour and connection options">
+  <img src="docs/screenshots/lock.png" width="200" alt="The app lock">
+  <img src="docs/screenshots/persian.png" width="200" alt="The connection timeline in Persian, with Persian digits and dates">
+</p>
+<p align="center">
+  <img src="docs/screenshots/desktop.png" width="820" alt="On a wide screen: the server's dashboard with its users beside it">
+</p>
 
 ## Install
 

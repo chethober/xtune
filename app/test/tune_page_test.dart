@@ -53,6 +53,7 @@ Future<void> loadFonts() async {
   for (final f in [
     ('Inter', ['Inter-Regular', 'Inter-Medium', 'Inter-SemiBold', 'Inter-Bold']),
     ('JetBrainsMono', ['JetBrainsMono-Regular']),
+    ('Vazirmatn', ['Vazirmatn-NL-Regular', 'Vazirmatn-NL-Medium', 'Vazirmatn-NL-SemiBold', 'Vazirmatn-NL-Bold']),
   ]) {
     final l = FontLoader(f.$1);
     for (final n in f.$2) {
@@ -93,6 +94,7 @@ void main() {
       AppScope(
         state: s,
         child: MaterialApp(
+          debugShowCheckedModeBanner: false,
           theme: appTheme(),
           home: Scaffold(
             backgroundColor: Colors.transparent,

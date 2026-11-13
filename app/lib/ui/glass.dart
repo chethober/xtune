@@ -365,7 +365,13 @@ class _FloatingTabBarState extends State<FloatingTabBar> with WidgetsBindingObse
       child: DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(Radii.bar),
-          boxShadow: [BoxShadow(color: Color(0x73000000), blurRadius: 32, offset: Offset(0, 12))],
+          // the bar is translucent, so its shadow shows through it: a dark one would grey the whole
+          // bar on light backgrounds
+          boxShadow: [
+            X.isLight
+                ? BoxShadow(color: Color(0x141F2937), blurRadius: 24, offset: Offset(0, 8))
+                : BoxShadow(color: Color(0x59000000), blurRadius: 28, offset: Offset(0, 10)),
+          ],
         ),
         child: Glass(
           radius: Radii.bar,

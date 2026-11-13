@@ -136,8 +136,12 @@ void main() {
       AppScope(
         state: s,
         child: MaterialApp(
+          debugShowCheckedModeBanner: false,
           theme: appTheme(),
-          home: Scaffold(backgroundColor: Colors.transparent, body: Backdrop(child: UsersPage(server: srv))),
+          home: Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Backdrop(child: UsersPage(server: srv)),
+          ),
         ),
       ),
     );
@@ -190,17 +194,21 @@ void main() {
         ],
       },
       'timeline.list': (_) => [
-        {'t': now, 'kind': 'switch', 'text': 'Auto moved to 🇩🇪 r-tcp: hy2 stopped answering'},
-        {'t': now - 600, 'kind': 'connect', 'text': 'Connected (VPN) · Auto, starting with 🇩🇪 hy2'},
+        {'t': now, 'kind': 'switch', 'text': 'Auto moved to DE r-tcp: DE hy2 stopped answering'},
+        {'t': now - 600, 'kind': 'connect', 'text': 'Connected (VPN) · Auto, starting with DE hy2'},
       ],
     });
     final s = AppState(core)..status = {'running': true};
     Widget host(Widget page) => AppScope(
       state: s,
       child: MaterialApp(
+        debugShowCheckedModeBanner: false,
         theme: appTheme(),
         builder: (c, child) => Directionality(textDirection: T.rtl ? TextDirection.rtl : TextDirection.ltr, child: child!),
-        home: Scaffold(backgroundColor: Colors.transparent, body: Backdrop(child: page)),
+        home: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Backdrop(child: page),
+        ),
       ),
     );
     await t.pumpWidget(host(const LeakTestPage()));
