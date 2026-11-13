@@ -78,6 +78,8 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "paused" -> result.success(XtuneVpnService.pausedUntil)
                 "captive" -> result.success(Xtune.captive(applicationContext))
+                "abi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a")
+                "installApk" -> result.success(installApk(call.argument<String>("path") ?: ""))
                 "metered" -> result.success(
                     getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
                 )
@@ -125,6 +127,28 @@ class MainActivity : FlutterFragmentActivity() {
             pendingResult?.success("{\"ok\":false,\"error\":\"VPN permission was not given\"}")
             pendingResult = null
         }
+    }
+
+    /**
+     * Hands a downloaded update to Android's installer, which always asks. The first time, Android
+     * wants this app allowed to install apps: its settings page opens instead, and "settings" is
+     * returned so the app can say why.
+     */
+    private fun installApk(path: String): String {
+        val f = java.io.File(path)
+        if (!f.exists()) return "missing"
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            startActivity(
+                Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName"))
+            )
+            return "settings"
+        }
+        val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.updates", f)
+        startActivity(
+            Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        return "ok"
     }
 
     /** The connection's notification (its speeds and buttons) needs this on Android 13 and later. */

@@ -165,7 +165,21 @@ var handlers = map[string]handler{
 		return Timeline(in.N), nil
 	},
 	"timeline.clear": func([]byte) (any, error) { ClearTimeline(); return nil, nil },
-	"leak.test":      func([]byte) (any, error) { return LeakTest() },
+	"update.check": func(a []byte) (any, error) {
+		in, _ := decode[struct {
+			Platform string `json:"platform"`
+		}](a)
+		return CheckUpdate(in.Platform)
+	},
+	"update.download": func(a []byte) (any, error) {
+		in, err := decode[UpdateInfo](a)
+		if err != nil {
+			return nil, err
+		}
+		return StartUpdateDownload(in)
+	},
+	"update.status": func([]byte) (any, error) { return UpdateStatus(), nil },
+	"leak.test":     func([]byte) (any, error) { return LeakTest() },
 	"backup.seal": func(a []byte) (any, error) {
 		in, err := decode[struct {
 			Data string `json:"data"`

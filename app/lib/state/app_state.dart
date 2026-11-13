@@ -42,6 +42,14 @@ class AppState extends ChangeNotifier {
   Map<String, Map<String, Map<String, int>>> history = {};
   int _lastUp = 0, _lastDown = 0, _lastSince = 0, _profileRev = 0, _selRev = -1;
 
+  /// App updates: the newer release (null when this is the latest), the download, and when it
+  /// was last checked.
+  Map<String, dynamic>? update;
+  Map<String, dynamic>? updateJob;
+  String? updateError;
+  DateTime? _updateChecked;
+  Timer? _updatePoll;
+
   /// Android: paused from the notification until then (ms since the epoch); 0 when not paused.
   int pausedUntil = 0;
   bool _historyDirty = false;
@@ -97,11 +105,18 @@ class AppState extends ChangeNotifier {
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => refreshStatus());
     _maintain = Timer.periodic(const Duration(minutes: 10), (_) => _maintenance());
     if (settings.autoConnectLaunch && !connected && sub != null) unawaited(connect());
+    if (!Platform.isAndroid) {
+      // files an update moved aside are free now that this version runs
+      unawaited(Process.run(DesktopCore.coreExe, ['--cleanup', File(Platform.resolvedExecutable).parent.path]).catchError((_) => ProcessResult(0, 0, '', '')));
+    }
     await _maintenance();
   }
 
   /// Every few minutes: subscriptions due for an update, and the traffic history to disk.
   Future<void> _maintenance() async {
+    if (settings.updateMode != 'off' && (_updateChecked == null || DateTime.now().difference(_updateChecked!) > const Duration(hours: 12))) {
+      unawaited(checkUpdate());
+    }
     if (settings.autoUpdateHours > 0) {
       final now = DateTime.now();
       for (final s in List.of(subs)) {
@@ -546,6 +561,90 @@ class AppState extends ChangeNotifier {
       'subscriptions': subs.map((s) => {'configs': s.allConfigs.length, 'local': s.local, 'fetched': s.fetched.toIso8601String()}).toList(),
     };
     return ((await core.call('diag.bundle', {'app': app})) as Map)['text'] as String? ?? '';
+  }
+
+  // ------------------------------------------------------------ app updates
+
+  /// The end of this device's file name in a release: android-arm64-v8a.apk, linux-x64.tar.gz, …
+  Future<String> _updatePlatform() async {
+    if (Platform.isAndroid) {
+      final abi = await (core as AndroidCore).native('abi') as String? ?? 'arm64-v8a';
+      return 'android-$abi.apk';
+    }
+    return Platform.isWindows ? 'windows-x64.zip' : 'linux-x64.tar.gz';
+  }
+
+  String get version => (_version ?? '').isEmpty ? '' : _version!;
+  String? _version;
+
+  /// Asks GitHub for a newer release; with automatic updates on, downloads it too.
+  Future<void> checkUpdate({bool manual = false}) async {
+    _updateChecked = DateTime.now();
+    updateError = null;
+    try {
+      _version ??= ((await core.call('version')) as Map)['version'] as String?;
+      final info = Map<String, dynamic>.from(await core.call('update.check', {'platform': await _updatePlatform()}) as Map);
+      update = info['newer'] == true ? info : null;
+    } catch (e) {
+      if (manual) updateError = '$e';
+    }
+    notifyListeners();
+    if (update != null && settings.updateMode == 'auto') await downloadUpdate(thenInstall: true);
+  }
+
+  /// Downloads the update (checked against the release's SHA-256); [thenInstall] installs it once
+  /// it is here: Android shows its installer, desktops restart into the new version.
+  Future<void> downloadUpdate({bool thenInstall = false}) async {
+    final u = update;
+    if (u == null) return;
+    try {
+      updateJob = Map<String, dynamic>.from(await core.call('update.download', u) as Map);
+    } catch (e) {
+      updateError = '$e';
+      notifyListeners();
+      return;
+    }
+    notifyListeners();
+    final done = Completer<void>();
+    _updatePoll?.cancel();
+    _updatePoll = Timer.periodic(const Duration(milliseconds: 500), (t) async {
+      try {
+        updateJob = Map<String, dynamic>.from(await core.call('update.status') as Map);
+      } catch (_) {}
+      final st = updateJob?['state'];
+      if (st != 'downloading') {
+        t.cancel();
+        if (st == 'failed') updateError = updateJob?['error'] as String?;
+        if (!done.isCompleted) done.complete();
+      }
+      notifyListeners();
+    });
+    await done.future;
+    if (thenInstall && updateJob?['state'] == 'ready') await installUpdate(automatic: true);
+  }
+
+  /// Installs the downloaded update. On desktops the app quits and a copy of the core puts the new
+  /// files in place and starts it again; on Android, Android's installer asks.
+  Future<String> installUpdate({bool automatic = false}) async {
+    final path = updateJob?['path'] as String?;
+    if (path == null) return 'missing';
+    if (Platform.isAndroid) {
+      // automatic: ask once per version, not every time the check runs
+      if (automatic && _prefs.getJson('updatePrompted') == update?['latest']) return 'asked';
+      await _prefs.setJson('updatePrompted', update?['latest']);
+      return await (core as AndroidCore).native('installApk', {'path': path}) as String? ?? 'missing';
+    }
+    if (automatic && (connected || busy)) return 'later'; // never drop a connection on its own
+    final dir = File(Platform.resolvedExecutable).parent.path;
+    final tmp = await Directory.systemTemp.createTemp('xtune-update');
+    final updater = '${tmp.path}/${Platform.isWindows ? 'xtune-updater.exe' : 'xtune-updater'}';
+    await File(DesktopCore.coreExe).copy(updater);
+    if (!Platform.isWindows) await Process.run('chmod', ['700', updater]);
+    if (connected) await disconnect();
+    await Process.start(updater, ['--apply-update', path, '--dir', dir, '--restart', Platform.resolvedExecutable], mode: ProcessStartMode.detached);
+    final c = core;
+    if (c is DesktopCore) await c.shutdown();
+    exit(0);
   }
 
   // ------------------------------------------------------------ data saver

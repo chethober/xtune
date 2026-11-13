@@ -1,3 +1,10 @@
+**New**
+- **App updates** (Settings → App updates): **Tell me** (the default) checks twice a day and shows a new version on
+  Home and in Settings; **Download and install** fetches it by itself. Every download is checked against the
+  release's SHA-256 before it is installed. Android shows its installer (it always asks; the first time it wants
+  xtune allowed to install apps); Linux and Windows put the new files in place and restart, never in the middle of a
+  connection. When GitHub cannot be reached from your network, the update comes through the connection.
+
 **Fixes**
 - **Tab bar in the light theme**: it looked grey and heavy, because its dark shadow showed through the translucent
   bar. The shadow is now soft in the light theme (and a little lighter in the dark ones).

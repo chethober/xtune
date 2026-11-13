@@ -279,6 +279,21 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
 
+        SectionLabel(T.s('appSection')),
+        Group(
+          children: [
+            _Value(T.s('appUpdates'), T.s('appUpdatesHint'), T.s('updateMode_${st.updateMode}'), () => _pickUpdateMode(context, set)),
+            _Value(
+              T.s('version'),
+              s.update != null
+                  ? T.s('updateAvailable', {'v': s.update!['latest'] ?? ''})
+                  : (s.updateError ?? T.s('checkForUpdates')),
+              s.version,
+              () => s.update != null ? updateNow(context) : s.checkUpdate(manual: true),
+            ),
+          ],
+        ),
+
         SectionLabel(T.s('diagnostics')),
         Group(
           children: [
@@ -458,6 +473,88 @@ class SettingsScreen extends StatelessWidget {
     );
     if (v != null) await s.updateSettings((x) => x.lang = v);
   }
+}
+
+Future<void> _pickUpdateMode(BuildContext context, Future<void> Function(void Function(Settings), {bool reconnects}) set) async {
+  final s = AppScope.of(context);
+  final v = await showXSheet<String>(
+    context,
+    title: T.s('appUpdates'),
+    padded: false,
+    builder: (ctx, _) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final m in ['off', 'notify', 'auto'])
+          ListTile(
+            leading: Icon(
+              s.settings.updateMode == m ? Icons.radio_button_checked : Icons.radio_button_off,
+              color: s.settings.updateMode == m ? X.accent : X.muted,
+            ),
+            title: Text(T.s('updateMode_$m')),
+            subtitle: Text(T.s(Platform.isAndroid && m == 'auto' ? 'updateMode_auto_android' : 'updateMode_${m}_hint')),
+            onTap: () => Navigator.pop(ctx, m),
+          ),
+      ],
+    ),
+  );
+  if (v == null || v == s.settings.updateMode) return;
+  await set((x) => x.updateMode = v, reconnects: false);
+  if (v != 'off') await s.checkUpdate(manual: true);
+}
+
+/// Downloads the update and installs it, with the download's progress in a sheet.
+Future<void> updateNow(BuildContext context) async {
+  final s = AppScope.of(context);
+  final download = s.downloadUpdate();
+  await showXSheet<void>(
+    context,
+    title: T.s('updateTitle', {'v': s.update?['latest'] ?? ''}),
+    builder: (ctx, setState) => ListenableBuilder(
+      listenable: s,
+      builder: (ctx, _) {
+        final j = s.updateJob ?? {};
+        final total = (j['total'] as num?)?.toDouble() ?? 0;
+        final done = (j['done'] as num?)?.toDouble() ?? 0;
+        final ready = j['state'] == 'ready';
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if ((s.update?['notes'] as String?)?.isNotEmpty == true)
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: SingleChildScrollView(child: Text(s.update!['notes'] as String, style: Type.secondary)),
+              ),
+            const SizedBox(height: Space.l),
+            if (s.updateError != null)
+              Notice(s.updateError!)
+            else if (!ready) ...[
+              Bar(fraction: total > 0 ? done / total : 0),
+              const SizedBox(height: Space.s),
+              Text('${fmtBytes(done)} / ${fmtBytes(total)}', style: Type.caption),
+            ],
+            const SizedBox(height: Space.l),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+              onPressed: !ready
+                  ? null
+                  : () async {
+                      final r = await s.installUpdate();
+                      if (r == 'settings' && ctx.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(T.s('updateAllowInstall'))));
+                      }
+                    },
+              icon: const Icon(Icons.system_update_rounded),
+              label: Text(Platform.isAndroid ? T.s('updateInstall') : T.s('updateRestart')),
+            ),
+            const SizedBox(height: Space.s),
+            Text(T.s('updateVerified'), style: Type.caption, textAlign: TextAlign.center),
+          ],
+        );
+      },
+    ),
+  );
+  await download;
 }
 
 Future<void> _pickAutoMode(BuildContext context, Future<void> Function(void Function(Settings), {bool reconnects}) set) async {

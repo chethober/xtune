@@ -79,6 +79,9 @@ class DesktopCore extends CoreClient {
   @override
   bool get elevated => _elevated;
 
+  /// The core program next to the app (the updater runs a copy of it).
+  static String get coreExe => _exe;
+
   static String get _exe {
     final override = Platform.environment['XTUNE_CORE'];
     if (override != null && override.isNotEmpty) return override;

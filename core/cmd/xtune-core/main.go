@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -29,9 +30,36 @@ func main() {
 	parent := flag.Int("parent", 0, "exit when this process exits")
 	assets := flag.String("assets", "", "directory with geoip.dat and geosite.dat (default: next to this program)")
 	version := flag.Bool("version", false, "print the version")
+	applyUpdate := flag.String("apply-update", "", "updater: unpack this release archive over --dir once the app has quit, then start --restart")
+	updateDir := flag.String("dir", "", "updater: the app's folder")
+	restart := flag.String("restart", "", "updater: the program to start afterwards")
+	cleanup := flag.String("cleanup", "", "remove the files an update moved aside in this folder")
 	flag.Parse()
 	if *version {
 		fmt.Println(core.Version)
+		return
+	}
+	if *cleanup != "" {
+		core.CleanOldFiles(*cleanup)
+		return
+	}
+	if *applyUpdate != "" {
+		// runs from a copy outside the app's folder; the app quits right after starting it
+		time.Sleep(1500 * time.Millisecond)
+		err := core.ApplyUpdate(*applyUpdate, *updateDir)
+		if err != nil {
+			log.Print("update: ", err)
+		}
+		if *restart != "" {
+			cmd := exec.Command(*restart)
+			cmd.Dir = filepath.Dir(*restart)
+			if err := cmd.Start(); err != nil {
+				log.Print("restart: ", err)
+			}
+		}
+		if err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 	if *assets == "" {

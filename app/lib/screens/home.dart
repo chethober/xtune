@@ -12,6 +12,7 @@ import '../ui/i18n.dart';
 import '../ui/power_button.dart';
 import 'add_sub.dart';
 import 'options.dart';
+import 'settings.dart' show updateNow;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.onOpenConfigs});
@@ -110,6 +111,19 @@ class _HomeScreenState extends State<HomeScreen> {
           GestureDetector(
             onTap: () => pushPage(context, AppScope(state: s, child: const UsagePage())),
             child: _UsageCard(sub: sub),
+          ),
+        ],
+        if (s.update != null && s.settings.updateMode != 'off') ...[
+          const SizedBox(height: Space.m),
+          Glass(
+            child: Row(
+              children: [
+                Icon(Icons.system_update_rounded, color: X.accent),
+                const SizedBox(width: Space.m),
+                Expanded(child: Text(T.s('updateAvailable', {'v': s.update!['latest'] ?? ''}), style: Type.body)),
+                TextButton(onPressed: () => updateNow(context), child: Text(T.s('updateShort'))),
+              ],
+            ),
           ),
         ],
         if (sub != null && _quotaWarning(sub) != null) ...[

@@ -191,6 +191,7 @@ class Settings {
   bool lockBio = false; // the fingerprint or face opens the lock too
   bool onboarded = false; // the first-run guide was shown
   bool dataSaver = true; // on mobile data: no throughput tests, smaller checks
+  String updateMode = 'notify'; // app updates: off | notify (tell me) | auto (download, then install)
 
   /// The apps Android leaves out of the VPN, for the bypass mode.
   List<String> get excludedApps => perAppMode == 'bypass' ? apps : const [];
@@ -233,6 +234,7 @@ class Settings {
     'lockBio': lockBio,
     'onboarded': onboarded,
     'dataSaver': dataSaver,
+    'updateMode': updateMode,
   };
 
   static Settings fromJson(Map<String, dynamic>? j) {
@@ -283,6 +285,7 @@ class Settings {
     // a settings file from before onboarding existed means the app is set up already
     s.onboarded = get('onboarded', true);
     s.dataSaver = get('dataSaver', s.dataSaver);
+    s.updateMode = get('updateMode', s.updateMode);
     return s;
   }
 }
