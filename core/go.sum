@@ -9,8 +9,8 @@ github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22/go.mod h1:Npbg8
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
-github.com/chethober/xtune v1.0.1-0.20261113044853-bb5d8b47a69f h1:xMk1FdUN0psMOy0txxwP7KAREn7WOsmB6WwoiLGw9/I=
-github.com/chethober/xtune v1.0.1-0.20261113044853-bb5d8b47a69f/go.mod h1:9+HpfOM2seuwAkXsJwQofXkg+pwh74UZxl3P6TeIyZM=
+github.com/chethober/xtune v1.1.0 h1:rczO4u69RiXxVLYkuDqc4sCqyCExf3YNNhEDNSxebp8=
+github.com/chethober/xtune v1.1.0/go.mod h1:9+HpfOM2seuwAkXsJwQofXkg+pwh74UZxl3P6TeIyZM=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg8=
 github.com/cloudflare/circl v1.6.3/go.mod h1:2eXP6Qfat4O/Yhh8BznvKnJ+uzEoTQ6jVKJRn81BiS4=

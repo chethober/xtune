@@ -264,6 +264,7 @@ type NetworkInfo struct {
 type Overview struct {
 	Host       string        `json:"host"`
 	Domain     string        `json:"domain,omitempty"`
+	DNSDomain  string        `json:"dnsDomain,omitempty"` // the DNS tunnel's zone
 	Country    string        `json:"country,omitempty"`
 	Version    string        `json:"version"`
 	Entries    []EntryInfo   `json:"entries"`
@@ -295,7 +296,7 @@ func ServerOverview(c ServerConn) (*Overview, error) {
 		return nil, err
 	}
 	v, _ := r.Root("xtune version 2>/dev/null || true")
-	o := &Overview{Host: st.Host, Domain: st.Domain, Country: st.Country, Version: strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "xtune ")),
+	o := &Overview{Host: st.Host, Domain: st.Domain, DNSDomain: st.DNSDomain, Country: st.Country, Version: strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "xtune ")),
 		Users: len(st.Users), Sub: st.Sub.Mode != ""}
 	now := time.Now()
 	today, month := state.DayKey(now), now.Format("2006-01")

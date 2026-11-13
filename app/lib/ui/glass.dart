@@ -288,18 +288,57 @@ class FloatingTabBar extends StatefulWidget {
   State<FloatingTabBar> createState() => _FloatingTabBarState();
 }
 
-class _FloatingTabBarState extends State<FloatingTabBar> {
+class _FloatingTabBarState extends State<FloatingTabBar> with WidgetsBindingObserver {
   double? _drag; // the finger's x while dragging
-  double? _hover; // the pointer's x on desktops
+  double? _hover; // a mouse pointer's x (desktops only: touch never hovers)
   int? _lastSlot;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Leaving the app mid-drag or with the pointer over the bar must not leave a second
+  /// highlight behind when it comes back.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s != AppLifecycleState.resumed) _reset();
+  }
+
+  void _reset() {
+    if (_drag == null && _hover == null && _lastSlot == null) return;
+    if (mounted) {
+      setState(() {
+        _drag = null;
+        _hover = null;
+        _lastSlot = null;
+      });
+    }
+  }
 
   int _slotAt(double x, double slot) => (x / slot).floor().clamp(0, widget.items.length - 1);
 
   /// Visual slot for logical item i (right to left in Persian).
   int _visual(int i, bool rtl) => rtl ? widget.items.length - 1 - i : i;
 
-  void _dragTo(double x, double slot, bool rtl) {
-    setState(() => _drag = x);
+  /// The Align x (-1 … 1) that puts a one-slot-wide child at visual slot position p (0 … n-1).
+  double _alignX(double p) {
+    final n = widget.items.length;
+    return n == 1 ? 0 : -1 + 2 * p / (n - 1);
+  }
+
+  void _dragTo(double x, double slot) {
+    setState(() {
+      _drag = x;
+      _hover = null;
+    });
     final s = _slotAt(x, slot);
     if (s != _lastSlot) {
       _lastSlot = s;
@@ -336,61 +375,68 @@ class _FloatingTabBarState extends State<FloatingTabBar> {
             builder: (context, c) {
               final slot = c.maxWidth / n;
               final dragging = _drag != null;
-              final pillLeft = dragging ? (_drag! - slot / 2).clamp(0.0, c.maxWidth - slot) : _visual(widget.index, rtl) * slot;
-              final litSlot = dragging ? _slotAt(_drag!, slot) : _visual(widget.index, rtl);
+              final selected = _visual(widget.index, rtl);
+              // Positions are fractions of the bar, not pixels: when the window is laid out again
+              // (returning to the app, rotating, split screen) the pill stays put instead of
+              // sliding over from where the old width put it.
+              final pillPos = dragging ? ((_drag! - slot / 2) / slot).clamp(0.0, n - 1.0) : selected.toDouble();
+              final litSlot = dragging ? _slotAt(_drag!, slot) : selected;
+              final hoverSlot = _hover == null || dragging ? null : _slotAt(_hover!, slot);
               return MouseRegion(
-                onHover: (e) => setState(() => _hover = e.localPosition.dx),
+                onHover: (e) {
+                  if (e.kind == PointerDeviceKind.mouse) setState(() => _hover = e.localPosition.dx);
+                },
                 onExit: (_) => setState(() => _hover = null),
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onHorizontalDragStart: (d) => _dragTo(d.localPosition.dx, slot, rtl),
-                  onHorizontalDragUpdate: (d) => _dragTo(d.localPosition.dx, slot, rtl),
+                  onHorizontalDragStart: (d) => _dragTo(d.localPosition.dx, slot),
+                  onHorizontalDragUpdate: (d) => _dragTo(d.localPosition.dx, slot),
                   onHorizontalDragEnd: (_) => _release(slot, rtl),
-                  onHorizontalDragCancel: () => setState(() => _drag = null),
+                  onHorizontalDragCancel: _reset,
                   onTapUp: (d) => widget.onTap(_visual(_slotAt(d.localPosition.dx, slot), rtl)),
                   child: SizedBox(
                     height: 54,
                     child: Stack(
                       children: [
-                        if (_hover != null && !dragging)
-                          AnimatedPositioned(
-                            duration: Motion.fast,
-                            curve: Motion.curve,
-                            left: _slotAt(_hover!, slot) * slot,
-                            width: slot,
-                            top: 0,
-                            bottom: 0,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(26)),
+                        if (hoverSlot != null && hoverSlot != selected)
+                          Align(
+                            alignment: Alignment(_alignX(hoverSlot.toDouble()), 0),
+                            child: FractionallySizedBox(
+                              widthFactor: 1 / n,
+                              heightFactor: 1,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(color: X.text.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(26)),
+                              ),
                             ),
                           ),
-                        AnimatedPositioned(
+                        AnimatedAlign(
                           duration: dragging ? Duration.zero : Motion.normal,
                           curve: Motion.curve,
-                          left: pillLeft,
-                          width: slot,
-                          top: 0,
-                          bottom: 0,
-                          child: AnimatedScale(
-                            duration: Motion.fast,
-                            scale: dragging ? 1.06 : 1,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: X.selected,
-                                borderRadius: BorderRadius.circular(26),
-                                border: Border.all(color: Colors.white.withValues(alpha: dragging ? 0.18 : 0.06)),
+                          alignment: Alignment(_alignX(pillPos), 0),
+                          child: FractionallySizedBox(
+                            widthFactor: 1 / n,
+                            heightFactor: 1,
+                            child: AnimatedScale(
+                              duration: Motion.fast,
+                              scale: dragging ? 1.06 : 1,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: X.selected,
+                                  borderRadius: BorderRadius.circular(26),
+                                  border: Border.all(color: X.text.withValues(alpha: dragging ? 0.18 : 0.06)),
+                                ),
                               ),
                             ),
                           ),
                         ),
-                        for (var v = 0; v < n; v++)
-                          Positioned(
-                            left: v * slot,
-                            width: slot,
-                            top: 0,
-                            bottom: 0,
-                            child: _TabLabel(item: widget.items[_visual(v, rtl)], lit: v == litSlot, selected: _visual(v, rtl) == widget.index),
-                          ),
+                        Row(
+                          children: [
+                            for (var v = 0; v < n; v++)
+                              Expanded(
+                                child: _TabLabel(item: widget.items[_visual(v, rtl)], lit: v == litSlot, selected: _visual(v, rtl) == widget.index),
+                              ),
+                          ],
+                        ),
                       ],
                     ),
                   ),

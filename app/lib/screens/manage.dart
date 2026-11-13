@@ -8,6 +8,7 @@ import '../state/app_state.dart';
 import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
+import 'tune.dart';
 
 class ManageScreen extends StatefulWidget {
   const ManageScreen({super.key});
@@ -198,13 +199,15 @@ class _ManageScreenState extends State<ManageScreen> {
       ],
       const SizedBox(height: Space.m),
       GridView.count(
-        crossAxisCount: 4,
+        crossAxisCount: 3,
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         mainAxisSpacing: Space.s,
         crossAxisSpacing: Space.s,
-        childAspectRatio: 0.95,
+        childAspectRatio: 1.35,
         children: [
+          _Action(Icons.auto_fix_high_rounded, T.s('tune'), () => _push(context, TunePage(server: srv, overview: o)), accent: true),
+          _Action(Icons.system_update_alt_rounded, T.s('update'), () => _update(context, s, srv, o)),
           _Action(Icons.group_outlined, T.s('users'), () => _push(context, UsersPage(server: srv))),
           _Action(
             Icons.monitor_heart_outlined,
@@ -216,6 +219,74 @@ class _ManageScreenState extends State<ManageScreen> {
         ],
       ),
     ];
+  }
+
+  /// Updates xtune and Xray on the server.
+  Future<void> _update(BuildContext context, AppState s, ServerEntry srv, Map<String, dynamic> o) async {
+    String output = '';
+    String? busy;
+    var xray = '';
+    var asked = false;
+    await showXSheet<void>(
+      context,
+      title: T.s('updateServer'),
+      builder: (ctx, setState) {
+        Future<void> run(String what) async {
+          setState(() {
+            busy = what;
+            output = '';
+          });
+          try {
+            final r = await s.manage('manage.update', srv, {'what': what});
+            output = ((r as Map)['output'] as String? ?? '').trim();
+            if (output.isEmpty) output = T.s('done');
+          } catch (e) {
+            output = '$e';
+          }
+          if (ctx.mounted) setState(() => busy = null);
+        }
+
+        if (!asked) {
+          asked = true;
+          s
+              .manage('manage.xtune', srv, {
+                'args': ['xray', 'status'],
+              })
+              .then((r) {
+                if (ctx.mounted) setState(() => xray = ((r as Map)['output'] as String? ?? '').trim());
+              })
+              .catchError((_) {});
+        }
+        Widget row(String what, IconData icon, String title, String sub) => ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(icon),
+          title: Text(title),
+          subtitle: Text(sub, maxLines: 3, overflow: TextOverflow.ellipsis),
+          trailing: FilledButton.tonal(
+            onPressed: busy != null ? null : () => run(what),
+            child: busy == what ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(T.s('update')),
+          ),
+        );
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            row('xtune', Icons.memory_rounded, 'xtune', T.s('updateXtune', {'v': o['version'] ?? '?'})),
+            row('xray', Icons.bolt_rounded, 'Xray', xray.isEmpty ? T.s('updateXray') : xray),
+            if (output.isNotEmpty) ...[
+              const SizedBox(height: Space.s),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: _Output(text: output, busy: false),
+              ),
+            ],
+            const SizedBox(height: Space.s),
+            Text(T.s('updateHint'), style: Type.caption),
+          ],
+        );
+      },
+    );
+    if (mounted) load(s);
   }
 
   void _push(BuildContext context, Widget page) => pushPage(context, AppScope(state: AppScope.of(context), child: page));
@@ -282,10 +353,11 @@ class _Tile extends StatelessWidget {
 }
 
 class _Action extends StatelessWidget {
-  const _Action(this.icon, this.label, this.onTap);
+  const _Action(this.icon, this.label, this.onTap, {this.accent = false});
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final bool accent;
   @override
   Widget build(BuildContext context) => Glass(
     radius: Radii.l,
@@ -294,11 +366,11 @@ class _Action extends StatelessWidget {
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(icon, size: 22),
+        Icon(icon, size: 22, color: accent ? X.accent : null),
         const SizedBox(height: 6),
         Text(
           label,
-          style: Type.caption.copyWith(color: X.text),
+          style: Type.caption.copyWith(color: accent ? X.accent : X.text, fontWeight: accent ? FontWeight.w600 : null),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),

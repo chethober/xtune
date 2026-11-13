@@ -269,6 +269,59 @@ var handlers = map[string]handler{
 		}
 		return map[string]string{"output": out}, nil
 	},
+	"manage.tune.start": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			Server  ServerConn  `json:"server"`
+			Options TuneOptions `json:"options"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return StartTune(in.Server, in.Options)
+	},
+	"manage.tune.status": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			ID   string `json:"id"`
+			Host string `json:"host"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return TuneStatus(in.ID, in.Host), nil
+	},
+	"manage.tune.deploy": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			ID string `json:"id"`
+			N  int    `json:"n"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return DeployTune(in.ID, in.N)
+	},
+	"manage.tune.cancel": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			ID string `json:"id"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return nil, CancelTune(in.ID)
+	},
+	"manage.update": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			Server ServerConn `json:"server"`
+			What   string     `json:"what"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		out, err := Update(in.Server, in.What)
+		if err != nil {
+			return nil, fmt.Errorf("%v\n%s", err, out)
+		}
+		return map[string]string{"output": out}, nil
+	},
 	"manage.logs": func(a []byte) (any, error) {
 		in, err := decode[struct {
 			Server ServerConn `json:"server"`

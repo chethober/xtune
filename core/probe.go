@@ -111,7 +111,7 @@ func StartProbe(p *Profile, o ProbeOptions) *Job {
 			continue
 		}
 		r := Result{ID: c.ID, Key: c.Key, Name: c.Name, State: "testing"}
-		if !usable(c) {
+		if !usable(c) && !reachOnly(c) {
 			r.State, r.Detail = "skipped", "runs in another app"
 		} else {
 			todo = append(todo, len(j.Results))
@@ -172,6 +172,9 @@ func StopJob(id string) {
 func probeOne(ctx context.Context, p *Profile, c protocols.ClientEntry, o ProbeOptions) Result {
 	r := Result{ID: c.ID, Key: c.Key, Name: c.Name, N: o.Probes, Warm: -1}
 	timeout := time.Duration(o.TimeoutMs) * time.Millisecond
+	if reachOnly(c) {
+		return probeReach(ctx, c, o, timeout, r)
+	}
 	tr, closeFn, err := transportFor(p, c, timeout)
 	if err != nil {
 		r.State, r.Detail = "blocked", err.Error()
@@ -219,6 +222,55 @@ func probeOne(ctx context.Context, p *Profile, c protocols.ClientEntry, o ProbeO
 		r.Down, r.Early, r.Late = throughput(ctx, tr, o.SpeedURL, time.Duration(o.Seconds)*time.Second)
 	}
 	r.State = judge(r)
+	return r
+}
+
+// reachOnly are configs another app runs but whose server this app can still reach: MTProto,
+// which Telegram connects to directly.
+func reachOnly(c protocols.ClientEntry) bool {
+	return c.Engine == "handoff" && c.Kind == "mtproto" && reachAddr(c) != ""
+}
+
+// reachAddr is the host:port of an MTProto link (tg://proxy?server=…&port=…&secret=…).
+func reachAddr(c protocols.ClientEntry) string {
+	u, err := url.Parse(c.Link)
+	if err != nil {
+		return ""
+	}
+	q := u.Query()
+	if q.Get("server") == "" || q.Get("port") == "" {
+		return ""
+	}
+	return net.JoinHostPort(q.Get("server"), q.Get("port"))
+}
+
+// probeReach measures a reachOnly config: does its port answer from here, and how fast.
+func probeReach(ctx context.Context, c protocols.ClientEntry, o ProbeOptions, timeout time.Duration, r Result) Result {
+	var d net.Dialer
+	var sum time.Duration
+	var lastErr error
+	for i := 0; i < o.Probes && ctx.Err() == nil; i++ {
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		t0 := time.Now()
+		conn, err := d.DialContext(cctx, "tcp", reachAddr(c))
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		sum += time.Since(t0)
+		conn.Close()
+		r.Ok++
+	}
+	if r.Ok == 0 {
+		r.State = "blocked"
+		if lastErr != nil {
+			r.Detail = shortErr(lastErr)
+		}
+		return r
+	}
+	r.Warm = int((sum / time.Duration(r.Ok)).Milliseconds())
+	r.State, r.Detail = judge(r), "port reachable (Telegram connects to it)"
 	return r
 }
 

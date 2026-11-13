@@ -63,44 +63,48 @@ class SettingsScreen extends StatelessWidget {
         Group(
           children: [
             Padding(
-              padding: const EdgeInsets.all(Space.m),
+              padding: const EdgeInsets.symmetric(horizontal: Space.l, vertical: Space.m),
               child: Segmented(
                 labels: [T.s('themeSystem'), T.s('themeDark'), T.s('themeBlack'), T.s('themeLight')],
                 selected: ['system', 'dark', 'black', 'light'].indexOf(st.theme).clamp(0, 3),
                 onSelect: (i) => set((x) => x.theme = ['system', 'dark', 'black', 'light'][i], reconnects: false),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(Space.l, 0, Space.l, Space.m),
-              child: Row(
-                children: [
-                  Text(T.s('accent'), style: Type.body),
-                  const Spacer(),
-                  for (final a in Palette.accents.keys)
-                    Padding(
-                      padding: const EdgeInsetsDirectional.only(start: Space.s),
-                      child: Semantics(
-                        button: true,
-                        selected: st.accent == a,
-                        label: T.s('accent_$a'),
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: () => set((x) => x.accent = a, reconnects: false),
-                          child: AnimatedContainer(
-                            duration: Motion.fast,
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: X.isLight ? Palette.accents[a]!.$2 : Palette.accents[a]!.$1,
-                              border: Border.all(color: st.accent == a ? X.text : Colors.transparent, width: 2.5),
+            // the same height and insets as the list rows below it, the swatches centred on its line
+            ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 56),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: Space.l, vertical: Space.s),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(child: Text(T.s('accent'), style: Type.body)),
+                    for (final a in Palette.accents.keys)
+                      Padding(
+                        padding: const EdgeInsetsDirectional.only(start: Space.s),
+                        child: Semantics(
+                          button: true,
+                          selected: st.accent == a,
+                          label: T.s('accent_$a'),
+                          child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: () => set((x) => x.accent = a, reconnects: false),
+                            child: AnimatedContainer(
+                              duration: Motion.fast,
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: X.isLight ? Palette.accents[a]!.$2 : Palette.accents[a]!.$1,
+                                border: Border.all(color: st.accent == a ? X.text : Colors.transparent, width: 2.5),
+                              ),
+                              child: st.accent == a ? Icon(Icons.check_rounded, size: 18, color: X.onAccent) : null,
                             ),
-                            child: st.accent == a ? Icon(Icons.check_rounded, size: 18, color: X.onAccent) : null,
                           ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
             _Value(T.s('language'), 'English, فارسی', T.languages[st.lang] ?? st.lang, () => _pickLang(context)),
@@ -259,7 +263,7 @@ class SettingsScreen extends StatelessWidget {
         ),
         const SizedBox(height: Space.xl),
         FutureBuilder(
-          future: CoreClient.instance.call('version'),
+          future: s.core.call('version'),
           builder: (_, snap) => Center(child: Text('xtune client ${(snap.data as Map?)?['version'] ?? ''}', style: Type.caption)),
         ),
       ],

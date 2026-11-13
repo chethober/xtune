@@ -3,7 +3,7 @@ module github.com/chethober/xtune-client/core
 go 1.27.1
 
 require (
-	github.com/chethober/xtune v1.0.1-0.20261113044853-bb5d8b47a69f
+	github.com/chethober/xtune v1.1.0
 	github.com/xtls/xray-core v1.260327.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/mobile v0.0.0-20261011034528-197770444867

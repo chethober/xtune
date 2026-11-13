@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -77,7 +78,8 @@ func (f *fakeSSH) serve(c net.Conn, cfg *ssh.ServerConfig) {
 				f.mu.Lock()
 				f.ran = append(f.ran, p.Cmd)
 				f.mu.Unlock()
-				out, code := f.answer(p.Cmd, "")
+				in, _ := io.ReadAll(ch) // the client closes stdin after sending it
+				out, code := f.answer(p.Cmd, string(in))
 				ch.Write([]byte(out))
 				ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{uint32(code)}))
 				return
