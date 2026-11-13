@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=xtune
+Comment=Connect through your xtune server
+Exec=xtune %u
+Icon=xtune
+Terminal=false
+Categories=Network;
+MimeType=x-scheme-handler/xtune;

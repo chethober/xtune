@@ -380,14 +380,16 @@ func Start(p *Profile, o Options) error {
 			inst.Close()
 			return fail(fmt.Errorf("routes: %w", err))
 		}
-	} else if o.Mode == "proxy" && o.SystemProxy {
+	}
+	warning := ""
+	if o.Mode == "proxy" && o.SystemProxy {
+		// the proxy works without it: apps can be pointed at the ports by hand
 		if undo, err = setSystemProxy(o.HTTPPort, o.SocksPort); err != nil {
-			inst.Close()
-			return fail(fmt.Errorf("system proxy: %w", err))
+			warning = fmt.Sprintf("connected, but the system proxy was not set (%v): point apps at 127.0.0.1:%d", err, o.HTTPPort)
 		}
 	}
 	engine.inst, engine.closers, engine.opts, engine.profile, engine.configs = inst, closers, o, p, configs
-	engine.since, engine.undo, engine.lastErr = time.Now(), undo, ""
+	engine.since, engine.undo, engine.lastErr = time.Now(), undo, warning
 	return nil
 }
 

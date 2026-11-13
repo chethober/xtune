@@ -8,3 +8,4 @@ app/assets/core/
 app/android/key.properties
 *.jks
 *.keystore
+app/android/app/src/main/assets/geo/
