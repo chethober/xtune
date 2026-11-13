@@ -73,4 +73,6 @@ flutter {
 dependencies {
     // the Go core, built with gomobile (scripts/build-android-core.sh)
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    // AppCompat themes: the fingerprint dialog (app lock) needs them on Android 8 and older
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }

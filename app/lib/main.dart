@@ -9,6 +9,8 @@ import 'screens/add_sub.dart';
 import 'screens/check.dart';
 import 'screens/configs.dart';
 import 'screens/home.dart';
+import 'screens/lock.dart';
+import 'screens/onboarding.dart';
 import 'screens/manage.dart';
 import 'screens/settings.dart';
 import 'state/app_state.dart';
@@ -51,13 +53,20 @@ class XtuneApp extends StatelessWidget {
             debugShowCheckedModeBanner: false,
             theme: appTheme(),
             builder: (context, child) => Directionality(textDirection: T.rtl ? TextDirection.rtl : TextDirection.ltr, child: child!),
-            home: const Shell(),
+            // the first run shows the guide; the app lock, when on, covers everything
+            home: !state.settings.onboarded && state.subs.isEmpty ? const Onboarding() : const LockGate(scope: 'app', child: Shell()),
           );
         },
       ),
     );
   }
 }
+
+/// The width a page with a second pane may take on wide screens.
+const twoPaneWidth = 1240.0;
+
+/// Whether a page has room for a second pane (the list and its details side by side).
+bool twoPane(BuildContext context) => MediaQuery.sizeOf(context).width >= 1180;
 
 class Shell extends StatefulWidget {
   const Shell({super.key});
@@ -87,6 +96,10 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   /// An xtune://import?url=… link: add the subscription it carries.
   Future<void> _openLink(String? link) async {
     if (link == null || !link.startsWith('xtune://') || !mounted) return;
+    if (link.startsWith('xtune://manage')) {
+      go(3); // the server widget
+      return;
+    }
     await showAddSub(context, initial: link);
   }
 
@@ -101,6 +114,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
+    Lock.lifecycle(s);
     if (s == AppLifecycleState.detached && !Platform.isAndroid) {
       final core = CoreClient.instance;
       if (core is DesktopCore) core.shutdown();
@@ -119,7 +133,13 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
       TabItem(Icons.dns_outlined, T.s('manage')),
       TabItem(Icons.tune_rounded, T.s('settings')),
     ];
-    final pages = [HomeScreen(onOpenConfigs: () => go(1)), const ConfigsScreen(), const CheckScreen(), const ManageScreen(), const SettingsScreen()];
+    final pages = [
+      HomeScreen(onOpenConfigs: () => go(1)),
+      const ConfigsScreen(),
+      const CheckScreen(),
+      const LockGate(scope: 'manage', child: ManageScreen()),
+      const SettingsScreen(),
+    ];
     final body = IndexedStack(index: index, children: pages);
     if (wide) {
       return Scaffold(
@@ -174,10 +194,20 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
                     ),
                   ),
                 ),
+                // one column of reading width; Configs and Manage get a second pane beside it
                 Expanded(
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 760), child: body),
+                  child: IndexedStack(
+                    index: index,
+                    children: [
+                      for (var i = 0; i < pages.length; i++)
+                        Align(
+                          alignment: Alignment.topCenter,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(maxWidth: (i == 1 || i == 3) ? twoPaneWidth : 760),
+                            child: pages[i],
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ],

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
@@ -70,19 +71,19 @@ object Xtune {
     fun hasLast(c: Context) = prefs(c).getString("lastArgs", null) != null
 
     /** Starts the last connection, when there is one and the VPN permission was given. */
-    fun startLast(c: Context): Boolean {
+    fun startLast(c: Context, reason: String): Boolean {
         val p = prefs(c)
         val args = p.getString("lastArgs", null) ?: return false
         if (VpnService.prepare(c) != null) return false
         val apps = JSONArray(p.getString("lastApps", "[]") ?: "[]").let { a -> ArrayList((0 until a.length()).map { a.getString(it) }) }
-        XtuneVpnService.start(c, args, p.getString("lastMode", "off") ?: "off", apps)
+        XtuneVpnService.start(c, args, p.getString("lastMode", "off") ?: "off", apps, reason)
         return true
     }
 
-    fun toggle(c: Context) {
+    fun toggle(c: Context, reason: String) {
         if (running) {
             XtuneVpnService.stop(c)
-        } else if (!startLast(c)) {
+        } else if (!startLast(c, reason)) {
             // no connection yet, or the permission is missing: the app asks
             c.startActivity(Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
@@ -138,6 +139,75 @@ object Xtune {
         val trusted = JSONArray(p.getString("trusted", "[]") ?: "[]").let { a -> (0 until a.length()).map { a.getString(it) } }
         val ssid = currentSsid(c)
         if (ssid.isNotEmpty() && trusted.contains(ssid)) return
-        startLast(c)
+        if (captive(c)) {
+            // a hotel or airport Wi-Fi: the VPN would block its sign-in page; connect once it is done
+            waitForSignIn(c)
+            return
+        }
+        startLast(c, "wifi")
+    }
+
+    // ------------------------------------------------ captive portals
+
+    private const val CAPTIVE_NOTE = 3
+    @Volatile
+    private var waiting: ConnectivityManager.NetworkCallback? = null
+
+    /** The current network wants a sign-in first (or has not been checked as online yet). */
+    fun captive(c: Context): Boolean {
+        val cm = c.getSystemService(ConnectivityManager::class.java) ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
+    }
+
+    /** Asks for the sign-in, then connects once Android sees the network online. */
+    fun waitForSignIn(c: Context) {
+        val cm = c.getSystemService(ConnectivityManager::class.java) ?: return
+        val net = cm.activeNetwork ?: return
+        val fa = prefs(c).getString("lang", "en") == "fa"
+        val nm = c.getSystemService(android.app.NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(android.app.NotificationChannel("wifi", if (fa) "وای‌فای" else "Wi-Fi", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        val signIn = PendingIntent.getActivity(
+            c, 9, Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://neverssl.com")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val b = if (Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(c, "wifi") else @Suppress("DEPRECATION") android.app.Notification.Builder(c)
+        nm.notify(
+            CAPTIVE_NOTE,
+            b.setSmallIcon(R.drawable.ic_vpn)
+                .setContentTitle(if (fa) "این وای‌فای ورود می‌خواهد" else "This Wi-Fi wants you to sign in")
+                .setContentText(if (fa) "وارد شوید؛ xtune بعد از آن وصل می‌شود" else "Sign in, and xtune connects once you're online")
+                .setContentIntent(signIn)
+                .setAutoCancel(true)
+                .build()
+        )
+        waiting?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {} }
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
+                if (n == net && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                    !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
+                ) {
+                    done(this)
+                    if (!running) startLast(c, "wifi")
+                }
+            }
+
+            override fun onLost(n: Network) {
+                if (n == net) done(this)
+            }
+
+            fun done(cb: ConnectivityManager.NetworkCallback) {
+                nm.cancel(CAPTIVE_NOTE)
+                try {
+                    cm.unregisterNetworkCallback(cb)
+                } catch (_: Exception) {
+                }
+                waiting = null
+            }
+        }
+        waiting = cb
+        cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), cb)
     }
 }

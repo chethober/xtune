@@ -52,9 +52,10 @@ class XtuneVpnService : VpnService() {
             private set
 
         /** mode: off, bypass (apps skip the VPN) or only (only apps use it). */
-        fun start(context: Context, args: String, mode: String, apps: ArrayList<String>) {
+        /** reason is what started it, for the timeline: boot, wifi, tile, widget; "" from the app. */
+        fun start(context: Context, args: String, mode: String, apps: ArrayList<String>, reason: String = "") {
             val i = Intent(context, XtuneVpnService::class.java).setAction(ACTION_START)
-                .putExtra("args", args).putExtra("mode", mode).putStringArrayListExtra("apps", apps)
+                .putExtra("args", args).putExtra("mode", mode).putStringArrayListExtra("apps", apps).putExtra("reason", reason)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
 
@@ -100,7 +101,7 @@ class XtuneVpnService : VpnService() {
             }
             ACTION_RESUME -> {
                 foreground(connecting = true)
-                worker.execute { begin(null, null, null) }
+                worker.execute { begin(null, null, null, "resume") }
                 return START_NOT_STICKY
             }
         }
@@ -108,12 +109,14 @@ class XtuneVpnService : VpnService() {
         val args = intent?.getStringExtra("args")
         val mode = intent?.getStringExtra("mode")
         val apps = intent?.getStringArrayListExtra("apps")
-        worker.execute { begin(args, mode, apps) }
+        // no arguments: the system started it (always-on VPN)
+        val reason = intent?.getStringExtra("reason") ?: if (args == null) "always-on" else ""
+        worker.execute { begin(args, mode, apps, reason) }
         return START_NOT_STICKY
     }
 
     /** Connects with these arguments, or the last connection's (always-on VPN, Resume, the tile). */
-    private fun begin(argsIn: String?, modeIn: String?, appsIn: ArrayList<String>?) {
+    private fun begin(argsIn: String?, modeIn: String?, appsIn: ArrayList<String>?, reason: String) {
         cancelResume()
         var args = argsIn
         var mode = modeIn ?: "off"
@@ -132,7 +135,7 @@ class XtuneVpnService : VpnService() {
         }
         val reply = try {
             Xtune.setup(this)
-            connect(args, mode, apps)
+            connect(args, mode, apps, reason)
         } catch (e: Exception) {
             JSONObject().put("ok", false).put("error", e.message ?: e.toString()).toString()
         }
@@ -149,10 +152,11 @@ class XtuneVpnService : VpnService() {
         onStarted = null
     }
 
-    private fun connect(args: String, mode: String, apps: List<String>): String {
-        Mobile.call("vpn.stop", "{}")
+    private fun connect(args: String, mode: String, apps: List<String>, reason: String): String {
+        Mobile.call("vpn.stop", "{\"reason\":\"restart\"}")
         tun?.close()
         val j = JSONObject(args)
+        if (reason.isNotEmpty()) j.put("reason", reason)
         val opts = j.optJSONObject("options") ?: JSONObject()
         val b = Builder()
             .setSession("xtune")
@@ -160,9 +164,9 @@ class XtuneVpnService : VpnService() {
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
             .addDnsServer("1.1.1.1")
-        if (opts.optBoolean("ipv6")) {
-            b.addAddress("fd66:7874:756e::1", 126).addRoute("::", 0)
-        }
+        // IPv6 always comes into the tunnel, also when it is off: Xray then blocks it. Left out of
+        // the VPN, apps' IPv6 traffic would go around it (a leak).
+        b.addAddress("fd66:7874:756e::1", 126).addRoute("::", 0)
         // Android takes either an allow list or a deny list, not both. This app is never in the
         // VPN: in "only" mode it is simply not on the list.
         val chosen = apps.filter { it != packageName }
@@ -214,7 +218,7 @@ class XtuneVpnService : VpnService() {
     /** Closes the tunnel for 15 minutes: traffic goes direct, then it reconnects by itself. */
     private fun pause() {
         if (tun == null) return
-        Mobile.call("vpn.stop", "{}")
+        Mobile.call("vpn.stop", "{\"reason\":\"pause\"}")
         tun?.close()
         tun = null
         pausedUntil = System.currentTimeMillis() + PAUSE_MS

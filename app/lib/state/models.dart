@@ -1,3 +1,5 @@
+import '../ui/fmt.dart';
+
 /// A subscription the user added (or links they pasted: no URL), the last profile fetched from it,
 /// and what the user did to its configs.
 class Sub {
@@ -128,13 +130,18 @@ class ServerEntry {
 
 /// A routing rule: matching traffic goes direct, through the proxy, or nowhere.
 class RouteRule {
-  RouteRule({required this.match, required this.value, required this.action});
-  String match; // domain | full | keyword | geosite | ip | geoip | port
+  RouteRule({required this.match, required this.value, required this.action, this.config = ''});
+  String match; // domain | full | keyword | geosite | ip | geoip | port | app (Linux, Windows)
   String value;
-  String action; // direct | proxy | block
-  Map<String, dynamic> toJson() => {'match': match, 'value': value, 'action': action};
-  static RouteRule fromJson(Map<String, dynamic> j) =>
-      RouteRule(match: j['match'] as String? ?? 'domain', value: j['value'] as String? ?? '', action: j['action'] as String? ?? 'direct');
+  String action; // direct | proxy | block | via (through [config])
+  String config; // via: the config's ID
+  Map<String, dynamic> toJson() => {'match': match, 'value': value, 'action': action, if (config.isNotEmpty) 'config': config};
+  static RouteRule fromJson(Map<String, dynamic> j) => RouteRule(
+    match: j['match'] as String? ?? 'domain',
+    value: j['value'] as String? ?? '',
+    action: j['action'] as String? ?? 'direct',
+    config: j['config'] as String? ?? '',
+  );
 }
 
 /// The app's settings. Stored as JSON; a field missing in an older file reads as its default.
@@ -179,6 +186,11 @@ class Settings {
 
   // subscriptions
   int autoUpdateHours = 6; // 0: never
+  String autoMode = ''; // how Auto picks: '' lowest ping | latency (checks often) | stable
+  String lock = 'off'; // off | app | manage: a PIN (or the fingerprint) before the app or the Manage tab
+  bool lockBio = false; // the fingerprint or face opens the lock too
+  bool onboarded = false; // the first-run guide was shown
+  bool dataSaver = true; // on mobile data: no throughput tests, smaller checks
 
   /// The apps Android leaves out of the VPN, for the bypass mode.
   List<String> get excludedApps => perAppMode == 'bypass' ? apps : const [];
@@ -216,6 +228,11 @@ class Settings {
     'bypassDomains': bypassDomains,
     'rules': rules.map((r) => r.toJson()).toList(),
     'autoUpdateHours': autoUpdateHours,
+    'autoMode': autoMode,
+    'lock': lock,
+    'lockBio': lockBio,
+    'onboarded': onboarded,
+    'dataSaver': dataSaver,
   };
 
   static Settings fromJson(Map<String, dynamic>? j) {
@@ -260,6 +277,12 @@ class Settings {
     s.bypassDomains = strings('bypassDomains');
     s.rules = ((j['rules'] as List?) ?? []).map((r) => RouteRule.fromJson(Map<String, dynamic>.from(r as Map))).toList();
     s.autoUpdateHours = get('autoUpdateHours', s.autoUpdateHours);
+    s.autoMode = get('autoMode', s.autoMode);
+    s.lock = get('lock', s.lock);
+    s.lockBio = get('lockBio', s.lockBio);
+    // a settings file from before onboarding existed means the app is set up already
+    s.onboarded = get('onboarded', true);
+    s.dataSaver = get('dataSaver', s.dataSaver);
     return s;
   }
 }
@@ -272,10 +295,10 @@ String fmtBytes(num b) {
     v /= 1024;
     i++;
   }
-  return i == 0 ? '${v.toInt()} B' : '${v.toStringAsFixed(v >= 100 ? 0 : 1)} ${units[i]}';
+  return nums(i == 0 ? '${v.toInt()} B' : '${v.toStringAsFixed(v >= 100 ? 0 : 1)} ${units[i]}');
 }
 
 String fmtDuration(Duration d) {
   String two(int n) => n.toString().padLeft(2, '0');
-  return '${two(d.inHours)}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}';
+  return nums('${two(d.inHours)}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}');
 }

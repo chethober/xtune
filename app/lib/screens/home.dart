@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../main.dart';
 import '../state/app_state.dart';
@@ -36,8 +38,16 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  bool _captive = false;
+  int _ticks = 0;
+
   void _rates() {
     if (!mounted) return;
+    if (_ticks++ % 5 == 0 && !AppScope.of(context).connected) {
+      AppScope.of(context).captivePortal().then((v) {
+        if (mounted && v != _captive) setState(() => _captive = v);
+      });
+    }
     final st = AppScope.of(context).status;
     final up = (st['up'] as num?)?.toInt() ?? 0, down = (st['down'] as num?)?.toInt() ?? 0;
     final now = DateTime.now();
@@ -102,6 +112,26 @@ class _HomeScreenState extends State<HomeScreen> {
             child: _UsageCard(sub: sub),
           ),
         ],
+        if (sub != null && _quotaWarning(sub) != null) ...[
+          const SizedBox(height: Space.m),
+          Notice(_quotaWarning(sub)!, color: X.warn, icon: Icons.data_usage_rounded),
+        ],
+        if (_captive && !s.connected) ...[
+          const SizedBox(height: Space.m),
+          Glass(
+            child: Row(
+              children: [
+                Icon(Icons.wifi_password_rounded, color: X.warn),
+                const SizedBox(width: Space.m),
+                Expanded(child: Text(T.s('captiveHint'), style: Type.secondary)),
+                TextButton(
+                  onPressed: () => launchUrl(Uri.parse('http://neverssl.com'), mode: LaunchMode.externalApplication),
+                  child: Text(T.s('captiveSignIn')),
+                ),
+              ],
+            ),
+          ),
+        ],
         if (s.connected && (s.status['error'] as String?)?.isNotEmpty == true) ...[
           const SizedBox(height: Space.m),
           Notice(s.status['error'] as String, color: X.warn, icon: Icons.info_outline_rounded),
@@ -110,6 +140,17 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+}
+
+/// Nearly out of data or time on the subscription.
+String? _quotaWarning(Sub sub) {
+  final u = sub.usage;
+  if (u.quota > 0 && u.fraction >= 0.9) {
+    return T.s('quotaNearly', {'left': fmtBytes((u.quota - u.used).clamp(0, u.quota))});
+  }
+  final d = u.daysLeft;
+  if (d != null && d <= 3) return d < 0 ? T.s('subExpired') : T.s('daysLeftWarn', {'n': d});
+  return null;
 }
 
 class _SubChip extends StatelessWidget {
@@ -196,6 +237,15 @@ class _EmptyState extends StatelessWidget {
             icon: const Icon(Icons.add_rounded),
             label: Text(T.s('addSub')),
           ),
+          if (Platform.isAndroid) ...[
+            const SizedBox(height: Space.s),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(minimumSize: const Size(200, 48)),
+              onPressed: () => showAddSub(context, scan: true),
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: Text(T.s('scanQr')),
+            ),
+          ],
         ],
       ),
     );

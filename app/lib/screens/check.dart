@@ -46,6 +46,16 @@ class CheckScreen extends StatelessWidget {
       title: T.s('checkTitle'),
       subtitle: T.s('checkHint', {'net': net}),
       children: [
+        // on mobile data with the data saver on, the check skips its downloads
+        FutureBuilder<bool>(
+          future: s.savingData(),
+          builder: (_, snap) => snap.data == true
+              ? Padding(
+                  padding: const EdgeInsets.only(bottom: Space.m),
+                  child: Notice(T.s('dataSaverOn'), color: X.blue, icon: Icons.data_saver_on_rounded),
+                )
+              : const SizedBox.shrink(),
+        ),
         if (check != null)
           Glass(
             child: Column(

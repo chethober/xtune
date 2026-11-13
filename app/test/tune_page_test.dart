@@ -146,7 +146,7 @@ void main() {
   testWidgets('settings: the accent row lines up; the tab bar has one highlight', (t) async {
     t.view.physicalSize = const Size(1170, 2532);
     t.view.devicePixelRatio = 3;
-    final s = AppState(FakeCore());
+    final s = AppState(FakeCore())..settings.onboarded = true;
     X.p = Palette.of('dark', 'green', Brightness.dark);
     await t.pumpWidget(XtuneApp(state: s));
     await t.pump(const Duration(milliseconds: 500));

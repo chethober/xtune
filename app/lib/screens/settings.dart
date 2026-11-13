@@ -9,7 +9,9 @@ import '../main.dart';
 import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
+import 'lock.dart';
 import 'options.dart';
+import 'tools.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -161,6 +163,13 @@ class SettingsScreen extends StatelessWidget {
               final t = await editTweaks(context, title: T.s('tweaks'), current: st.tweaks);
               if (t != null) await set((x) => x.tweaks = t);
             }),
+            _Value(
+              T.s('autoMode'),
+              T.s('autoModeHint'),
+              T.s('autoMode_${st.autoMode.isEmpty ? 'ping' : st.autoMode}'),
+              () => _pickAutoMode(context, set),
+            ),
+            if (android) _Switch(T.s('dataSaver'), T.s('dataSaverHint'), st.dataSaver, (v) => set((x) => x.dataSaver = v, reconnects: false)),
           ],
         ),
 
@@ -253,10 +262,28 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
 
+        SectionLabel(T.s('security')),
+        Group(
+          children: [
+            _Value(T.s('appLock'), T.s('appLockHint'), T.s('lock_${st.lock}'), () => _pickLock(context, set)),
+            if (st.lock != 'off')
+              FutureBuilder<bool>(
+                future: Lock.biometricsAvailable(),
+                builder: (_, snap) => snap.data == true
+                    ? _Switch(T.s('lockBio'), T.s('lockBioHint'), st.lockBio, (v) => set((x) => x.lockBio = v, reconnects: false))
+                    : const SizedBox.shrink(),
+              ),
+            _Value(T.s('leakTest'), T.s('leakTestHint'), '', () => push(const LeakTestPage())),
+            _Value(T.s('backupSave'), T.s('backupSaveHint'), '', () => exportBackup(context)),
+            _Value(T.s('backupRestore'), T.s('backupRestoreHint'), '', () => importBackup(context)),
+          ],
+        ),
+
         SectionLabel(T.s('diagnostics')),
         Group(
           children: [
             _Value(T.s('usage'), T.s('usageHint'), '', () => push(const UsagePage())),
+            _Value(T.s('timeline'), T.s('timelineHint'), '', () => push(const TimelinePage())),
             _Value(T.s('connectionLog'), T.s('connectionLogHint'), '', () => push(const LogViewerPage())),
             _Value(T.s('shareDiagnostics'), T.s('shareDiagnosticsHint'), '', () => shareDiagnostics(context)),
           ],
@@ -431,6 +458,61 @@ class SettingsScreen extends StatelessWidget {
     );
     if (v != null) await s.updateSettings((x) => x.lang = v);
   }
+}
+
+Future<void> _pickAutoMode(BuildContext context, Future<void> Function(void Function(Settings), {bool reconnects}) set) async {
+  final st = AppScope.of(context).settings;
+  final v = await showXSheet<String>(
+    context,
+    title: T.s('autoMode'),
+    padded: false,
+    builder: (ctx, _) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final m in ['', 'latency', 'stable'])
+          ListTile(
+            leading: Icon(st.autoMode == m ? Icons.radio_button_checked : Icons.radio_button_off, color: st.autoMode == m ? X.accent : X.muted),
+            title: Text(T.s('autoMode_${m.isEmpty ? 'ping' : m}')),
+            subtitle: Text(T.s('autoMode_${m.isEmpty ? 'ping' : m}_hint')),
+            onTap: () => Navigator.pop(ctx, m),
+          ),
+      ],
+    ),
+  );
+  if (v != null && v != st.autoMode) await set((x) => x.autoMode = v);
+}
+
+Future<void> _pickLock(BuildContext context, Future<void> Function(void Function(Settings), {bool reconnects}) set) async {
+  final st = AppScope.of(context).settings;
+  final v = await showXSheet<String>(
+    context,
+    title: T.s('appLock'),
+    padded: false,
+    builder: (ctx, _) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final m in ['off', 'app', 'manage'])
+          ListTile(
+            leading: Icon(st.lock == m ? Icons.radio_button_checked : Icons.radio_button_off, color: st.lock == m ? X.accent : X.muted),
+            title: Text(T.s('lock_$m')),
+            subtitle: Text(T.s('lock_${m}_hint')),
+            onTap: () => Navigator.pop(ctx, m),
+          ),
+      ],
+    ),
+  );
+  if (v == null || v == st.lock || !context.mounted) return;
+  if (v == 'off') {
+    await Lock.clearPin();
+  } else if (!await Lock.hasPin()) {
+    if (!context.mounted) return;
+    final pin = await askNewPin(context);
+    if (pin == null) return;
+    await Lock.setPin(pin);
+  }
+  Lock.unlocked = true; // the person setting it is the owner; it locks after the app has been away
+  await set((x) => x.lock = v, reconnects: false);
+  Lock.changes.value++;
 }
 
 class _Switch extends StatelessWidget {

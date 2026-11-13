@@ -32,6 +32,7 @@ class _Row {
 
 class _ConfigsScreenState extends State<ConfigsScreen> {
   int filter = 0;
+  String? focus; // wide screens: the config shown beside the list
   static const groups = ['', 'Xray', 'VPN', 'Tunnels'];
   static const sorts = ['recommended', 'latency', 'name', 'type'];
 
@@ -105,7 +106,7 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
     final s = AppScope.of(context);
     final sub = s.sub;
     final rows = _rows(s);
-    return XPage(
+    final page = XPage(
       title: T.s('configs'),
       subtitle: sub == null
           ? null
@@ -177,10 +178,45 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
               engine: r.c.engineLabel,
               dot: X.status(r.state),
               selected: s.settings.selected == r.c.id,
-              onTap: () => r.c.handoff ? _handoff(context, r.c) : s.select(r.c.id),
-              onLongPress: () => _details(context, r.c),
+              onTap: () {
+                if (twoPane(context)) setState(() => focus = r.c.id);
+                r.c.handoff ? _handoff(context, r.c) : s.select(r.c.id);
+              },
+              onLongPress: () => twoPane(context) ? setState(() => focus = r.c.id) : _details(context, r.c),
             ),
           ),
+      ],
+    );
+    if (!twoPane(context)) return page;
+    // wide: the details of the config tapped (or the one in use) beside the list
+    final all = sub?.allConfigs ?? [];
+    final shown = all.where((c) => c.id == focus).firstOrNull ?? s.activeConfig ?? all.where((c) => c.id == s.settings.selected).firstOrNull;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: page),
+        SizedBox(
+          width: 400,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(0, 96, Space.page, Space.page),
+            child: shown == null
+                ? Glass(child: Text(T.s('pickToSee'), style: Type.secondary))
+                : Glass(
+                    child: SingleChildScrollView(
+                      child: StatefulBuilder(
+                        builder: (ctx, setPane) => Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(shown.name, style: Type.title),
+                            const SizedBox(height: Space.s),
+                            configDetails(context, shown, setPane, close: () => setState(() => focus = null), alive: () => mounted),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+        ),
       ],
     );
   }
@@ -276,139 +312,150 @@ Future<void> _handoff(BuildContext context, Config c) async {
 
 /// A config's sheet: speed test, star, rename, its own tweaks, hide, and its link as a QR code.
 void _details(BuildContext context, Config c) {
-  final s = AppScope.of(context);
   showXSheet<void>(
     context,
     title: c.name,
-    builder: (ctx, setState) {
-      final sp = s.speed[c.id];
-      final m = s.sub?.meta[c.id];
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('${c.label} · ${c.engineLabel}${c.name != c.serverName ? ' · ${c.serverName}' : ''}', style: Type.secondary),
-          const SizedBox(height: Space.m),
-          if (!c.handoff)
-            Glass(
-              padding: const EdgeInsets.all(Space.m),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      sp == null
-                          ? T.s('speedHint')
-                          : sp['state'] == 'testing'
-                          ? T.s('speedTesting')
-                          : _speedText(sp),
-                      style: sp == null ? Type.secondary : Type.body,
-                    ),
-                  ),
-                  const SizedBox(width: Space.s),
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(minimumSize: const Size(0, 40)),
-                    onPressed: sp?['state'] == 'testing'
-                        ? null
-                        : () async {
-                            final f = s.speedTest(c.id);
-                            setState(() {});
-                            await f;
-                            if (ctx.mounted) setState(() {});
-                          },
-                    icon: const Icon(Icons.speed_rounded, size: 18),
-                    label: Text(T.s('speedTest')),
-                  ),
-                ],
+    builder: (ctx, setState) => configDetails(
+      context,
+      c,
+      setState,
+      close: () {
+        if (ctx.mounted) Navigator.pop(ctx);
+      },
+      alive: () => ctx.mounted,
+    ),
+  );
+}
+
+/// A config's details and actions: in a sheet on phones, beside the list on wide screens.
+Widget configDetails(BuildContext context, Config c, StateSetter setState, {required VoidCallback close, required bool Function() alive}) {
+  final s = AppScope.of(context);
+  final sp = s.speed[c.id];
+  final m = s.sub?.meta[c.id];
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Text('${c.label} · ${c.engineLabel}${c.name != c.serverName ? ' · ${c.serverName}' : ''}', style: Type.secondary),
+      const SizedBox(height: Space.m),
+      if (!c.handoff)
+        Glass(
+          padding: const EdgeInsets.all(Space.m),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  sp == null
+                      ? T.s('speedHint')
+                      : sp['state'] == 'testing'
+                      ? T.s('speedTesting')
+                      : _speedText(sp),
+                  style: sp == null ? Type.secondary : Type.body,
+                ),
               ),
-            ),
-          const SizedBox(height: Space.s),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(c.star ? Icons.star_rounded : Icons.star_outline_rounded, color: c.star ? X.warn : null),
-            title: Text(c.star ? T.s('unstar') : T.s('star')),
-            onTap: () async {
-              await s.markConfig(c.id, (m) => m.star = !c.star);
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.edit_rounded),
-            title: Text(T.s('rename')),
-            onTap: () async {
-              Navigator.pop(ctx);
-              final ctl = TextEditingController(text: c.name);
-              final v = await showDialog<String>(
-                context: context,
-                builder: (d) => AlertDialog(
-                  title: Text(T.s('rename')),
-                  content: TextField(controller: ctl, autofocus: true),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(d, ''), child: Text(T.s('reset'))),
-                    FilledButton(onPressed: () => Navigator.pop(d, ctl.text.trim()), child: const Text('OK')),
-                  ],
-                ),
-              );
-              if (v != null) await s.markConfig(c.id, (m) => m.rename = v == c.serverName ? '' : v);
-            },
-          ),
-          if (!c.handoff)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.tune_rounded),
-              title: Text(T.s('tweaksThis')),
-              subtitle: Text(tweaksSummary(m?.tweaks ?? {})),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final t = await editTweaks(context, title: c.name, current: m?.tweaks ?? {}, perConfig: true);
-                if (t != null) await s.setConfigTweaks(c.id, t);
-              },
-            ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(c.hidden ? Icons.visibility_rounded : Icons.visibility_off_rounded),
-            title: Text(c.hidden ? T.s('unhide') : T.s('hide')),
-            subtitle: c.hidden ? null : Text(T.s('hideHint')),
-            onTap: () async {
-              await s.markConfig(c.id, (m) => m.hidden = !c.hidden);
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-          ),
-          if (c.link.isNotEmpty) ...[
-            const SizedBox(height: Space.m),
-            Center(
-              child: Container(
-                padding: const EdgeInsets.all(Space.s),
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(Radii.m)),
-                child: QrImageView(data: c.link, size: 200),
+              const SizedBox(width: Space.s),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 40)),
+                onPressed: sp?['state'] == 'testing'
+                    ? null
+                    : () async {
+                        final f = s.speedTest(c.id);
+                        setState(() {});
+                        await f;
+                        if (alive()) setState(() {});
+                      },
+                icon: const Icon(Icons.speed_rounded, size: 18),
+                label: Text(T.s('speedTest')),
               ),
-            ),
-            const SizedBox(height: Space.m),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: c.link));
-                      if (ctx.mounted) Navigator.pop(ctx);
-                    },
-                    icon: const Icon(Icons.copy_rounded),
-                    label: Text(T.s('copy')),
-                  ),
-                ),
-                const SizedBox(width: Space.s),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => SharePlus.instance.share(ShareParams(text: c.link)),
-                    icon: const Icon(Icons.share_rounded),
-                    label: Text(T.s('share')),
-                  ),
-                ),
+            ],
+          ),
+        ),
+      const SizedBox(height: Space.s),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(c.star ? Icons.star_rounded : Icons.star_outline_rounded, color: c.star ? X.warn : null),
+        title: Text(c.star ? T.s('unstar') : T.s('star')),
+        onTap: () async {
+          await s.markConfig(c.id, (m) => m.star = !c.star);
+          close();
+        },
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.edit_rounded),
+        title: Text(T.s('rename')),
+        onTap: () async {
+          close();
+          final ctl = TextEditingController(text: c.name);
+          final v = await showDialog<String>(
+            context: context,
+            builder: (d) => AlertDialog(
+              title: Text(T.s('rename')),
+              content: TextField(controller: ctl, autofocus: true),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(d, ''), child: Text(T.s('reset'))),
+                FilledButton(onPressed: () => Navigator.pop(d, ctl.text.trim()), child: const Text('OK')),
               ],
             ),
+          );
+          if (v != null) await s.markConfig(c.id, (m) => m.rename = v == c.serverName ? '' : v);
+        },
+      ),
+      if (!c.handoff)
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.tune_rounded),
+          title: Text(T.s('tweaksThis')),
+          subtitle: Text(tweaksSummary(m?.tweaks ?? {})),
+          onTap: () async {
+            close();
+            final t = await editTweaks(context, title: c.name, current: m?.tweaks ?? {}, perConfig: true);
+            if (t != null) await s.setConfigTweaks(c.id, t);
+          },
+        ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(c.hidden ? Icons.visibility_rounded : Icons.visibility_off_rounded),
+        title: Text(c.hidden ? T.s('unhide') : T.s('hide')),
+        subtitle: c.hidden ? null : Text(T.s('hideHint')),
+        onTap: () async {
+          await s.markConfig(c.id, (m) => m.hidden = !c.hidden);
+          close();
+        },
+      ),
+      if (c.link.isNotEmpty) ...[
+        const SizedBox(height: Space.m),
+        Center(
+          child: Container(
+            padding: const EdgeInsets.all(Space.s),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(Radii.m)),
+            child: QrImageView(data: c.link, size: 200),
+          ),
+        ),
+        const SizedBox(height: Space.m),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: c.link));
+                  close();
+                },
+                icon: const Icon(Icons.copy_rounded),
+                label: Text(T.s('copy')),
+              ),
+            ),
+            const SizedBox(width: Space.s),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => SharePlus.instance.share(ShareParams(text: c.link)),
+                icon: const Icon(Icons.share_rounded),
+                label: Text(T.s('share')),
+              ),
+            ),
           ],
-        ],
-      );
-    },
+        ),
+      ],
+    ],
   );
 }
 

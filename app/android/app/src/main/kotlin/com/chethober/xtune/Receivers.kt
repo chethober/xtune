@@ -18,7 +18,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val p = Xtune.prefs(c)
         if (p.getBoolean("autoWifi", false)) Xtune.watchWifi(c, true)
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED && p.getBoolean("autoBoot", false)) Xtune.startLast(c)
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED && p.getBoolean("autoBoot", false)) Xtune.startLast(c, "boot")
     }
 }
 
@@ -49,7 +49,7 @@ class XtuneTileService : TileService() {
             }
             return
         }
-        Xtune.toggle(this)
+        Xtune.toggle(this, "tile")
         onStartListening()
     }
 }
@@ -78,6 +78,50 @@ class XtuneWidget : AppWidgetProvider() {
 
     override fun onReceive(c: Context, intent: Intent) {
         super.onReceive(c, intent)
-        if (intent.action == TOGGLE) Xtune.toggle(c)
+        if (intent.action == TOGGLE) Xtune.toggle(c, "widget")
     }
+}
+
+/**
+ * The server widget: the server the app last looked at in Manage, as it was then (the app keeps
+ * it current while it runs; logging in to the server from the background would need its
+ * password outside the app's secure storage).
+ */
+class XtuneServerWidget : AppWidgetProvider() {
+    companion object {
+        fun save(c: Context, json: String) {
+            Xtune.prefs(c).edit().putString("serverWidget", json).apply()
+            val wm = AppWidgetManager.getInstance(c)
+            val ids = wm.getAppWidgetIds(android.content.ComponentName(c, XtuneServerWidget::class.java))
+            if (ids.isNotEmpty()) update(c, wm, ids)
+        }
+
+        fun update(c: Context, wm: AppWidgetManager, ids: IntArray) {
+            val v = RemoteViews(c.packageName, R.layout.server_widget)
+            val raw = Xtune.prefs(c).getString("serverWidget", null)
+            val fa = Xtune.prefs(c).getString("lang", "en") == "fa"
+            if (raw == null) {
+                v.setTextViewText(R.id.srv_name, if (fa) "سروری باز نشده" else "Open a server in xtune")
+            } else {
+                val j = org.json.JSONObject(raw)
+                v.setTextViewText(R.id.srv_name, j.optString("name"))
+                v.setTextViewText(R.id.srv_online, "${j.optInt("online")}/${j.optInt("users")}")
+                v.setTextViewText(R.id.srv_today, j.optString("today"))
+                v.setTextViewText(R.id.srv_configs, j.optString("configs"))
+                v.setTextViewText(R.id.srv_online_label, if (fa) "آنلاین" else "online")
+                v.setTextViewText(R.id.srv_today_label, if (fa) "امروز" else "today")
+                val at = j.optLong("at")
+                if (at > 0) v.setTextViewText(R.id.srv_when, java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(at)))
+                v.setImageViewResource(R.id.srv_dot, if (j.optBoolean("ok", true)) R.drawable.widget_button_on else R.drawable.widget_button_off)
+            }
+            val open = PendingIntent.getActivity(
+                c, 11, Intent(c, MainActivity::class.java).setData(android.net.Uri.parse("xtune://manage")),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            v.setOnClickPendingIntent(R.id.srv_root, open)
+            wm.updateAppWidget(ids, v)
+        }
+    }
+
+    override fun onUpdate(c: Context, wm: AppWidgetManager, ids: IntArray) = update(c, wm, ids)
 }

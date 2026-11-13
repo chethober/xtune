@@ -7,13 +7,15 @@ import 'package:share_plus/share_plus.dart';
 
 import '../main.dart';
 import '../state/models.dart';
+import '../ui/fmt.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
 
 // ---------------------------------------------------------------- routing rules
 
-const ruleMatches = ['domain', 'full', 'keyword', 'geosite', 'ip', 'geoip', 'port'];
-const ruleActions = ['direct', 'proxy', 'block'];
+/// Xray tells apps apart only on Linux and Windows (Android keeps other apps' connections from it).
+List<String> get ruleMatches => ['domain', 'full', 'keyword', 'geosite', 'ip', 'geoip', 'port', if (Platform.isLinux || Platform.isWindows) 'app'];
+const ruleActions = ['direct', 'proxy', 'via', 'block'];
 
 /// Ready-made rule sets.
 final rulePresets = <String, List<RouteRule>>{
@@ -86,13 +88,18 @@ class RulesPage extends StatelessWidget {
                     key: ValueKey('rule-$i-${rules[i].match}-${rules[i].value}'),
                     leading: ReorderableDragStartListener(index: i, child: const Icon(Icons.drag_indicator_rounded)),
                     title: Text(rules[i].value, textDirection: TextDirection.ltr),
-                    subtitle: Text(T.s('match_${rules[i].match}')),
+                    subtitle: Text(
+                      rules[i].action == 'via'
+                          ? '${T.s('match_${rules[i].match}')} · ${s.sub?.allConfigs.where((c) => c.id == rules[i].config).firstOrNull?.name ?? T.s('viaGone')}'
+                          : T.s('match_${rules[i].match}'),
+                    ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Badge2(T.s('act_${rules[i].action}').toUpperCase(), switch (rules[i].action) {
                           'block' => X.bad,
                           'direct' => X.blue,
+                          'via' => X.warn,
                           _ => X.accent,
                         }),
                         IconButton(
@@ -120,7 +127,10 @@ class RulesPage extends StatelessWidget {
 Future<RouteRule?> editRule(BuildContext context, RouteRule? r) {
   var match = r?.match ?? 'domain';
   var action = r?.action ?? 'direct';
+  var config = r?.config ?? '';
   final ctl = TextEditingController(text: r?.value ?? '');
+  // the configs a rule can send traffic through: the ones this app runs itself
+  final configs = (AppScope.of(context).sub?.allConfigs ?? []).where((c) => !c.handoff && !c.hidden).toList();
   return showDialog<RouteRule>(
     context: context,
     builder: (ctx) => StatefulBuilder(
@@ -150,6 +160,19 @@ Future<RouteRule?> editRule(BuildContext context, RouteRule? r) {
                 selected: ruleActions.indexOf(action),
                 onSelect: (i) => setState(() => action = ruleActions[i]),
               ),
+              if (action == 'via') ...[
+                const SizedBox(height: Space.m),
+                if (configs.isEmpty)
+                  Text(T.s('viaNoConfigs'), style: Type.caption)
+                else
+                  XDropdown<String>(
+                    label: T.s('viaConfig'),
+                    helper: T.s('viaHint'),
+                    value: configs.any((c) => c.id == config) ? config : configs.first.id,
+                    items: [for (final c in configs) XMenuItem(c.id, c.name)],
+                    onChanged: (v) => setState(() => config = v),
+                  ),
+              ],
             ],
           ),
         ),
@@ -158,7 +181,12 @@ Future<RouteRule?> editRule(BuildContext context, RouteRule? r) {
           FilledButton(
             onPressed: () {
               final v = ctl.text.trim();
-              if (v.isNotEmpty) Navigator.pop(ctx, RouteRule(match: match, value: v, action: action));
+              if (v.isEmpty) return;
+              if (action == 'via') {
+                if (configs.isEmpty) return;
+                if (!configs.any((c) => c.id == config)) config = configs.first.id;
+              }
+              Navigator.pop(ctx, RouteRule(match: match, value: v, action: action, config: action == 'via' ? config : ''));
             },
             child: const Text('OK'),
           ),
@@ -474,9 +502,7 @@ class _UsagePageState extends State<UsagePage> {
               SizedBox(
                 height: 20,
                 child: Text(
-                  shown == null
-                      ? T.s('perDay')
-                      : '${shown.$1.year}-${shown.$1.month.toString().padLeft(2, '0')}-${shown.$1.day.toString().padLeft(2, '0')} · ${fmtBytes(shown.$2)}',
+                  shown == null ? T.s('perDay') : '${fmtDate(shown.$1)} · ${fmtBytes(shown.$2)}',
                   style: shown == null ? Type.caption : Type.number,
                 ),
               ),
@@ -568,7 +594,7 @@ class _UsagePageState extends State<UsagePage> {
     );
   }
 
-  static String _short(DateTime d) => '${d.month}/${d.day}';
+  static String _short(DateTime d) => fmtDay(d);
 }
 
 class _Hero extends StatelessWidget {

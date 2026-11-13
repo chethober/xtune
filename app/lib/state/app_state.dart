@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -8,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/core_client.dart';
 import 'models.dart';
 import 'store.dart';
+import '../ui/i18n.dart';
 
 /// Everything the screens show and do.
 class AppState extends ChangeNotifier {
@@ -50,6 +52,10 @@ class AppState extends ChangeNotifier {
   bool get connected => status['running'] == true;
 
   static String newId() => '${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(1 << 20)}';
+
+  /// Tests: the settings store without the rest of init (no core, no timers).
+  @visibleForTesting
+  Future<void> openPrefsForTest() async => _prefs = await Prefs.open();
 
   Future<void> init() async {
     _prefs = await Prefs.open();
@@ -238,6 +244,7 @@ class AppState extends ChangeNotifier {
       'asn': _asn,
       'socksPort': st.socksPort,
       'httpPort': st.httpPort,
+      'autoMode': st.autoMode,
     };
   }
 
@@ -425,7 +432,12 @@ class AppState extends ChangeNotifier {
     if (s == null) return;
     reportMessage = null;
     await refreshNetwork();
-    final j = await core.call('probe.start', {'profile': s.profile, 'options': {}});
+    // on mobile data with the data saver on: reachability and latency only, no downloads
+    final saving = await savingData();
+    final j = await core.call('probe.start', {
+      'profile': s.profile,
+      'options': saving ? {'seconds': -1} : {},
+    });
     check = Map<String, dynamic>.from(j as Map);
     checkSubId = s.id;
     notifyListeners();
@@ -479,7 +491,7 @@ class AppState extends ChangeNotifier {
           'options': {
             'ids': [id],
             'probes': 3,
-            'seconds': 5,
+            'seconds': await savingData() ? 2 : 5,
           },
         }) as Map,
       );
@@ -536,7 +548,116 @@ class AppState extends ChangeNotifier {
     return ((await core.call('diag.bundle', {'app': app})) as Map)['text'] as String? ?? '';
   }
 
+  // ------------------------------------------------------------ data saver
+
+  /// On a metered network (mobile data) with the data saver on.
+  Future<bool> savingData() async {
+    if (!settings.dataSaver || !Platform.isAndroid) return false;
+    try {
+      return await (core as AndroidCore).native('metered') == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// The current Wi-Fi wants a sign-in first (Android).
+  Future<bool> captivePortal() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await (core as AndroidCore).native('captive') == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------ timeline, leak test
+
+  Future<List<Map<String, dynamic>>> timeline() async =>
+      ((await core.call('timeline.list', {'n': 300})) as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+
+  Future<void> clearTimeline() => core.call('timeline.clear');
+
+  Future<Map<String, dynamic>> leakTest() async => Map<String, dynamic>.from(await core.call('leak.test') as Map);
+
+  // ------------------------------------------------------------ backup
+
+  /// Everything the app holds, servers' logins included, sealed with [pass].
+  Future<String> exportBackup(String pass) async {
+    final secrets = <String, String>{};
+    for (final sv in servers) {
+      for (final k in ['password', 'key', 'keypass']) {
+        final v = await Secrets.read('srv-${sv.id}-$k');
+        if (v != null && v.isNotEmpty) secrets['srv-${sv.id}-$k'] = v;
+      }
+    }
+    final data = jsonEncode({
+      'v': 1,
+      'settings': settings.toJson(),
+      'subs': subs.map((x) => x.toJson()).toList(),
+      'activeSub': activeSubId,
+      'servers': servers.map((x) => x.toJson()).toList(),
+      'activeServer': activeServerId,
+      'secrets': secrets,
+    });
+    return ((await core.call('backup.seal', {'data': data, 'pass': pass})) as Map)['text'] as String;
+  }
+
+  /// Restores a backup: its subscriptions and servers join the ones here (the same link or
+  /// address is replaced), and its settings replace these. Returns what was added.
+  Future<(int, int)> importBackup(String text, String pass) async {
+    final data = ((await core.call('backup.open', {'text': text, 'pass': pass})) as Map)['data'] as String;
+    final j = jsonDecode(data) as Map<String, dynamic>;
+    final inSubs = ((j['subs'] as List?) ?? []).map((x) => Sub.fromJson(Map<String, dynamic>.from(x as Map))).toList();
+    final inServers = ((j['servers'] as List?) ?? []).map((x) => ServerEntry.fromJson(Map<String, dynamic>.from(x as Map))).toList();
+    for (final x in inSubs) {
+      subs.removeWhere((o) => o.id == x.id || (o.url.isNotEmpty && o.url == x.url));
+      subs.add(x);
+    }
+    for (final x in inServers) {
+      servers.removeWhere((o) => o.id == x.id || (o.host == x.host && o.port == x.port && o.user == x.user));
+      servers.add(x);
+    }
+    final secrets = Map<String, dynamic>.from(j['secrets'] as Map? ?? {});
+    for (final e in secrets.entries) {
+      await Secrets.write(e.key, '${e.value}');
+    }
+    if (j['settings'] is Map) {
+      final lang = settings.lang;
+      settings = Settings.fromJson(Map<String, dynamic>.from(j['settings'] as Map))..onboarded = true;
+      settings.lang = lang;
+    }
+    activeSubId ??= j['activeSub'] as String? ?? subs.firstOrNull?.id;
+    activeServerId ??= j['activeServer'] as String? ?? servers.firstOrNull?.id;
+    await _save();
+    notifyListeners();
+    return (inSubs.length, inServers.length);
+  }
+
   // ------------------------------------------------------------ servers (manage)
+
+  /// Shows the server on the home-screen widget (Android), as the Manage tab last saw it.
+  Future<void> serverWidget(ServerEntry srv, Map<String, dynamic> o) async {
+    if (!Platform.isAndroid) return;
+    final entries = (o['entries'] as List?) ?? [];
+    final blocked = <String>{};
+    for (final n in (o['networks'] as List?) ?? []) {
+      blocked.addAll(((n as Map)['blocked'] as List? ?? []).cast<String>());
+    }
+    final ok = entries.length - entries.where((e) => blocked.contains((e as Map)['id'])).length;
+    try {
+      await (core as AndroidCore).native('serverWidget', {
+        'json': jsonEncode({
+          'name': srv.name.isNotEmpty ? srv.name : srv.host,
+          'online': o['online'] ?? 0,
+          'users': o['users'] ?? 0,
+          'today': fmtBytes((o['todayBytes'] as num?) ?? 0),
+          'configs': T.s('widgetConfigs', {'ok': ok, 'n': entries.length}),
+          'ok': blocked.isEmpty,
+          'at': DateTime.now().millisecondsSinceEpoch,
+        }),
+      });
+    } catch (_) {}
+  }
 
   Future<Map<String, dynamic>> serverConn(ServerEntry s) async {
     return {

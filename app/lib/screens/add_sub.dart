@@ -9,10 +9,15 @@ import '../ui/glass.dart';
 import '../ui/i18n.dart';
 
 /// Asks for a subscription link (typed, pasted or scanned) and adds it.
-Future<void> showAddSub(BuildContext context, {String? initial}) async {
+Future<void> showAddSub(BuildContext context, {String? initial, bool scan = false}) async {
   final state = AppScope.of(context);
   final ctl = TextEditingController(text: initial ?? '');
-  if (initial == null) {
+  if (scan) {
+    // straight to the camera; the sheet then shows what it read
+    final code = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const ScanPage()));
+    if (code == null || !context.mounted) return;
+    ctl.text = code;
+  } else if (initial == null) {
     final clip = await Clipboard.getData(Clipboard.kTextPlain);
     if (clip?.text?.contains('://') == true) {
       ctl.text = clip!.text!.trim();

@@ -31,9 +31,12 @@ const _icons = <String, IconData>{
 /// Tune a server from this device: the server starts test configs, this device measures each from
 /// its own network, and the best are deployed. Users and their links are kept.
 class TunePage extends StatefulWidget {
-  const TunePage({super.key, required this.server, required this.overview});
+  const TunePage({super.key, required this.server, required this.overview, this.zone = ''});
   final ServerEntry server;
   final Map<String, dynamic> overview;
+
+  /// A Cloudflare zone (from the domains wizard): the tune names its direct and CDN domains there.
+  final String zone;
   @override
   State<TunePage> createState() => _TunePageState();
 }
@@ -110,6 +113,7 @@ class _TunePageState extends State<TunePage> {
           'protocols': chosen.toList(),
           'depth': depth,
           if (chosen.contains('dnstt')) 'dnsDomain': dnsZone.text.trim(),
+          if (widget.zone.isNotEmpty) 'zone': widget.zone,
           'network': (s.network?['name'] as String?) ?? '',
         },
       });
@@ -153,6 +157,10 @@ class _TunePageState extends State<TunePage> {
   }
 
   List<Widget> _setup(BuildContext context) => [
+    if (widget.zone.isNotEmpty) ...[
+      Notice(T.s('tuneWithZone', {'zone': widget.zone}), color: X.blue, icon: Icons.cloud_outlined),
+      const SizedBox(height: Space.m),
+    ],
     Glass(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,

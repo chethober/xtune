@@ -1,13 +1,19 @@
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+
+import 'dart:async';
+
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../main.dart';
 import '../state/app_state.dart';
 import '../state/models.dart';
+import '../ui/charts.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
+import 'cdn.dart';
 import 'tune.dart';
 
 class ManageScreen extends StatefulWidget {
@@ -31,8 +37,9 @@ class _ManageScreenState extends State<ManageScreen> {
       loadedFor = srv.id;
     });
     try {
-      final o = await s.manage('manage.overview', srv);
-      if (mounted) setState(() => overview = Map<String, dynamic>.from(o as Map));
+      final o = Map<String, dynamic>.from(await s.manage('manage.overview', srv) as Map);
+      if (mounted) setState(() => overview = o);
+      unawaited(s.serverWidget(srv, o)); // the home-screen widget shows what this saw
     } catch (e) {
       if (mounted) setState(() => error = e.toString());
     } finally {
@@ -76,7 +83,7 @@ class _ManageScreenState extends State<ManageScreen> {
       );
     }
     final o = overview;
-    return XPage(
+    final page = XPage(
       title: T.s('manage'),
       onRefresh: () => load(s),
       leading: Align(
@@ -111,6 +118,21 @@ class _ManageScreenState extends State<ManageScreen> {
           ),
         if (error != null) Notice(error!),
         if (o != null) ..._dashboard(context, s, srv, o),
+      ],
+    );
+    if (!twoPane(context) || o == null) return page;
+    // wide: the users beside the dashboard
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: page),
+        SizedBox(
+          width: 460,
+          child: AppScope(
+            state: s,
+            child: UsersPage(key: ValueKey(srv.id), server: srv, embedded: true),
+          ),
+        ),
       ],
     );
   }
@@ -198,8 +220,9 @@ class _ManageScreenState extends State<ManageScreen> {
         ),
       ],
       const SizedBox(height: Space.m),
-      GridView.count(
-        crossAxisCount: 3,
+      // three across on a phone; on wider pages tiles keep their size and more fit in a row
+      GridView.extent(
+        maxCrossAxisExtent: 150,
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         mainAxisSpacing: Space.s,
@@ -208,6 +231,7 @@ class _ManageScreenState extends State<ManageScreen> {
         children: [
           _Action(Icons.auto_fix_high_rounded, T.s('tune'), () => _push(context, TunePage(server: srv, overview: o)), accent: true),
           _Action(Icons.system_update_alt_rounded, T.s('update'), () => _update(context, s, srv, o)),
+          _Action(Icons.cloud_outlined, T.s('cdnShort'), () => _push(context, CdnWizardPage(server: srv, overview: o))),
           _Action(Icons.group_outlined, T.s('users'), () => _push(context, UsersPage(server: srv))),
           _Action(
             Icons.monitor_heart_outlined,
@@ -490,8 +514,11 @@ Future<void> addServerDialog(BuildContext context) async {
 // ---------------------------------------------------------------- users
 
 class UsersPage extends StatefulWidget {
-  const UsersPage({super.key, required this.server});
+  const UsersPage({super.key, required this.server, this.embedded = false});
   final ServerEntry server;
+
+  /// Beside the dashboard on a wide screen: no back button.
+  final bool embedded;
   @override
   State<UsersPage> createState() => _UsersPageState();
 }
@@ -523,10 +550,10 @@ class _UsersPageState extends State<UsersPage> {
     if (mounted) setState(() => loading = false);
   }
 
-  Future<dynamic> act(String action, String name, [Map<String, dynamic> extra = const {}]) async {
+  Future<dynamic> act(String action, String name, [Map<String, dynamic> extra = const {}, bool reload = true]) async {
     try {
       final r = await AppScope.of(context).manage('manage.user', widget.server, {'action': action, 'name': name, ...extra});
-      await load();
+      if (reload) await load();
       return r;
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -539,10 +566,13 @@ class _UsersPageState extends State<UsersPage> {
     final online = (u['online'] as List?)?.isNotEmpty ?? false;
     final exp = (u['expires'] as num?)?.toInt() ?? 0;
     final days = exp > 0 ? DateTime.fromMillisecondsSinceEpoch(exp * 1000).difference(DateTime.now()).inDays : 9999;
+    final quota = (u['quota'] as num?) ?? 0;
+    final used = ((u['up'] as num?) ?? 0) + ((u['down'] as num?) ?? 0);
     return switch (filter) {
       1 => online,
       2 => days >= 0 && days <= 7,
-      3 => u['status'] != 'active',
+      3 => quota > 0 && used >= quota * 0.9,
+      4 => u['status'] != 'active',
       _ => true,
     };
   }
@@ -552,16 +582,30 @@ class _UsersPageState extends State<UsersPage> {
     final shown = users.where(_keep).toList();
     return XPage(
       title: T.s('users'),
-      back: true,
+      back: !widget.embedded,
       onRefresh: load,
-      actions: [RoundIconButton(icon: Icons.person_add_alt_1_rounded, tooltip: T.s('addUser'), filled: true, onPressed: () => _addUser(context))],
+      actions: [
+        XMenuButton<String>(
+          tooltip: T.s('addUser'),
+          icon: Icons.person_add_alt_1_rounded,
+          items: [
+            XMenuItem('one', T.s('addUser'), icon: Icons.person_add_alt_1_rounded),
+            XMenuItem('many', T.s('addUsers'), icon: Icons.group_add_rounded),
+          ],
+          onSelected: (v) => v == 'one' ? _addUser(context) : _addUsers(context),
+        ),
+      ],
       children: [
         TextField(
           onChanged: (v) => setState(() => query = v),
           decoration: InputDecoration(prefixIcon: const Icon(Icons.search_rounded), hintText: '${T.s('search')} (${users.length})'),
         ),
         const SizedBox(height: Space.m),
-        Pills(labels: const ['All', 'Online', 'Expiring', 'Disabled'], selected: filter, onSelect: (i) => setState(() => filter = i)),
+        Pills(
+          labels: [T.s('all'), T.s('usersOnline'), T.s('usersExpiring'), T.s('usersOverQuota'), T.s('usersOff')],
+          selected: filter,
+          onSelect: (i) => setState(() => filter = i),
+        ),
         const SizedBox(height: Space.m),
         if (loading && users.isEmpty)
           const Padding(
@@ -685,9 +729,148 @@ class _UsersPageState extends State<UsersPage> {
     if (r != null && context.mounted) _showLinks(context, Map<String, dynamic>.from(r as Map));
   }
 
+  /// Adds several users at once (prefix-01, prefix-02, …) with the same limits, then offers all
+  /// their links to share.
+  Future<void> _addUsers(BuildContext context) async {
+    final prefix = TextEditingController(text: 'user'), count = TextEditingController(text: '5');
+    final quota = TextEditingController(text: '50'), days = TextEditingController(text: '30'), devices = TextEditingController(text: '2');
+    var monthly = true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: Text(T.s('addUsers')),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: TextField(
+                        controller: prefix,
+                        autofocus: true,
+                        textDirection: TextDirection.ltr,
+                        decoration: InputDecoration(labelText: T.s('usersPrefix')),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: count,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        decoration: InputDecoration(labelText: T.s('usersCount')),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: quota,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: T.s('quotaGb')),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: days,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: T.s('days')),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: devices,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: T.s('devicesLimit')),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: monthly,
+                  onChanged: (v) => setState(() => monthly = v),
+                  title: Text(T.s('resetMonthly')),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(T.s('cancel'))),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(T.s('add'))),
+          ],
+        ),
+      ),
+    );
+    final n = (int.tryParse(count.text) ?? 0).clamp(0, 100);
+    final p = prefix.text.trim();
+    if (ok != true || n == 0 || p.isEmpty || !context.mounted) return;
+    final taken = users.map((u) => u['name'] as String).toSet();
+    final width = '$n'.length < 2 ? 2 : '$n'.length;
+    final made = <(String, String)>[];
+    var i = 0;
+    while (made.length < n && i < n + taken.length + 1) {
+      i++;
+      final name = '$p-${'$i'.padLeft(width, '0')}';
+      if (taken.contains(name)) continue;
+      final r = await act('add', name, {
+        'quotaGb': double.tryParse(quota.text) ?? 0,
+        'days': int.tryParse(days.text) ?? 0,
+        'devices': int.tryParse(devices.text) ?? 0,
+        'reset': monthly ? 'monthly' : '',
+      }, false);
+      if (r == null) break; // the error is shown; stop there
+      final m = Map<String, dynamic>.from(r as Map);
+      made.add((name, (m['subscription'] as String?) ?? ((m['links'] as List?)?.firstOrNull as String? ?? '')));
+    }
+    await load();
+    if (made.isEmpty || !context.mounted) return;
+    final text = made.map((x) => '${x.$1}: ${x.$2}').join('\n');
+    showXSheet<void>(
+      context,
+      title: T.s('usersAdded', {'n': made.length}),
+      builder: (ctx, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 260),
+            child: SingleChildScrollView(
+              child: Directionality(
+                textDirection: TextDirection.ltr,
+                child: SelectableText(text, style: Type.mono),
+              ),
+            ),
+          ),
+          const SizedBox(height: Space.m),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => Clipboard.setData(ClipboardData(text: text)),
+                  icon: const Icon(Icons.copy_rounded),
+                  label: Text(T.s('copy')),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () => SharePlus.instance.share(ShareParams(text: text)),
+                  icon: const Icon(Icons.ios_share_rounded),
+                  label: Text(T.s('share')),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   void _userSheet(BuildContext context, Map<String, dynamic> u) {
     final name = u['name'] as String;
     final enabled = u['enabled'] == true;
+    final online = ((u['online'] as List?) ?? []).cast<String>();
+    final blocked = ((u['blocked'] as List?) ?? []).cast<String>();
+    final daily = u['daily'] is Map ? Map<String, dynamic>.from(u['daily'] as Map) : null;
     showXSheet<void>(
       context,
       title: name,
@@ -695,6 +878,51 @@ class _UsersPageState extends State<UsersPage> {
       builder: (ctx, _) => Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (daily != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(Space.l, 0, Space.l, Space.m),
+              child: DailyBars(days: lastDays(daily, 30), height: 90),
+            ),
+          if (online.isNotEmpty || blocked.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsetsDirectional.fromSTEB(Space.l, Space.xs, Space.l, Space.xs),
+              child: Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: Text(T.s('devicesNow'), style: Type.caption),
+              ),
+            ),
+            for (final ip in online)
+              ListTile(
+                dense: true,
+                leading: Dot(X.accent),
+                title: Text(ip, style: Type.mono.copyWith(fontSize: 13), textDirection: TextDirection.ltr),
+                trailing: TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final r = await act('kick', name, {'ip': ip, 'minutes': 60});
+                    if (r != null && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(T.s('kicked', {'ip': ip}))));
+                    }
+                  },
+                  child: Text(T.s('kick')),
+                ),
+              ),
+            for (final ip in blocked)
+              ListTile(
+                dense: true,
+                leading: Dot(X.bad),
+                title: Text(ip, style: Type.mono.copyWith(fontSize: 13), textDirection: TextDirection.ltr),
+                subtitle: Text(T.s('blockedNow')),
+                trailing: TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    act('unblock', name, {'ip': ip});
+                  },
+                  child: Text(T.s('unblock')),
+                ),
+              ),
+            const Divider(),
+          ],
           ListTile(
             leading: const Icon(Icons.qr_code_2_rounded),
             title: Text(T.s('links')),
@@ -774,7 +1002,7 @@ class _UsersPageState extends State<UsersPage> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(sub != null ? 'Subscription link: one link for every app and the page' : '${links.length} links', style: Type.secondary),
+          Text(sub != null ? T.s('subLinkHint') : T.s('nLinks', {'n': links.length}), style: Type.secondary),
           if (main.isNotEmpty) ...[
             const SizedBox(height: 16),
             Center(
@@ -805,6 +1033,14 @@ class _UsersPageState extends State<UsersPage> {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+            // straight to a Telegram chat, the way most people hand links over
+            FilledButton.icon(
+              onPressed: () =>
+                  launchUrl(Uri.https('t.me', '/share/url', {'url': main, 'text': '${r['name']}'}), mode: LaunchMode.externalApplication),
+              icon: const Icon(Icons.send_rounded),
+              label: Text(T.s('sendTelegram')),
             ),
           ],
         ],

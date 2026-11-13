@@ -82,6 +82,10 @@ void main() {
       tester.view.devicePixelRatio = 2;
     }
     app.main();
+    // a fresh install opens on the first-run guide
+    await waitFor(tester, find.text('Welcome to xtune'));
+    await tester.tap(find.text('Skip'));
+    await settle(tester);
     await waitFor(tester, find.text('Add subscription'));
     await shot(tester, '01-empty');
 
