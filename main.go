@@ -649,6 +649,7 @@ func cmdUsers(args []string) error {
 	asJSON := fs.Bool("json", false, "machine-readable output (list, links)")
 	asQR := fs.Bool("qr", false, "links: show QR codes in the terminal")
 	outDir := fs.String("out", ".", "profiles: directory to write the files to")
+	minutes := fs.Int("minutes", 60, "kick: how long the device stays blocked")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
@@ -747,6 +748,25 @@ func cmdUsers(args []string) error {
 		return writeProfiles(os.Stdout, st, pos[1], *outDir)
 	case "reset-sub":
 		return show(ResetSubLink(r, pos[1]))
+	case "kick", "unblock":
+		if len(pos) < 3 {
+			return fmt.Errorf("users %s NAME IP", pos[0])
+		}
+		d := time.Duration(*minutes) * time.Minute
+		if pos[0] == "unblock" {
+			d = 0
+		} else if d <= 0 || d > 30*24*time.Hour {
+			return fmt.Errorf("--minutes: 1 to 43200")
+		}
+		if err := KickDevice(r, pos[1], pos[2], d); err != nil {
+			return err
+		}
+		if d > 0 {
+			fmt.Printf("%s's device %s is blocked until %s\n", pos[1], pos[2], time.Now().Add(d).Format("15:04"))
+		} else {
+			fmt.Printf("%s's device %s is unblocked\n", pos[1], pos[2])
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown users action %q", pos[0])
 }

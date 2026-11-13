@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-13
+
+### Added
+- `xtune users kick NAME IP [--minutes 60]` blocks one of a user's devices (client IPs) at once, whatever their
+  device limit; `xtune users unblock NAME IP` lets it back. The xtune client app shows each user's devices with a
+  Kick button.
+- `xtune users --json list` gives each user's blocked IPs (`blocked`) and traffic by day for the last 31 days
+  (`daily`), for the app's per-user charts.
+- `xtune cloudflare token` reads the token from stdin when it is piped, so the app can set it over SSH without the
+  token showing in the process list.
+
 ## [1.1.0] - 2026-11-13
 
 ### Added

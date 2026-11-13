@@ -11,7 +11,8 @@ Managed on the server only: add, list, enable/disable, rotate and delete, with s
 
 ## Limits
 
-Per-user traffic quota, expiry date and device limit (simultaneous client IPs), and optionally a monthly or weekly usage reset. A job runs every minute: it adds up traffic from Xray's stats (and the SSH tunnels' and VPNs' counters), records who is online, takes over-quota and expired users off (disconnecting their VPN sessions), and blocks extra devices for 10 minutes (SSH and OpenVPN refuse them at login). Traffic per day is kept for 60 days (`xtune users usage NAME`, a chart on the subscription page, the bot).
+Per-user traffic quota, expiry date and device limit (simultaneous client IPs), and optionally a monthly or weekly usage reset. A job runs every minute: it adds up traffic from Xray's stats (and the SSH tunnels' and VPNs' counters), records who is online, takes over-quota and expired users off (disconnecting their VPN sessions), and blocks extra devices for 10 minutes (SSH and OpenVPN refuse them at login). `xtune users kick NAME IP
+[--minutes 60]` blocks one device by hand, at once and whatever the limit; `xtune users unblock NAME IP` ends it. Traffic per day is kept for 60 days (`xtune users usage NAME`, a chart on the subscription page, the bot).
 
 ## Plans
 
