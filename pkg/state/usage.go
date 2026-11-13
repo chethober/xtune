@@ -83,9 +83,10 @@ func (uu *UserUsage) LastDays(now time.Time, n int) []int64 {
 func EntryKey(e Entry) string { return fmt.Sprintf("%s/%d", e.ID, e.Port) }
 
 type IPBlock struct {
-	IP    string `json:"ip"`
-	User  string `json:"user"`
-	Until int64  `json:"until"`
+	IP     string `json:"ip"`
+	User   string `json:"user"`
+	Until  int64  `json:"until"`
+	Manual bool   `json:"manual,omitempty"` // kicked by the operator (xtune users kick), not by a device limit
 }
 
 func (us *Usage) Of(name string) *UserUsage {

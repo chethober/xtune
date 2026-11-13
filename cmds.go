@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -560,19 +561,45 @@ func cmdWarp(args []string) error {
 // ---------------------------------------------------------------- users output
 
 type userJSON struct {
-	Name     string   `json:"name"`
-	Status   string   `json:"status"`
-	Enabled  bool     `json:"enabled"`
-	Up       int64    `json:"up"`
-	Down     int64    `json:"down"`
-	Quota    int64    `json:"quota"`
-	Reset    string   `json:"reset,omitempty"`
-	ResetAt  int64    `json:"resetAt,omitempty"`
-	Expires  int64    `json:"expires"`
-	Devices  int      `json:"devices"`
-	Online   []string `json:"online"`
-	LastSeen int64    `json:"lastSeen"`
-	Sub      string   `json:"subscription,omitempty"`
+	Name     string           `json:"name"`
+	Status   string           `json:"status"`
+	Enabled  bool             `json:"enabled"`
+	Up       int64            `json:"up"`
+	Down     int64            `json:"down"`
+	Quota    int64            `json:"quota"`
+	Reset    string           `json:"reset,omitempty"`
+	ResetAt  int64            `json:"resetAt,omitempty"`
+	Expires  int64            `json:"expires"`
+	Devices  int              `json:"devices"`
+	Online   []string         `json:"online"`
+	LastSeen int64            `json:"lastSeen"`
+	Sub      string           `json:"subscription,omitempty"`
+	Blocked  []string         `json:"blocked,omitempty"` // client IPs blocked now (kicked, or over the device limit)
+	Daily    map[string]int64 `json:"daily,omitempty"`   // bytes by day (YYYY-MM-DD), the last 31 days
+}
+
+func blockedIPs(us *state.Usage, name string, now time.Time) []string {
+	var out []string
+	for _, b := range us.Blocks {
+		if b.User == name && b.Until > now.Unix() && !slices.Contains(out, b.IP) {
+			out = append(out, b.IP)
+		}
+	}
+	return out
+}
+
+func lastDays(daily map[string]int64, now time.Time, n int) map[string]int64 {
+	if len(daily) == 0 {
+		return nil
+	}
+	out := map[string]int64{}
+	for i := 0; i < n; i++ {
+		d := state.DayKey(now.AddDate(0, 0, -i))
+		if v, ok := daily[d]; ok {
+			out[d] = v
+		}
+	}
+	return out
 }
 
 func printUsersJSON(w io.Writer, st *state.State, us *state.Usage) error {
@@ -585,7 +612,8 @@ func printUsersJSON(w io.Writer, st *state.State, us *state.Usage) error {
 		}
 		out = append(out, userJSON{Name: u.Name, Status: state.UserStatus(u, uu, now), Enabled: u.Enabled, Up: uu.Up, Down: uu.Down,
 			Quota: u.Quota, Reset: u.Reset, ResetAt: u.ResetAt, Expires: u.Expires, Devices: u.Devices,
-			Online: append([]string{}, uu.Online...), LastSeen: uu.LastSeen, Sub: SubURL(st, u)})
+			Online: append([]string{}, uu.Online...), LastSeen: uu.LastSeen, Sub: SubURL(st, u),
+			Blocked: blockedIPs(us, u.Name, now), Daily: lastDays(uu.Daily, now, 31)})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

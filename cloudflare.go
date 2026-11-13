@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"golang.org/x/term"
 	"net"
 	"net/url"
 	"os"
@@ -205,6 +207,16 @@ const cfTokenURL = "https://dash.cloudflare.com/profile/api-tokens?permissionGro
 
 // cfTokenAsk prompts for a token, after printing the link that makes one.
 func cfTokenAsk() (string, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) { // piped (the xtune app sends it this way): one line
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if tok := strings.TrimSpace(line); tok != "" {
+			return tok, nil
+		}
+		if err == nil {
+			err = errors.New("empty")
+		}
+		return "", fmt.Errorf("no Cloudflare token on stdin: %w", err)
+	}
 	fmt.Fprintln(os.Stderr, "Create a Cloudflare token with xtune's permissions:\n  "+cfTokenURL)
 	return cliPrompt(cfTokenPrompt, true)
 }

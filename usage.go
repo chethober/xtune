@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
 	"sort"
@@ -420,7 +421,7 @@ func applyDeviceLimits(r *remote.Server, st *state.State, us *state.Usage, prev 
 	var keep []state.IPBlock
 	blocked := map[string]bool{}
 	for _, b := range us.Blocks {
-		if _, u := st.User(b.User); u != nil && u.Devices > 0 && b.Until > now.Unix() {
+		if _, u := st.User(b.User); u != nil && (u.Devices > 0 || b.Manual) && b.Until > now.Unix() {
 			keep = append(keep, b)
 			blocked[b.IP] = true
 		}
@@ -480,10 +481,57 @@ func applyDeviceLimits(r *remote.Server, st *state.State, us *state.Usage, prev 
 		}
 		return nil
 	}
+	return applyBlocks(r, st, keep)
+}
+
+// applyBlocks has Xray drop the blocked IPs' connections (one routing rule, replaced whole).
+func applyBlocks(r *remote.Server, st *state.State, blocks []state.IPBlock) error {
+	if len(blocks) == 0 {
+		_, err := xrayAPI(r, st, "rmrules", deviceRule)
+		return err
+	}
 	args := []string{"-outbound=block", "-ruletag=" + deviceRule, "-reset"}
-	for _, b := range keep {
+	for _, b := range blocks {
 		args = append(args, b.IP)
 	}
 	_, err := xrayAPI(r, st, "sib", args...)
 	return err
+}
+
+// KickDevice blocks one of a user's client IPs for d (a device the operator wants off), at
+// once; unblock with d = 0. Device limits keep their own blocks.
+func KickDevice(r *remote.Server, name, ip string, d time.Duration) error {
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("%q is not an IP address", ip)
+	}
+	defer r.Lock()()
+	st, err := requireState(r)
+	if err != nil {
+		return err
+	}
+	if _, u := st.User(name); u == nil {
+		return fmt.Errorf("no user %q", name)
+	}
+	us, err := state.LoadUsage(r)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	var keep []state.IPBlock
+	for _, b := range us.Blocks {
+		if !(b.IP == ip && b.User == name && b.Manual) && b.Until > now.Unix() {
+			keep = append(keep, b)
+		}
+	}
+	if d > 0 {
+		keep = append(keep, state.IPBlock{IP: ip, User: name, Until: now.Add(d).Unix(), Manual: true})
+		if uu := us.Users[name]; uu != nil {
+			uu.Online = slices.DeleteFunc(uu.Online, func(x string) bool { return x == ip })
+		}
+	}
+	us.Blocks = keep
+	if err := applyBlocks(r, st, keep); err != nil {
+		return err
+	}
+	return state.SaveUsage(r, us)
 }
