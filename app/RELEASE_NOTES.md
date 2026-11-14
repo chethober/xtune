@@ -1,20 +1,20 @@
 **New**
-- **Route map** on Home: a map of where your traffic goes, from you through each relay to the server, with the delay
-  of every hop. The route in use is drawn in your accent color with traffic moving along it; the others are faint,
-  and a route that does not work is red. Below the map, the best routes: tap one to use it. The first hop's delay is
-  measured from your device; the rest is the config's delay less that, so it is marked ≈. Where a config goes comes
-  from the flags in its name (🇮🇷→🇳🇱).
-- **Close to tray** (Linux and Windows, Settings → Connection, on by default): closing the window keeps xtune running
-  and connected in the tray, so a stray click no longer drops the connection. The tray icon opens the window, and its
-  menu connects, disconnects or quits. Opening xtune again brings back the running window instead of a second copy.
-  On GNOME the tray icon needs the AppIndicator extension (Ubuntu has it on).
+- **Refresh and remove subscriptions from Home.** A refresh button beside the subscription fetches it again, and the
+  subscription list (tap its name) has a refresh and a remove button on each one. Removing the one you are connected
+  through disconnects first and switches to the next.
+- **Wide windows use the room.** Every tab now has the same frame: one column on a phone, and on a wide window a
+  column with a pane beside it. Home puts the route map and usage beside the connect button, Check puts its summary
+  beside the results, Settings shows its sections in two columns, and Configs and Manage keep their details and users
+  beside the list. Pages you open from them (users, tune, logs) keep the same width.
 
 **Fixes**
-- **Theme and accent** now change at once. Before, the background and the tab bar kept the old look until you
-  switched tabs.
+- **Opening xtune from the tray** (Linux) no longer shows a black window until you resize it. Launching xtune again
+  while it is in the tray brings it back the same way.
+- **Tune** has a back button. Every page you open now gets one, so none can be missing it again.
 
 **Changed**
-- The tab bar is at the bottom on every screen size; wide windows no longer have a sidebar.
+- xtune and the app are one repository, [chethober/xtune](https://github.com/chethober/xtune). Releases and in-app
+  updates come from there; the app and the CLI share a version, which is why this one follows 1.4 with 1.5.
 
-Updating: install over 1.3.1 or earlier; your subscriptions, settings and servers stay. Android: the `arm64-v8a`
+Updating: install over 1.4.0 or earlier; your subscriptions, settings and servers stay. Android: the `arm64-v8a`
 APK.

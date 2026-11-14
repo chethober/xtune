@@ -125,8 +125,23 @@ class Notice extends StatelessWidget {
 
 // ---------------------------------------------------------------- page layout
 
+/// The widest a page's single column gets; wider windows centre it.
+const pageWidth = 760.0;
+
+/// The widest a page with a side pane gets (the column and the pane together).
+const twoPaneWidth = 1240.0;
+
+/// Whether there is room for a page's side pane beside its column.
+bool twoPane(BuildContext context) => MediaQuery.sizeOf(context).width >= 1180;
+
 /// A page: its header (title, subtitle, actions, a back button when pushed) and its content, with
 /// the same margins everywhere and room for the floating tab bar.
+///
+/// Every page is laid out the same way. On a phone, and in a window too narrow for two panes,
+/// it is one column ([children], then [side]) at most [pageWidth] wide. With room for two panes
+/// and something to put beside the column ([side] or [sidePane]), the header spans the page and
+/// the side pane sits beside the column, [sideWidth] wide, the two scrolling on their own, at
+/// most [twoPaneWidth] in all.
 class XPage extends StatelessWidget {
   const XPage({
     super.key,
@@ -134,26 +149,41 @@ class XPage extends StatelessWidget {
     this.subtitle,
     this.actions = const [],
     this.children = const [],
+    this.side = const [],
+    this.sidePane,
+    this.sideWidth = 400,
     this.onRefresh,
-    this.back = false,
+    this.back,
     this.leading,
   }) : body = null;
 
   /// A page whose body fills the rest of the screen (a console, a log) instead of scrolling.
-  XPage.fill({super.key, required this.title, this.subtitle, this.actions = const [], required Widget this.body, this.back = true, this.leading})
+  XPage.fill({super.key, required this.title, this.subtitle, this.actions = const [], required Widget this.body, this.back, this.leading})
     : children = [],
+      side = const [],
+      sidePane = null,
+      sideWidth = 400,
       onRefresh = null;
 
   final String title;
   final String? subtitle;
   final List<Widget> actions;
   final List<Widget> children;
+
+  /// Beside the column on wide screens; under it otherwise.
+  final List<Widget> side;
+
+  /// A pane of its own beside the column on wide screens (it scrolls itself); not shown otherwise.
+  final Widget? sidePane;
+  final double sideWidth;
   final Future<void> Function()? onRefresh;
-  final bool back;
+
+  /// Whether to show a back button; by default, when the page can go back (it was pushed).
+  final bool? back;
   final Widget? leading; // in place of the title (the home page's wordmark)
   final Widget? body;
 
-  Widget _header(BuildContext context) => Padding(
+  Widget _header(BuildContext context, bool back) => Padding(
     padding: EdgeInsets.only(top: Space.l, bottom: Space.m),
     child: Row(
       children: [
@@ -186,26 +216,73 @@ class XPage extends StatelessWidget {
     ),
   );
 
+  /// The side margin that centres content [max] wide in a window [width] wide.
+  static double margin(double width, double max) => width > max + 2 * Space.page ? (width - max) / 2 : Space.page;
+
   @override
   Widget build(BuildContext context) {
-    if (body != null) {
-      return Padding(
-        padding: EdgeInsets.fromLTRB(Space.page, 0, Space.page, Space.l),
-        child: Column(
+    final back = this.back ?? (ModalRoute.of(context)?.canPop ?? false);
+    final bottom = back ? Space.xxl : Space.tabBar;
+    return LayoutBuilder(
+      builder: (context, box) {
+        final wide = twoPane(context) && (side.isNotEmpty || sidePane != null);
+        final m = margin(box.maxWidth, wide ? twoPaneWidth : pageWidth);
+        if (body != null) {
+          return Padding(
+            padding: EdgeInsets.fromLTRB(m, 0, m, Space.l),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _header(context, back),
+                Expanded(child: body!),
+              ],
+            ),
+          );
+        }
+        if (!wide) {
+          final list = ListView(
+            physics: AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(m, 0, m, bottom),
+            children: [_header(context, back), ...children, ...side],
+          );
+          return onRefresh == null ? list : RefreshIndicator(onRefresh: onRefresh!, child: list);
+        }
+        // the column and the side pane, each scrolling on its own, under one header
+        Widget main = ListView(
+          physics: AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsetsDirectional.fromSTEB(m, 0, Space.xxl / 2, bottom),
+          children: children,
+        );
+        if (onRefresh != null) main = RefreshIndicator(onRefresh: onRefresh!, child: main);
+        return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _header(context),
-            Expanded(child: body!),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: m),
+              child: _header(context, back),
+            ),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: main),
+                  SizedBox(
+                    width: sideWidth + Space.xxl / 2 + m,
+                    child: sidePane != null
+                        // a page of its own: it keeps a page's margin, so only the rest is added
+                        ? Padding(
+                            padding: EdgeInsetsDirectional.only(end: m - Space.page),
+                            child: sidePane,
+                          )
+                        : ListView(padding: EdgeInsetsDirectional.fromSTEB(Space.xxl / 2, 0, m, bottom), children: side),
+                  ),
+                ],
+              ),
+            ),
           ],
-        ),
-      );
-    }
-    final list = ListView(
-      physics: AlwaysScrollableScrollPhysics(),
-      padding: EdgeInsets.fromLTRB(Space.page, 0, Space.page, back ? Space.xxl : Space.tabBar),
-      children: [_header(context), ...children],
+        );
+      },
     );
-    return onRefresh == null ? list : RefreshIndicator(onRefresh: onRefresh!, child: list);
   }
 }
 

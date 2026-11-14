@@ -1,12 +1,13 @@
 name: app
 
-# The client app (app/): its Go core and the Flutter app. The CLI's checks are in ci.yml.
+# The client app (app/): its Go core and the Flutter app. The core builds on the CLI's packages
+# (cli/pkg), so changes there run these checks too. The CLI's checks are in ci.yml.
 on:
   push:
     branches: [main]
-    paths: ['app/**', '.github/workflows/app-ci.yml']
+    paths: ['app/**', 'cli/pkg/**', 'cli/go.mod', 'cli/go.sum', '.github/workflows/app-ci.yml']
   pull_request:
-    paths: ['app/**', '.github/workflows/app-ci.yml']
+    paths: ['app/**', 'cli/pkg/**', 'cli/go.mod', 'cli/go.sum', '.github/workflows/app-ci.yml']
 
 permissions:
   contents: read

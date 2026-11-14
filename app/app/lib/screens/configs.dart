@@ -106,7 +106,13 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
     final s = AppScope.of(context);
     final sub = s.sub;
     final rows = _rows(s);
-    final page = XPage(
+    // wide: the details of the config tapped (or the one in use) beside the list
+    final wide = twoPane(context);
+    final all = sub?.allConfigs ?? [];
+    final shown = !wide
+        ? null
+        : all.where((c) => c.id == focus).firstOrNull ?? s.activeConfig ?? all.where((c) => c.id == s.settings.selected).firstOrNull;
+    return XPage(
       title: T.s('configs'),
       subtitle: sub == null
           ? null
@@ -132,6 +138,23 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
         ),
         if (sub != null) RoundIconButton(icon: Icons.low_priority_rounded, tooltip: T.s('autoPool'), onPressed: () => _editPool(context)),
         RoundIconButton(icon: Icons.add_rounded, tooltip: T.s('addSub'), filled: true, onPressed: () => showAddSub(context)),
+      ],
+      side: [
+        if (wide)
+          shown == null
+              ? Glass(child: Text(T.s('pickToSee'), style: Type.secondary))
+              : Glass(
+                  child: StatefulBuilder(
+                    builder: (ctx, setPane) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(shown.name, style: Type.title),
+                        const SizedBox(height: Space.s),
+                        configDetails(context, shown, setPane, close: () => setState(() => focus = null), alive: () => mounted),
+                      ],
+                    ),
+                  ),
+                ),
       ],
       children: [
         Pills(
@@ -185,38 +208,6 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
               onLongPress: () => twoPane(context) ? setState(() => focus = r.c.id) : _details(context, r.c),
             ),
           ),
-      ],
-    );
-    if (!twoPane(context)) return page;
-    // wide: the details of the config tapped (or the one in use) beside the list
-    final all = sub?.allConfigs ?? [];
-    final shown = all.where((c) => c.id == focus).firstOrNull ?? s.activeConfig ?? all.where((c) => c.id == s.settings.selected).firstOrNull;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(child: page),
-        SizedBox(
-          width: 400,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(0, 96, Space.page, Space.page),
-            child: shown == null
-                ? Glass(child: Text(T.s('pickToSee'), style: Type.secondary))
-                : Glass(
-                    child: SingleChildScrollView(
-                      child: StatefulBuilder(
-                        builder: (ctx, setPane) => Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text(shown.name, style: Type.title),
-                            const SizedBox(height: Space.s),
-                            configDetails(context, shown, setPane, close: () => setState(() => focus = null), alive: () => mounted),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-          ),
-        ),
       ],
     );
   }

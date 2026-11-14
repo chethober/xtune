@@ -1,4 +1,4 @@
-module github.com/chethober/xtune-client/core
+module github.com/chethober/xtune/app/core
 
 go 1.27.1
 
@@ -61,3 +61,5 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 	www.bamsoftware.com/git/dnstt.git v1.20260501.0 // indirect
 )
+
+replace github.com/chethober/xtune => ../../cli

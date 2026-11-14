@@ -58,7 +58,7 @@ One Xray config per user with every deployed config behind a balancer: Xray heal
 
 ## The client app
 
-The [xtune client](https://github.com/chethober/xtune-client) (Android, Linux, Windows) imports a user's subscription
+The [xtune client](../../app/README.md) (Android, Linux, Windows) imports a user's subscription
 link and reads two endpoints next to it:
 
 - `GET …/TOKEN/client`: the user's profile as JSON: every config on every server the subscription lists, with what

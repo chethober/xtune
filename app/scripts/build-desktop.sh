@@ -13,6 +13,6 @@ else
   out="$root/app/build/windows/x64/runner/Release"
 fi
 (cd "$root/core" && CGO_ENABLED=0 GOOS=$os GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X github.com/chethober/xtune-client/core.Version=$version" -o "$out/xtune-core$ext" ./cmd/xtune-core)
+  -ldflags "-s -w -X github.com/chethober/xtune/app/core.Version=$version" -o "$out/xtune-core$ext" ./cmd/xtune-core)
 "$root/scripts/fetch-geo.sh" "$out"
 echo "$out"

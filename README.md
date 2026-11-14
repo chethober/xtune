@@ -12,6 +12,16 @@
 | [`cli/`](cli/README.md) | **xtune**, the command-line tool: it tunes, deploys and manages a server over SSH, from one binary |
 | [`app/`](app/README.md) | **xtune client**, the app for Android, Linux and Windows: connect, check configs, manage the server |
 
+<p align="center">
+  <img src="app/docs/screenshots/home.png" width="180" alt="The app's Home: connected, with the config in use">
+  <img src="app/docs/screenshots/route.png" width="180" alt="The route map: each hop and its delay">
+  <img src="app/docs/screenshots/check.png" width="180" alt="Check: which configs work on this network">
+  <img src="app/docs/screenshots/tune.png" width="180" alt="Tune a server from the phone">
+</p>
+<p align="center">
+  <img src="app/docs/screenshots/desktop.png" width="740" alt="The app on a wide screen">
+</p>
+
 The two share a version. Each [release](https://github.com/chethober/xtune/releases) has the CLI's binaries and the
 app's builds.
 

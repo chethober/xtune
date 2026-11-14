@@ -16,6 +16,26 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
 }
 
+// Hidden to the tray and shown again (from the tray, or by launching xtune again), the view comes
+// back black until its size changes: Flutter draws nothing new at the size it already has. So when
+// the window is mapped again, the view is made a pixel smaller and then given its size back, which
+// makes Flutter draw it twice. A margin works when the window is maximized, unlike a resize.
+static gboolean restore_view_size(gpointer view) {
+  gtk_widget_set_margin_bottom(GTK_WIDGET(view), 0);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean window_mapped_cb(GtkWidget* window, GdkEvent* event,
+                                 gpointer view) {
+  if (!g_object_get_data(G_OBJECT(window), "xtune-mapped")) {
+    g_object_set_data(G_OBJECT(window), "xtune-mapped", GINT_TO_POINTER(1));
+    return FALSE;  // the first time: Flutter draws it anyway
+  }
+  gtk_widget_set_margin_bottom(GTK_WIDGET(view), 1);
+  g_timeout_add(80, restore_view_size, view);
+  return FALSE;
+}
+
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
@@ -68,6 +88,7 @@ static void my_application_activate(GApplication* application) {
   // Requires the view to be realized so we can start rendering.
   g_signal_connect_swapped(view, "first-frame", G_CALLBACK(first_frame_cb),
                            self);
+  g_signal_connect(window, "map-event", G_CALLBACK(window_mapped_cb), view);
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));

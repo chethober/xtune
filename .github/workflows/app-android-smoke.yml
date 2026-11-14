@@ -9,13 +9,13 @@ on:
     inputs:
       from:
         description: release installed first (empty = none)
-        default: v1.4.0
+        default: v1.5.0
       from_repo:
-        description: where that release is (releases up to v1.4.0 are in chethober/xtune-client)
-        default: chethober/xtune-client
+        description: where that release is (empty = this repository)
+        default: ""
       to:
         description: release to update to
-        default: v1.5.0
+        required: true
 
 permissions:
   contents: read

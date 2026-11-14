@@ -94,7 +94,7 @@ jobs:
           # An APK signed with another key cannot be installed over the one people have, so a
           # release without the key stops here instead of shipping an update nobody can install.
           if [ -z "$KEYSTORE" ]; then
-            echo "::error::Set the ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD secrets (the same key as chethober/xtune-client)."
+            echo "::error::Set the ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD secrets (the key that signed the earlier APKs)."
             exit 1
           fi
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"

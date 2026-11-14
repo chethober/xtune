@@ -109,12 +109,6 @@ class _XtuneAppState extends State<XtuneApp> {
   }
 }
 
-/// The width a page with a second pane may take on wide screens.
-const twoPaneWidth = 1240.0;
-
-/// Whether a page has room for a second pane (the list and its details side by side).
-bool twoPane(BuildContext context) => MediaQuery.sizeOf(context).width >= 1180;
-
 class Shell extends StatefulWidget {
   const Shell({super.key});
   @override
@@ -172,7 +166,6 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final wide = MediaQuery.sizeOf(context).width >= 900;
     final tabs = [
       TabItem(Icons.shield_outlined, T.s('home')),
       TabItem(Icons.list_rounded, T.s('configs')),
@@ -180,28 +173,16 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
       TabItem(Icons.dns_outlined, T.s('manage')),
       TabItem(Icons.tune_rounded, T.s('settings')),
     ];
-    final pages = [
-      HomeScreen(onOpenConfigs: () => go(1)),
-      const ConfigsScreen(),
-      const CheckScreen(),
-      const LockGate(scope: 'manage', child: ManageScreen()),
-      const SettingsScreen(),
-    ];
-    // one tab bar at the bottom everywhere; on wide windows the pages keep a reading width
-    // (Configs and Manage get a second pane beside it) and the bar keeps a phone's width
+    // one tab bar at the bottom everywhere; each page lays itself out the same way (XPage): one
+    // centred column, or on wide windows a column with a side pane beside it
     final body = IndexedStack(
       index: index,
       children: [
-        for (var i = 0; i < pages.length; i++)
-          wide
-              ? Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: (i == 1 || i == 3) ? twoPaneWidth : 760),
-                    child: pages[i],
-                  ),
-                )
-              : pages[i],
+        HomeScreen(onOpenConfigs: () => go(1)),
+        const ConfigsScreen(),
+        const CheckScreen(),
+        const LockGate(scope: 'manage', child: ManageScreen()),
+        const SettingsScreen(),
       ],
     );
     return Scaffold(
