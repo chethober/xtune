@@ -36,3 +36,16 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Posts the version's CHANGELOG.md section to the CHTH updates channel through the hub.
+      - name: Announce release
+        env:
+          CHTH_HUB_URL: ${{ secrets.CHTH_HUB_URL }}
+          CHTH_RELEASE_SECRET: ${{ secrets.CHTH_RELEASE_SECRET }}
+          RELEASE_PRODUCT: xtune
+          RELEASE_NAME: xtune
+          RELEASE_HOME: ${{ github.server_url }}/${{ github.repository }}
+          RELEASE_CHANGELOG: CHANGELOG.md
+        run: |
+          tag="$(git describe --tags --abbrev=0)"
+          RELEASE_VERSION="$tag" RELEASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag" \
+            node .github/scripts/announce-release.mjs
