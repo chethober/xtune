@@ -118,6 +118,7 @@ class SettingsScreen extends StatelessWidget {
         Group(
           children: [
             _Switch(T.s('autoLaunch'), T.s('autoLaunchHint'), st.autoConnectLaunch, (v) => set((x) => x.autoConnectLaunch = v, reconnects: false)),
+            if (!android) _Switch(T.s('closeToTray'), T.s('closeToTrayHint'), st.closeToTray, (v) => set((x) => x.closeToTray = v, reconnects: false)),
             if (android) ...[
               _Switch(T.s('autoBoot'), T.s('autoBootHint'), st.autoConnectBoot, (v) async {
                 await set((x) => x.autoConnectBoot = v, reconnects: false);

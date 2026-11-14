@@ -10,6 +10,7 @@ import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
 import '../ui/power_button.dart';
+import '../ui/route_map.dart';
 import 'add_sub.dart';
 import 'options.dart';
 import 'settings.dart' show updateNow;
@@ -107,6 +108,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: Space.m),
           _UsingNow(state: s, up: _upRate, down: _downRate),
+          const SizedBox(height: Space.m),
+          RouteMap(state: s),
           const SizedBox(height: Space.m),
           GestureDetector(
             onTap: () => pushPage(context, AppScope(state: s, child: const UsagePage())),

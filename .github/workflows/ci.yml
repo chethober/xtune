@@ -42,7 +42,7 @@ jobs:
         with:
           flutter-version: 3.50.0
           channel: stable
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libsecret-1-dev ninja-build clang cmake xvfb
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libx11-dev libxi-dev libsecret-1-dev ninja-build clang cmake xvfb
       - name: analyze
         working-directory: app
         run: |

@@ -107,7 +107,9 @@ class AppState extends ChangeNotifier {
     if (settings.autoConnectLaunch && !connected && sub != null) unawaited(connect());
     if (!Platform.isAndroid) {
       // files an update moved aside are free now that this version runs
-      unawaited(Process.run(DesktopCore.coreExe, ['--cleanup', File(Platform.resolvedExecutable).parent.path]).catchError((_) => ProcessResult(0, 0, '', '')));
+      unawaited(
+        Process.run(DesktopCore.coreExe, ['--cleanup', File(Platform.resolvedExecutable).parent.path]).catchError((_) => ProcessResult(0, 0, '', '')),
+      );
     }
     await _maintenance();
   }
@@ -675,6 +677,28 @@ class AppState extends ChangeNotifier {
       ((await core.call('timeline.list', {'n': 300})) as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
 
   Future<void> clearTimeline() => core.call('timeline.clear');
+
+  /// The first hop: a TCP handshake from this device to each host, in ms (-1: no answer).
+  Future<Map<String, int>> hostRtts(List<String> hosts) async {
+    if (hosts.isEmpty) return {};
+    final r = await core.call('net.rtt', {'hosts': hosts}) as Map? ?? {};
+    return r.map((k, v) => MapEntry(k as String, (v as num).toInt()));
+  }
+
+  /// A config's delay: from the running connection, else from the last check; -1: not working.
+  int? delayFor(String id) {
+    final d = delayOf(id);
+    if (d != null) return d;
+    for (final r in (check?['results'] as List?) ?? const []) {
+      final m = r as Map;
+      if (m['id'] != id) continue;
+      final st = m['state'] as String? ?? '';
+      if (st == 'blocked') return -1;
+      final ms = (m['warmMs'] as num?)?.toInt() ?? 0;
+      return ms > 0 ? ms : null;
+    }
+    return null;
+  }
 
   Future<Map<String, dynamic>> leakTest() async => Map<String, dynamic>.from(await core.call('leak.test') as Map);
 

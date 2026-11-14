@@ -163,6 +163,7 @@ class Settings {
   // appearance
   String theme = 'system'; // system | dark | black | light
   String accent = 'green'; // green | blue | purple | orange
+  bool closeToTray = true; // desktops: closing the window keeps xtune (and the connection) in the tray
 
   // connection
   bool autoConnectLaunch = false;
@@ -212,6 +213,7 @@ class Settings {
     'httpPort': httpPort,
     'theme': theme,
     'accent': accent,
+    'closeToTray': closeToTray,
     'autoConnectLaunch': autoConnectLaunch,
     'autoConnectBoot': autoConnectBoot,
     'autoConnectWifi': autoConnectWifi,
@@ -262,6 +264,7 @@ class Settings {
     s.httpPort = get('httpPort', s.httpPort);
     s.theme = get('theme', s.theme);
     s.accent = get('accent', s.accent);
+    s.closeToTray = get('closeToTray', s.closeToTray);
     s.autoConnectLaunch = get('autoConnectLaunch', s.autoConnectLaunch);
     s.autoConnectBoot = get('autoConnectBoot', s.autoConnectBoot);
     s.autoConnectWifi = get('autoConnectWifi', s.autoConnectWifi);

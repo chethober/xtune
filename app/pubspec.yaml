@@ -45,6 +45,8 @@ dependencies:
   local_auth: ^3.0.2
   file_selector: ^1.1.0
   crypto: ^3.0.8
+  window_manager: ^0.7.0
+  tray_manager: ^0.9.0
 
 dev_dependencies:
   flutter_test:
@@ -95,6 +97,7 @@ flutter:
     - assets/fonts/Inter-OFL.txt
     - assets/fonts/Vazirmatn-OFL.txt
     - assets/fonts/JetBrainsMono-OFL.txt
+    - assets/icon/tray.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

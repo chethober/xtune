@@ -7,6 +7,20 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // one xtune at a time: launched again (perhaps while hidden in the tray), bring
+  // the running one's window back instead
+  HANDLE single = ::CreateMutexW(nullptr, TRUE, L"Local\\com.chethober.xtune");
+  if (single != nullptr && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    HWND running = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"xtune");
+    if (running != nullptr) {
+      ::ShowWindow(running, SW_SHOW);
+      ::ShowWindow(running, SW_RESTORE);
+      ::SetForegroundWindow(running);
+    }
+    ::CloseHandle(single);
+    return EXIT_SUCCESS;
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
@@ -39,5 +53,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  if (single != nullptr) {
+    ::ReleaseMutex(single);
+    ::CloseHandle(single);
+  }
   return EXIT_SUCCESS;
 }

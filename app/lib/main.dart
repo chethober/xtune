@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'core/core_client.dart';
+import 'core/desktop_tray.dart';
 import 'screens/add_sub.dart';
 import 'screens/check.dart';
 import 'screens/configs.dart';
@@ -27,6 +28,31 @@ void main() async {
   final state = AppState(CoreClient.instance);
   await state.init();
   runApp(XtuneApp(state: state));
+  DesktopTray.init(state);
+}
+
+String? _look;
+
+/// Sets the palette and the language from the settings. Screens read colors and strings from
+/// statics (X, T), which no widget depends on, so on a change every element is rebuilt now,
+/// not just the ones that happen to listen to the state (the rest would keep the old look until
+/// something else rebuilt them, such as switching tabs).
+void applyLook(AppState state, {bool rebuild = true}) {
+  final st = state.settings;
+  final system = WidgetsBinding.instance.platformDispatcher.platformBrightness;
+  final look = '${st.theme}|${st.accent}|${st.lang}|$system';
+  if (look == _look) return;
+  final first = _look == null;
+  _look = look;
+  T.lang = st.lang;
+  X.p = Palette.of(st.theme, st.accent, system);
+  if (first || !rebuild) return;
+  void mark(Element e) {
+    e.markNeedsBuild();
+    e.visitChildren(mark);
+  }
+
+  WidgetsBinding.instance.rootElement?.visitChildren(mark);
 }
 
 /// Gives the screens the app state.
@@ -35,19 +61,40 @@ class AppScope extends InheritedNotifier<AppState> {
   static AppState of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<AppScope>()!.notifier!;
 }
 
-class XtuneApp extends StatelessWidget {
+class XtuneApp extends StatefulWidget {
   const XtuneApp({super.key, required this.state});
   final AppState state;
 
   @override
+  State<XtuneApp> createState() => _XtuneAppState();
+}
+
+class _XtuneAppState extends State<XtuneApp> {
+  // added before the builder below listens, so the new look is in place when it rebuilds
+  void _changed() => applyLook(widget.state);
+
+  @override
+  void initState() {
+    super.initState();
+    applyLook(widget.state, rebuild: false);
+    widget.state.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.state.removeListener(_changed);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final state = widget.state;
     return AppScope(
       state: state,
       child: ListenableBuilder(
         listenable: state,
         builder: (context, _) {
-          T.lang = state.settings.lang;
-          X.p = Palette.of(state.settings.theme, state.settings.accent, WidgetsBinding.instance.platformDispatcher.platformBrightness);
+          applyLook(state, rebuild: false);
           return MaterialApp(
             title: 'xtune',
             debugShowCheckedModeBanner: false,
@@ -140,89 +187,36 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
       const LockGate(scope: 'manage', child: ManageScreen()),
       const SettingsScreen(),
     ];
-    final body = IndexedStack(index: index, children: pages);
-    if (wide) {
-      return Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Backdrop(
-          child: SafeArea(
-            child: Row(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: SizedBox(
-                    width: 92,
-                    child: Glass(
-                      radius: 28,
-                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-                      color: X.glassStrong,
-                      child: Column(
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: Space.l, top: Space.xs),
-                            child: Text('xtune', style: Type.wordmark.copyWith(fontSize: 18)),
-                          ),
-                          for (var i = 0; i < tabs.length; i++)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(20),
-                                onTap: () => go(i),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 10),
-                                  decoration: BoxDecoration(
-                                    color: i == index ? Colors.white.withValues(alpha: 0.14) : Colors.transparent,
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      Icon(tabs[i].icon, color: i == index ? X.accent : X.muted),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        tabs[i].label,
-                                        style: Type.tab.copyWith(color: i == index ? X.accent : X.muted),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
+    // one tab bar at the bottom everywhere; on wide windows the pages keep a reading width
+    // (Configs and Manage get a second pane beside it) and the bar keeps a phone's width
+    final body = IndexedStack(
+      index: index,
+      children: [
+        for (var i = 0; i < pages.length; i++)
+          wide
+              ? Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: (i == 1 || i == 3) ? twoPaneWidth : 760),
+                    child: pages[i],
                   ),
-                ),
-                // one column of reading width; Configs and Manage get a second pane beside it
-                Expanded(
-                  child: IndexedStack(
-                    index: index,
-                    children: [
-                      for (var i = 0; i < pages.length; i++)
-                        Align(
-                          alignment: Alignment.topCenter,
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(maxWidth: (i == 1 || i == 3) ? twoPaneWidth : 760),
-                            child: pages[i],
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
+                )
+              : pages[i],
+      ],
+    );
     return Scaffold(
       backgroundColor: Colors.transparent,
       extendBody: true,
       body: Backdrop(child: SafeArea(bottom: false, child: body)),
       bottomNavigationBar: SafeArea(
         top: false,
-        child: FloatingTabBar(items: tabs, index: index, onTap: go),
+        child: Center(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: FloatingTabBar(items: tabs, index: index, onTap: go),
+          ),
+        ),
       ),
     );
   }
