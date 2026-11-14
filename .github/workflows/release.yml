@@ -109,7 +109,7 @@ jobs:
           for abi in arm64-v8a armeabi-v7a x86_64; do
             cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "../dist/xtune-$VERSION-android-$abi.apk"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: app/dist/
@@ -142,7 +142,7 @@ jobs:
           cp packaging/linux/* app/build/linux/x64/release/bundle/
           mkdir -p dist
           tar -C app/build/linux/x64/release -czf "dist/xtune-$VERSION-linux-x64.tar.gz" --transform 's,^bundle,xtune,' bundle
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: app/dist/
@@ -181,7 +181,7 @@ jobs:
           cp wintun/LICENSE.txt "$out/wintun-LICENSE.txt"
           mkdir -p dist
           (cd "$out" && 7z a -tzip "$GITHUB_WORKSPACE/app/dist/xtune-$VERSION-windows-x64.zip" . >/dev/null)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: app/dist/
