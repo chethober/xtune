@@ -42,82 +42,91 @@ class CheckScreen extends StatelessWidget {
       return ((a['warmMs'] as num?) ?? 99999).compareTo((b['warmMs'] as num?) ?? 99999);
     });
 
+    // the summary and its buttons: beside the results on wide screens, around them on phones
+    final wide = twoPane(context);
+    final top = <Widget>[
+      // on mobile data with the data saver on, the check skips its downloads
+      FutureBuilder<bool>(
+        future: s.savingData(),
+        builder: (_, snap) => snap.data == true
+            ? Padding(
+                padding: const EdgeInsets.only(bottom: Space.m),
+                child: Notice(T.s('dataSaverOn'), color: X.blue, icon: Icons.data_saver_on_rounded),
+              )
+            : const SizedBox.shrink(),
+      ),
+      if (check != null)
+        Glass(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(running ? T.s('testing', {'n': finished, 'total': tested.length}) : T.s('done', {'n': tested.length}), style: Type.bodyStrong),
+              const SizedBox(height: Space.m),
+              Bar(fraction: tested.isEmpty ? 1 : finished / tested.length),
+              const SizedBox(height: Space.m),
+              Row(
+                children: [
+                  Expanded(child: _Count(ok, T.s('work'), X.accent)),
+                  Expanded(child: _Count(warn, T.s('throttled'), X.warn)),
+                  Expanded(child: _Count(bad, T.s('blocked'), X.bad)),
+                ],
+              ),
+              if (s.reportMessage != null) ...[const SizedBox(height: Space.s), Text(s.reportMessage!, style: Type.caption)],
+            ],
+          ),
+        ),
+    ];
+    final list = <Widget>[
+      if (wide && results.isEmpty) Glass(child: Text(T.s('checkEmpty'), style: Type.secondary)),
+      if (results.isNotEmpty) SectionLabel(T.s('resultsSoFar')),
+      for (final r in results)
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: 11),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: X.track)),
+          ),
+          child: Row(
+            children: [
+              AnimatedSwitcher(
+                duration: Motion.normal,
+                child: Badge2(badge(r['state'] as String).$1, badge(r['state'] as String).$2, key: ValueKey(r['state'])),
+              ),
+              const SizedBox(width: Space.m),
+              Expanded(
+                flex: 3,
+                child: Text(r['name'] as String? ?? '', style: Type.body, overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: Space.s),
+              Flexible(
+                flex: 2,
+                child: Text(_detail(r), textAlign: TextAlign.end, maxLines: 1, overflow: TextOverflow.ellipsis, style: Type.secondary),
+              ),
+            ],
+          ),
+        ),
+    ];
+    final buttons = <Widget>[
+      const SizedBox(height: Space.l),
+      CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        value: s.settings.shareResults,
+        onChanged: (v) => s.updateSettings((x) => x.shareResults = v ?? true),
+        title: Text(T.s('shareResults'), style: Type.secondary),
+      ),
+      const SizedBox(height: Space.s),
+      SizedBox(
+        height: 52,
+        child: running
+            ? OutlinedButton(onPressed: s.stopCheck, child: Text(T.s('stop')))
+            : FilledButton(onPressed: s.sub == null ? null : s.startCheck, child: Text(check == null ? T.s('checkStart') : T.s('checkAgain'))),
+      ),
+    ];
     return XPage(
       title: T.s('checkTitle'),
       subtitle: T.s('checkHint', {'net': net}),
-      children: [
-        // on mobile data with the data saver on, the check skips its downloads
-        FutureBuilder<bool>(
-          future: s.savingData(),
-          builder: (_, snap) => snap.data == true
-              ? Padding(
-                  padding: const EdgeInsets.only(bottom: Space.m),
-                  child: Notice(T.s('dataSaverOn'), color: X.blue, icon: Icons.data_saver_on_rounded),
-                )
-              : const SizedBox.shrink(),
-        ),
-        if (check != null)
-          Glass(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(running ? T.s('testing', {'n': finished, 'total': tested.length}) : T.s('done', {'n': tested.length}), style: Type.bodyStrong),
-                const SizedBox(height: Space.m),
-                Bar(fraction: tested.isEmpty ? 1 : finished / tested.length),
-                const SizedBox(height: Space.m),
-                Row(
-                  children: [
-                    Expanded(child: _Count(ok, T.s('work'), X.accent)),
-                    Expanded(child: _Count(warn, T.s('throttled'), X.warn)),
-                    Expanded(child: _Count(bad, T.s('blocked'), X.bad)),
-                  ],
-                ),
-                if (s.reportMessage != null) ...[const SizedBox(height: Space.s), Text(s.reportMessage!, style: Type.caption)],
-              ],
-            ),
-          ),
-        if (results.isNotEmpty) SectionLabel(T.s('resultsSoFar')),
-        for (final r in results)
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 11),
-            decoration: BoxDecoration(
-              border: Border(bottom: BorderSide(color: X.track)),
-            ),
-            child: Row(
-              children: [
-                AnimatedSwitcher(
-                  duration: Motion.normal,
-                  child: Badge2(badge(r['state'] as String).$1, badge(r['state'] as String).$2, key: ValueKey(r['state'])),
-                ),
-                const SizedBox(width: Space.m),
-                Expanded(
-                  flex: 3,
-                  child: Text(r['name'] as String? ?? '', style: Type.body, overflow: TextOverflow.ellipsis),
-                ),
-                const SizedBox(width: Space.s),
-                Flexible(
-                  flex: 2,
-                  child: Text(_detail(r), textAlign: TextAlign.end, maxLines: 1, overflow: TextOverflow.ellipsis, style: Type.secondary),
-                ),
-              ],
-            ),
-          ),
-        const SizedBox(height: Space.l),
-        CheckboxListTile(
-          contentPadding: EdgeInsets.zero,
-          controlAffinity: ListTileControlAffinity.leading,
-          value: s.settings.shareResults,
-          onChanged: (v) => s.updateSettings((x) => x.shareResults = v ?? true),
-          title: Text(T.s('shareResults'), style: Type.secondary),
-        ),
-        const SizedBox(height: Space.s),
-        SizedBox(
-          height: 52,
-          child: running
-              ? OutlinedButton(onPressed: s.stopCheck, child: Text(T.s('stop')))
-              : FilledButton(onPressed: s.sub == null ? null : s.startCheck, child: Text(check == null ? T.s('checkStart') : T.s('checkAgain'))),
-        ),
-      ],
+      side: wide ? [...top, ...buttons] : const [],
+      children: wide ? list : [...top, ...list, ...buttons],
     );
   }
 

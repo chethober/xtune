@@ -5,7 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-14
+
 ### Changed
+- The CLI's version jumps from 1.2.0 to 1.5.0 to match the app's: from now on both share one version and one release.
+  Nothing else changed for the CLI between them.
 - xtune and its client app are one repository: the CLI is in `cli/` and the app in `app/`. They share a version, and
   a release has the CLI's binaries and the app's Android, Linux and Windows builds. The install commands and the
   CLI's self-update are unchanged.

@@ -72,7 +72,22 @@ class _HomeScreenState extends State<HomeScreen> {
     return XPage(
       title: 'xtune',
       leading: Text('xtune', style: Type.wordmark),
-      actions: [if (sub != null) _SubChip(state: s)],
+      actions: [
+        if (sub != null) ...[_SubChip(state: s), if (!sub.local) _RefreshSub(state: s, sub: sub)],
+      ],
+      // the route and the usage: beside the button on wide screens, under it on phones
+      side: [
+        if (sub != null) ...[
+          const SizedBox(height: Space.m),
+          RouteMap(state: s),
+          const SizedBox(height: Space.m),
+          GestureDetector(
+            onTap: () => pushPage(context, AppScope(state: s, child: const UsagePage())),
+            child: _UsageCard(sub: sub),
+          ),
+        ],
+      ],
+      sideWidth: 480,
       children: [
         if (s.network != null)
           Row(
@@ -108,13 +123,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: Space.m),
           _UsingNow(state: s, up: _upRate, down: _downRate),
-          const SizedBox(height: Space.m),
-          RouteMap(state: s),
-          const SizedBox(height: Space.m),
-          GestureDetector(
-            onTap: () => pushPage(context, AppScope(state: s, child: const UsagePage())),
-            child: _UsageCard(sub: sub),
-          ),
         ],
         if (s.update != null && s.settings.updateMode != 'off') ...[
           const SizedBox(height: Space.m),
@@ -198,28 +206,133 @@ class _SubChip extends StatelessWidget {
   }
 }
 
+/// Refreshes the subscription now, saying how it went.
+Future<void> refreshSubNow(BuildContext context, AppState state, Sub sub) async {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  try {
+    await state.refreshSub(sub);
+    messenger?.showSnackBar(SnackBar(content: Text(T.s('subUpdated', {'name': sub.name}))));
+  } catch (e) {
+    messenger?.showSnackBar(SnackBar(content: Text('$e')));
+  }
+}
+
+/// Asks, then removes the subscription (disconnecting first when it is the one in use).
+Future<bool> removeSubAsk(BuildContext context, AppState state, Sub sub) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      content: Text(T.s('confirmRemoveSub', {'name': sub.name})),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(c, false), child: Text(T.s('cancel'))),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: X.bad),
+          onPressed: () => Navigator.pop(c, true),
+          child: Text(T.s('remove')),
+        ),
+      ],
+    ),
+  );
+  if (ok != true) return false;
+  await state.removeSub(sub);
+  return true;
+}
+
+/// The header's refresh button: fetches the subscription in use again.
+class _RefreshSub extends StatefulWidget {
+  const _RefreshSub({required this.state, required this.sub});
+  final AppState state;
+  final Sub sub;
+  @override
+  State<_RefreshSub> createState() => _RefreshSubState();
+}
+
+class _RefreshSubState extends State<_RefreshSub> {
+  bool busy = false;
+
+  @override
+  Widget build(BuildContext context) => busy
+      ? const Padding(
+          padding: EdgeInsetsDirectional.only(start: Space.s),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+        )
+      : RoundIconButton(
+          icon: Icons.refresh_rounded,
+          tooltip: T.s('refreshSub'),
+          onPressed: () async {
+            setState(() => busy = true);
+            await refreshSubNow(context, widget.state, widget.sub);
+            if (mounted) setState(() => busy = false);
+          },
+        );
+}
+
 void _pickSub(BuildContext context, AppState state) {
+  final refreshing = <String>{};
   showXSheet<void>(
     context,
     title: T.s('subscriptions'),
     padded: false,
-    builder: (ctx, _) => Column(
+    builder: (ctx, setSheet) => Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         for (final s in state.subs)
           ListTile(
+            contentPadding: const EdgeInsetsDirectional.only(start: Space.l, end: Space.s),
             leading: Icon(
               s.id == state.sub?.id ? Icons.radio_button_checked : Icons.radio_button_off,
               color: s.id == state.sub?.id ? X.accent : X.muted,
             ),
-            title: Text(s.name),
-            subtitle: Text(s.user),
+            title: Text(s.name, overflow: TextOverflow.ellipsis),
+            subtitle: Text(
+              [
+                if (s.user.isNotEmpty) s.user,
+                T.s('nConfigs', {'n': s.allConfigs.length}),
+              ].join(' · '),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!s.local)
+                  refreshing.contains(s.id)
+                      ? const SizedBox(
+                          width: 48,
+                          child: Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+                        )
+                      : IconButton(
+                          tooltip: T.s('refreshSub'),
+                          icon: const Icon(Icons.refresh_rounded),
+                          onPressed: () async {
+                            setSheet(() => refreshing.add(s.id));
+                            await refreshSubNow(context, state, s);
+                            if (ctx.mounted) setSheet(() => refreshing.remove(s.id));
+                          },
+                        ),
+                IconButton(
+                  tooltip: T.s('removeSub'),
+                  icon: Icon(Icons.delete_outline_rounded, color: X.bad),
+                  onPressed: () async {
+                    if (!await removeSubAsk(ctx, state, s) || !ctx.mounted) return;
+                    if (state.subs.isEmpty) {
+                      Navigator.pop(ctx);
+                    } else {
+                      setSheet(() {});
+                    }
+                  },
+                ),
+              ],
+            ),
             onTap: () {
               Navigator.pop(ctx);
               state.selectSub(s);
             },
           ),
         ListTile(
+          contentPadding: const EdgeInsetsDirectional.only(start: Space.l, end: Space.s),
           leading: const Icon(Icons.add_rounded),
           title: Text(T.s('addSub')),
           onTap: () {

@@ -83,7 +83,7 @@ class _ManageScreenState extends State<ManageScreen> {
       );
     }
     final o = overview;
-    final page = XPage(
+    return XPage(
       title: T.s('manage'),
       onRefresh: () => load(s),
       leading: Align(
@@ -110,6 +110,9 @@ class _ManageScreenState extends State<ManageScreen> {
         ),
       ),
       actions: [RoundIconButton(icon: Icons.refresh_rounded, tooltip: T.s('refresh'), onPressed: loading ? null : () => load(s))],
+      // wide: the users beside the dashboard
+      sideWidth: 440,
+      sidePane: o == null ? null : UsersPage(key: ValueKey(srv.id), server: srv, embedded: true),
       children: [
         if (loading && o == null)
           const Padding(
@@ -118,21 +121,6 @@ class _ManageScreenState extends State<ManageScreen> {
           ),
         if (error != null) Notice(error!),
         if (o != null) ..._dashboard(context, s, srv, o),
-      ],
-    );
-    if (!twoPane(context) || o == null) return page;
-    // wide: the users beside the dashboard
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(child: page),
-        SizedBox(
-          width: 460,
-          child: AppScope(
-            state: s,
-            child: UsersPage(key: ValueKey(srv.id), server: srv, embedded: true),
-          ),
-        ),
       ],
     );
   }

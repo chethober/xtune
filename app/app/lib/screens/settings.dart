@@ -44,6 +44,76 @@ class SettingsScreen extends StatelessWidget {
 
     return XPage(
       title: T.s('settings'),
+      // these sections: beside the ones in children on wide screens, after them on phones
+      sideWidth: 560,
+      side: [
+        SectionLabel(T.s('localProxy')),
+        Group(
+          children: [
+            _Value(T.s('socksPort'), T.s('socksPortHint'), '${st.socksPort}', () => _editPort(context, socks: true)),
+            _Value(T.s('httpPort'), T.s('httpPortHint'), '${st.httpPort}', () => _editPort(context, socks: false)),
+            _Switch(T.s('shareLan'), T.s('shareLanHint'), st.shareLan, (v) => set((x) => x.shareLan = v)),
+          ],
+        ),
+
+        SectionLabel(T.s('subscriptions')),
+        Group(
+          children: [
+            _Value(
+              T.s('autoUpdate'),
+              T.s('autoUpdateHint'),
+              st.autoUpdateHours == 0 ? T.s('never') : T.s('everyNHours', {'n': st.autoUpdateHours}),
+              () => _pickUpdate(context),
+            ),
+            for (final sub in s.subs) _SubRow(sub: sub),
+          ],
+        ),
+
+        SectionLabel(T.s('security')),
+        Group(
+          children: [
+            _Value(T.s('appLock'), T.s('appLockHint'), T.s('lock_${st.lock}'), () => _pickLock(context, set)),
+            if (st.lock != 'off')
+              FutureBuilder<bool>(
+                future: Lock.biometricsAvailable(),
+                builder: (_, snap) => snap.data == true
+                    ? _Switch(T.s('lockBio'), T.s('lockBioHint'), st.lockBio, (v) => set((x) => x.lockBio = v, reconnects: false))
+                    : const SizedBox.shrink(),
+              ),
+            _Value(T.s('leakTest'), T.s('leakTestHint'), '', () => push(const LeakTestPage())),
+            _Value(T.s('backupSave'), T.s('backupSaveHint'), '', () => exportBackup(context)),
+            _Value(T.s('backupRestore'), T.s('backupRestoreHint'), '', () => importBackup(context)),
+          ],
+        ),
+
+        SectionLabel(T.s('appSection')),
+        Group(
+          children: [
+            _Value(T.s('appUpdates'), T.s('appUpdatesHint'), T.s('updateMode_${st.updateMode}'), () => _pickUpdateMode(context, set)),
+            _Value(
+              T.s('version'),
+              s.update != null ? T.s('updateAvailable', {'v': s.update!['latest'] ?? ''}) : (s.updateError ?? T.s('checkForUpdates')),
+              s.version,
+              () => s.update != null ? updateNow(context) : s.checkUpdate(manual: true),
+            ),
+          ],
+        ),
+
+        SectionLabel(T.s('diagnostics')),
+        Group(
+          children: [
+            _Value(T.s('usage'), T.s('usageHint'), '', () => push(const UsagePage())),
+            _Value(T.s('timeline'), T.s('timelineHint'), '', () => push(const TimelinePage())),
+            _Value(T.s('connectionLog'), T.s('connectionLogHint'), '', () => push(const LogViewerPage())),
+            _Value(T.s('shareDiagnostics'), T.s('shareDiagnosticsHint'), '', () => shareDiagnostics(context)),
+          ],
+        ),
+        const SizedBox(height: Space.xl),
+        FutureBuilder(
+          future: s.core.call('version'),
+          builder: (_, snap) => Center(child: Text('xtune client ${(snap.data as Map?)?['version'] ?? ''}', style: Type.caption)),
+        ),
+      ],
       children: [
         Segmented(
           labels: [T.s('modeVpn'), T.s('modeProxy')],
@@ -118,7 +188,8 @@ class SettingsScreen extends StatelessWidget {
         Group(
           children: [
             _Switch(T.s('autoLaunch'), T.s('autoLaunchHint'), st.autoConnectLaunch, (v) => set((x) => x.autoConnectLaunch = v, reconnects: false)),
-            if (!android) _Switch(T.s('closeToTray'), T.s('closeToTrayHint'), st.closeToTray, (v) => set((x) => x.closeToTray = v, reconnects: false)),
+            if (!android)
+              _Switch(T.s('closeToTray'), T.s('closeToTrayHint'), st.closeToTray, (v) => set((x) => x.closeToTray = v, reconnects: false)),
             if (android) ...[
               _Switch(T.s('autoBoot'), T.s('autoBootHint'), st.autoConnectBoot, (v) async {
                 await set((x) => x.autoConnectBoot = v, reconnects: false);
@@ -240,75 +311,6 @@ class SettingsScreen extends StatelessWidget {
             ],
           ),
         ],
-
-        SectionLabel(T.s('localProxy')),
-        Group(
-          children: [
-            _Value(T.s('socksPort'), T.s('socksPortHint'), '${st.socksPort}', () => _editPort(context, socks: true)),
-            _Value(T.s('httpPort'), T.s('httpPortHint'), '${st.httpPort}', () => _editPort(context, socks: false)),
-            _Switch(T.s('shareLan'), T.s('shareLanHint'), st.shareLan, (v) => set((x) => x.shareLan = v)),
-          ],
-        ),
-
-        SectionLabel(T.s('subscriptions')),
-        Group(
-          children: [
-            _Value(
-              T.s('autoUpdate'),
-              T.s('autoUpdateHint'),
-              st.autoUpdateHours == 0 ? T.s('never') : T.s('everyNHours', {'n': st.autoUpdateHours}),
-              () => _pickUpdate(context),
-            ),
-            for (final sub in s.subs) _SubRow(sub: sub),
-          ],
-        ),
-
-        SectionLabel(T.s('security')),
-        Group(
-          children: [
-            _Value(T.s('appLock'), T.s('appLockHint'), T.s('lock_${st.lock}'), () => _pickLock(context, set)),
-            if (st.lock != 'off')
-              FutureBuilder<bool>(
-                future: Lock.biometricsAvailable(),
-                builder: (_, snap) => snap.data == true
-                    ? _Switch(T.s('lockBio'), T.s('lockBioHint'), st.lockBio, (v) => set((x) => x.lockBio = v, reconnects: false))
-                    : const SizedBox.shrink(),
-              ),
-            _Value(T.s('leakTest'), T.s('leakTestHint'), '', () => push(const LeakTestPage())),
-            _Value(T.s('backupSave'), T.s('backupSaveHint'), '', () => exportBackup(context)),
-            _Value(T.s('backupRestore'), T.s('backupRestoreHint'), '', () => importBackup(context)),
-          ],
-        ),
-
-        SectionLabel(T.s('appSection')),
-        Group(
-          children: [
-            _Value(T.s('appUpdates'), T.s('appUpdatesHint'), T.s('updateMode_${st.updateMode}'), () => _pickUpdateMode(context, set)),
-            _Value(
-              T.s('version'),
-              s.update != null
-                  ? T.s('updateAvailable', {'v': s.update!['latest'] ?? ''})
-                  : (s.updateError ?? T.s('checkForUpdates')),
-              s.version,
-              () => s.update != null ? updateNow(context) : s.checkUpdate(manual: true),
-            ),
-          ],
-        ),
-
-        SectionLabel(T.s('diagnostics')),
-        Group(
-          children: [
-            _Value(T.s('usage'), T.s('usageHint'), '', () => push(const UsagePage())),
-            _Value(T.s('timeline'), T.s('timelineHint'), '', () => push(const TimelinePage())),
-            _Value(T.s('connectionLog'), T.s('connectionLogHint'), '', () => push(const LogViewerPage())),
-            _Value(T.s('shareDiagnostics'), T.s('shareDiagnosticsHint'), '', () => shareDiagnostics(context)),
-          ],
-        ),
-        const SizedBox(height: Space.xl),
-        FutureBuilder(
-          future: s.core.call('version'),
-          builder: (_, snap) => Center(child: Text('xtune client ${(snap.data as Map?)?['version'] ?? ''}', style: Type.caption)),
-        ),
       ],
     );
   }

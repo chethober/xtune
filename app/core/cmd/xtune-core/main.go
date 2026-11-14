@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chethober/xtune-client/core"
+	"github.com/chethober/xtune/app/core"
 )
 
 func main() {

@@ -215,8 +215,14 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> removeSub(Sub s) async {
+    final active = sub?.id == s.id; // the one in use, picked or not
+    // its configs are what the connection runs on: stop it rather than leave it running on them
+    if (active && connected) await disconnect();
     subs.remove(s);
-    if (activeSubId == s.id) activeSubId = subs.firstOrNull?.id;
+    if (active) {
+      activeSubId = subs.firstOrNull?.id;
+      settings.selected = null;
+    }
     notifyListeners();
     await _save();
   }
