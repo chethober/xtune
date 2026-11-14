@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/chethober/xtune/main/install.sh | s
 irm https://raw.githubusercontent.com/chethober/xtune/main/install.ps1 | iex
 ```
 
-Or `go install github.com/chethober/xtune@latest`, or grab a binary from [Releases](https://github.com/chethober/xtune/releases).
+Or grab a binary from [Releases](https://github.com/chethober/xtune/releases), or build it from this directory with `go build`.
 Both installers verify the release checksum before installing.
 On Android, xtune looks names up through Termux's resolver settings, then public resolvers; set `XTUNE_DNS=IP[,IP]`
 to choose them yourself.
@@ -121,7 +121,7 @@ arm64 for Termux. The Linux builds are also what servers run.
 ## Responsible use
 
 xtune is meant for running your own servers to keep access to the open internet. You are responsible for following the laws
-that apply to you and your hosting provider's terms. See [SECURITY.md](SECURITY.md) to report vulnerabilities.
+that apply to you and your hosting provider's terms. See [SECURITY.md](../SECURITY.md) to report vulnerabilities.
 
 ## License
 

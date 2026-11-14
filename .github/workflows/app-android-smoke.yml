@@ -1,4 +1,4 @@
-name: android-smoke
+name: app-android-smoke
 
 # On an emulator: install the previous release, update it to the one asked for (as a phone does),
 # open the app and keep the installer's and the system's logs. It fails when the update is refused
@@ -9,13 +9,13 @@ on:
     inputs:
       from:
         description: release installed first (empty = none)
-        default: v1.2.0
+        default: v1.4.0
+      from_repo:
+        description: where that release is (releases up to v1.4.0 are in chethober/xtune-client)
+        default: chethober/xtune-client
       to:
         description: release to update to
-        default: v1.3.0
-  push:
-    branches: [ccr-9673382c-5hdf3d]
-    paths: [.github/workflows/android-smoke.yml]
+        default: v1.5.0
 
 permissions:
   contents: read
@@ -25,8 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      FROM: ${{ inputs.from || 'v1.2.0' }}
-      TO: ${{ inputs.to || 'v1.3.0' }}
+      FROM: ${{ inputs.from }}
+      FROM_REPO: ${{ inputs.from_repo || github.repository }}
+      TO: ${{ inputs.to }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: KVM
@@ -37,7 +38,7 @@ jobs:
       - name: the releases' x86_64 APKs
         run: |
           mkdir apks
-          [ -n "$FROM" ] && gh release download "$FROM" -R "$GITHUB_REPOSITORY" -p "*android-x86_64.apk" -O apks/from.apk
+          [ -n "$FROM" ] && gh release download "$FROM" -R "$FROM_REPO" -p "*android-x86_64.apk" -O apks/from.apk
           gh release download "$TO" -R "$GITHUB_REPOSITORY" -p "*android-x86_64.apk" -O apks/to.apk
           ls -la apks
       - uses: reactivecircus/android-emulator-runner@v2

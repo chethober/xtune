@@ -40,7 +40,7 @@ The app for [xtune](https://github.com/chethober/xtune) servers, on **Android, L
 
 ## Install
 
-From [Releases](https://github.com/chethober/xtune-client/releases):
+From [Releases](https://github.com/chethober/xtune/releases):
 
 - **Android**: `xtune-…-android-arm64-v8a.apk` for almost every phone (`armeabi-v7a` for old ones). Allow installing
   from your browser or file manager when asked.

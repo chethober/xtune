@@ -25,7 +25,7 @@ import (
 // updater once the app has quit (Windows cannot overwrite files in use). Android installs the
 // APK through its own installer, which always asks.
 
-var releasesAPI = "https://api.github.com/repos/chethober/xtune-client/releases/latest"
+var releasesAPI = "https://api.github.com/repos/chethober/xtune/releases/latest"
 
 // UpdateInfo is what the latest release offers this device.
 type UpdateInfo struct {
