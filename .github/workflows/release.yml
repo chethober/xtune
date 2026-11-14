@@ -43,7 +43,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: release notes
         run: node .github/scripts/release-notes.mjs "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/notes.md"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.cli.outputs.version }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: app/core/go.mod
           cache-dependency-path: app/core/go.sum
@@ -126,7 +126,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.cli.outputs.version }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: app/core/go.mod
           cache-dependency-path: app/core/go.sum
@@ -160,7 +160,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.cli.outputs.version }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: app/core/go.mod
           cache-dependency-path: app/core/go.sum
