@@ -1,38 +1,206 @@
 name: release
 
+# Push a tag like v1.5.0, or run this by hand with a version, to release the CLI and the app
+# together: one release with the CLI's binaries (goreleaser) and the app's Android, Linux and
+# Windows builds. Its notes are the version's section of cli/CHANGELOG.md and app/RELEASE_NOTES.md.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to tag and release from this commit (e.g. 1.1.0)"
+        description: "Version to tag and release from this commit (e.g. 1.5.0)"
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.50.0
 
 jobs:
-  goreleaser:
+  cli:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: tag
-        if: github.event_name == 'workflow_dispatch'
+      - name: version
+        id: version
         run: |
-          v="v${{ inputs.version }}"
-          v="${v#vv}"; v="v${v#v}"
-          git tag "$v"
-          git push origin "$v"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            v="v${{ inputs.version }}"
+            v="${v#vv}"; v="v${v#v}"
+            git tag "$v"
+            git push origin "$v"
+          else
+            v="$GITHUB_REF_NAME"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: release notes
+        run: node .github/scripts/release-notes.mjs "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/notes.md"
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          workdir: cli
+          args: release --clean --release-notes ${{ runner.temp }}/notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  android:
+    needs: cli
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.cli.outputs.version }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.cli.outputs.version }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/core/go.mod
+          cache-dependency-path: app/core/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21 # Android lint needs it
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - name: core (gomobile)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: scripts/build-android-core.sh "$VERSION"
+      - name: signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # An APK signed with another key cannot be installed over the one people have, so a
+          # release without the key stops here instead of shipping an update nobody can install.
+          if [ -z "$KEYSTORE" ]; then
+            echo "::error::Set the ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD secrets (the same key as chethober/xtune-client)."
+            exit 1
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/release.jks" "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > app/android/key.properties
+      - name: build
+        working-directory: app/app
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi --build-name="${VERSION#v}" --build-number="${{ github.run_number }}"
+          mkdir -p ../dist
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "../dist/xtune-$VERSION-android-$abi.apk"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: app/dist/
+
+  linux:
+    needs: cli
+    runs-on: ubuntu-22.04 # older glibc: runs on more distributions
+    env:
+      VERSION: ${{ needs.cli.outputs.version }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.cli.outputs.version }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/core/go.mod
+          cache-dependency-path: app/core/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libx11-dev libxi-dev libsecret-1-dev ninja-build clang cmake
+      - name: build
+        run: |
+          (cd app && flutter pub get)
+          scripts/build-desktop.sh linux "$VERSION"
+          cp packaging/linux/* app/build/linux/x64/release/bundle/
+          mkdir -p dist
+          tar -C app/build/linux/x64/release -czf "dist/xtune-$VERSION-linux-x64.tar.gz" --transform 's,^bundle,xtune,' bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: app/dist/
+
+  windows:
+    needs: cli
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.cli.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.cli.outputs.version }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/core/go.mod
+          cache-dependency-path: app/core/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - name: build
+        run: |
+          (cd app && flutter pub get)
+          scripts/build-desktop.sh windows "$VERSION"
+          out=app/build/windows/x64/runner/Release
+          # Wintun, the TUN driver Xray uses on Windows (whole-device mode)
+          curl -fsSL -o wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
+          sha256sum wintun.zip # recorded in the log; pin it here once confirmed against wintun.net
+          unzip -q wintun.zip
+          cp wintun/bin/amd64/wintun.dll "$out/"
+          cp wintun/LICENSE.txt "$out/wintun-LICENSE.txt"
+          mkdir -p dist
+          (cd "$out" && 7z a -tzip "$GITHUB_WORKSPACE/app/dist/xtune-$VERSION-windows-x64.zip" . >/dev/null)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: app/dist/
+
+  # Adds the app's builds to the release goreleaser made. The app's updater reads SHA256SUMS; the
+  # CLI's reads goreleaser's checksums.txt.
+  app:
+    needs: [cli, android, linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.cli.outputs.version }}" dist/* --clobber -R "$GITHUB_REPOSITORY"

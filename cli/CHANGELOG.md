@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- xtune and its client app are one repository: the CLI is in `cli/` and the app in `app/`. They share a version, and
+  a release has the CLI's binaries and the app's Android, Linux and Windows builds. The install commands and the
+  CLI's self-update are unchanged.
+- `go install github.com/chethober/xtune@latest` stops at 1.2.0, the last version with the CLI at the repository's
+  root. Use the installer or a release binary, or build from `cli/`.
+
 ## [1.2.0] - 2026-11-13
 
 ### Added

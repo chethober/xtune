@@ -1,0 +1,65 @@
+name: app
+
+# The client app (app/): its Go core and the Flutter app. The CLI's checks are in ci.yml.
+on:
+  push:
+    branches: [main]
+    paths: ['app/**', '.github/workflows/app-ci.yml']
+  pull_request:
+    paths: ['app/**', '.github/workflows/app-ci.yml']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/core/go.mod
+          cache-dependency-path: app/core/go.sum
+      - run: scripts/fetch-geo.sh core/testdata/geo
+      - name: vet and test
+        working-directory: app/core
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go test -race -count=1 ./...
+      - name: cross-build
+        working-directory: app/core
+        run: |
+          GOOS=windows go build -o /dev/null ./cmd/xtune-core
+          GOOS=android GOARCH=arm64 go vet ./mobile
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/core/go.mod
+          cache-dependency-path: app/core/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.50.0
+          channel: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libx11-dev libxi-dev libsecret-1-dev ninja-build clang cmake xvfb
+      - name: analyze
+        working-directory: app/app
+        run: |
+          flutter pub get
+          flutter analyze
+      - name: build
+        run: scripts/build-desktop.sh linux dev
+      - name: end-to-end (real app, real core, fake subscription)
+        run: |
+          (cd core && go build -o /tmp/devsub ./cmd/devsub && go build -o /tmp/core/xtune-core ./cmd/xtune-core)
+          cp app/build/linux/x64/release/bundle/*.dat /tmp/core/
+          /tmp/devsub &
+          cd app && XTUNE_CORE=/tmp/core/xtune-core xvfb-run -a flutter test integration_test -d linux

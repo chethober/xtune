@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_description">Connect and disconnect xtune</string>
+    <string name="tile_label">xtune</string>
+    <string name="server_widget_description">Your server at a glance: who is online, today\'s traffic, and whether its configs answer</string>
+</resources>
