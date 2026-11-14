@@ -13,7 +13,7 @@ require (
 	github.com/xtaci/smux v1.5.24
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
-	golang.org/x/term v0.47.0
+	golang.org/x/term v0.48.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	rsc.io/qr v0.2.0
 	www.bamsoftware.com/git/dnstt.git v1.20260501.0
@@ -53,7 +53,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
