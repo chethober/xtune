@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the downloaded app update, shared with Android's installer -->
+<paths>
+    <files-path name="updates" path="core/updates/" />
+</paths>

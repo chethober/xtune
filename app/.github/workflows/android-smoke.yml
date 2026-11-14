@@ -1,0 +1,72 @@
+name: android-smoke
+
+# On an emulator: install the previous release, update it to the one asked for (as a phone does),
+# open the app and keep the installer's and the system's logs. It fails when the update is refused
+# or the app does not stay open.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: release installed first (empty = none)
+        default: v1.2.0
+      to:
+        description: release to update to
+        default: v1.3.0
+  push:
+    branches: [ccr-9673382c-5hdf3d]
+    paths: [.github/workflows/android-smoke.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FROM: ${{ inputs.from || 'v1.2.0' }}
+      TO: ${{ inputs.to || 'v1.3.0' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: the releases' x86_64 APKs
+        run: |
+          mkdir apks
+          [ -n "$FROM" ] && gh release download "$FROM" -R "$GITHUB_REPOSITORY" -p "*android-x86_64.apk" -O apks/from.apk
+          gh release download "$TO" -R "$GITHUB_REPOSITORY" -p "*android-x86_64.apk" -O apks/to.apk
+          ls -la apks
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          target: default
+          emulator-boot-timeout: 600
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          script: |
+            adb logcat -c
+            if [ -f apks/from.apk ]; then timeout 180 adb install apks/from.apk; fi
+            timeout 180 adb install -r apks/to.apk 2>&1 | tee install.txt
+            grep -q Success install.txt || { echo "::error::the update was refused: $(cat install.txt)"; adb logcat -d | grep -iE "PackageManager|PackageInstaller|INSTALL_" | tail -40; exit 1; }
+            adb shell dumpsys package com.chethober.xtune | grep -E "versionCode|versionName" | head -3
+            timeout 60 adb shell am start -n com.chethober.xtune/.MainActivity
+            sleep 20
+            adb logcat -d > logcat.txt
+            grep -E "FATAL EXCEPTION|AndroidRuntime" -A 30 logcat.txt | head -80 || true
+            if ! adb shell pidof com.chethober.xtune; then echo "::error::the app did not stay open"; grep -iE "xtune|flutter" logcat.txt | tail -60; exit 1; fi
+            adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png screen.png
+            echo "the app is running"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          path: |
+            install.txt
+            logcat.txt
+            screen.png
+          if-no-files-found: ignore
