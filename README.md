@@ -21,18 +21,21 @@ The app for [xtune](https://github.com/chethober/xtune) servers, on **Android, L
 
 <p align="center">
   <img src="docs/screenshots/home.png" width="200" alt="Home: connected with Auto, the config in use and the subscription's usage">
+  <img src="docs/screenshots/route.png" width="200" alt="The route map: you, the relay and the server, with the delay of each hop">
   <img src="docs/screenshots/configs.png" width="200" alt="Configs: every config with its latency on this network">
-  <img src="docs/screenshots/check.png" width="200" alt="Check: which configs work, are throttled or blocked here">
-  <img src="docs/screenshots/tune.png" width="200" alt="Tune: the server's test configs measured from the phone, ready to deploy">
 </p>
 <p align="center">
+  <img src="docs/screenshots/check.png" width="200" alt="Check: which configs work, are throttled or blocked here">
+  <img src="docs/screenshots/tune.png" width="200" alt="Tune: the server's test configs measured from the phone, ready to deploy">
   <img src="docs/screenshots/users.png" width="200" alt="Users: quotas, expiry and who is online">
+</p>
+<p align="center">
   <img src="docs/screenshots/settings.png" width="200" alt="Settings: mode, theme, accent colour and connection options">
   <img src="docs/screenshots/lock.png" width="200" alt="The app lock">
   <img src="docs/screenshots/persian.png" width="200" alt="The connection timeline in Persian, with Persian digits and dates">
 </p>
 <p align="center">
-  <img src="docs/screenshots/desktop.png" width="820" alt="On a wide screen: the server's dashboard with its users beside it">
+  <img src="docs/screenshots/desktop.png" width="820" alt="On a wide screen: the server's dashboard with its users beside it, the tab bar at the bottom">
 </p>
 
 ## Install

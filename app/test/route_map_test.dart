@@ -16,12 +16,14 @@ Sub sub() => Sub(
   url: 'https://sub.example/p/token',
   fetched: DateTime.now(),
   profile: {
-    'name': 'Home',
+    'name': 'DE · dev',
     'country': 'ir',
+    'usage': {'up': 2 << 30, 'down': 16 << 30, 'quota': 50 << 30, 'devices': 2},
     'configs': [
-      {'id': 'a', 'name': '🇮🇷→🇳🇱 Reality', 'kind': 'reality-tcp', 'engine': 'xray', 'server': '198.51.100.1'},
-      {'id': 'b', 'name': '🇩🇪 XHTTP', 'kind': 'cdn-xhttp', 'engine': 'xray', 'server': '203.0.113.7'},
-      {'id': 'c', 'name': 'IR→FI ws', 'kind': 'ws', 'engine': 'xray', 'server': '198.51.100.2'},
+      {'id': 'a', 'name': '🇮🇷→🇳🇱 Reality', 'label': 'REALITY TCP', 'kind': 'reality-tcp', 'engine': 'xray', 'server': '198.51.100.1'},
+      {'id': 'b', 'name': '🇩🇪 XHTTP', 'label': 'CDN XHTTP', 'kind': 'cdn-xhttp', 'engine': 'xray', 'server': '203.0.113.7'},
+      {'id': 'e', 'name': '🇫🇷 Hysteria2', 'label': 'Hysteria2', 'kind': 'hysteria2', 'engine': 'xray', 'server': '203.0.113.20'},
+      {'id': 'c', 'name': 'IR→FI ws', 'label': 'VLESS WS', 'kind': 'ws', 'engine': 'xray', 'server': '198.51.100.2'},
       {'id': 'd', 'name': 'no flag here', 'kind': 'ws', 'engine': 'xray', 'server': '192.0.2.9'},
     ],
   },
@@ -53,10 +55,12 @@ void main() {
       ..subs = [sub()]
       ..status = {
         'running': true,
+        'since': DateTime.now().millisecondsSinceEpoch ~/ 1000 - 754,
         'active': 'a',
         'outbounds': [
           {'id': 'a', 'alive': true, 'delayMs': 120},
           {'id': 'b', 'alive': true, 'delayMs': 90},
+          {'id': 'e', 'alive': true, 'delayMs': 150},
           {'id': 'c', 'alive': false, 'delayMs': 0},
         ],
       };
@@ -73,9 +77,12 @@ void main() {
     expect(find.text('—'), findsWidgets, reason: 'a route that does not work');
     if (shots) await expectLater(find.byType(MaterialApp), matchesGoldenFile('shots/route-map.png'));
     // tapping a route picks its config
-    await t.drag(find.byType(Scrollable).first, const Offset(0, -400));
+    await t.drag(find.byType(Scrollable).first, const Offset(0, -418));
     await settle(t);
-    if (shots) await expectLater(find.byType(RouteMap), matchesGoldenFile('shots/route-map-card.png'));
+    if (shots) {
+      await expectLater(find.byType(RouteMap), matchesGoldenFile('shots/route-map-card.png'));
+      await expectLater(find.byType(MaterialApp), matchesGoldenFile('shots/route.png'));
+    }
     await t.tap(find.text('64 + ≈26 = 90 ms'));
     await t.pump();
     expect(s.settings.selected, 'b');
