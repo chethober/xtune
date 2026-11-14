@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"time"
 )
 
 // Call is the whole API the app uses, the same on every platform: Android calls it through the
@@ -207,6 +208,16 @@ var handlers = map[string]handler{
 		return map[string]any{"profile": p, "rev": rev}, nil
 	},
 	"vpn.status": func([]byte) (any, error) { return CurrentStatus(), nil },
+	"net.rtt": func(a []byte) (any, error) { // the first hop: a TCP handshake to each host, in ms (-1: no answer)
+		in, err := decode[struct {
+			Hosts     []string `json:"hosts"`
+			TimeoutMs int      `json:"timeoutMs"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return HostRTTs(in.Hosts, time.Duration(in.TimeoutMs)*time.Millisecond), nil
+	},
 	"vpn.config": func(a []byte) (any, error) { // the Xray config a connection would use, for the logs screen
 		in, err := decode[struct {
 			Profile *Profile `json:"profile"`
