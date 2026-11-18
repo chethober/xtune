@@ -113,6 +113,8 @@ func RecordNetwork(r *remote.Server, n netinfo.Network, scores map[string]float6
 	for k, s := range scores {
 		nr.Scores[k] = s
 	}
+	// tunes and checks run on the admin's computer: its clock is the network's local time
+	nr.SetHour(time.Now().Hour(), scores, nr.Updated, false)
 	if addrs != nil {
 		nr.Addrs = addrs
 	}
@@ -149,6 +151,19 @@ func forgetStaleRanks(st *state.State) {
 				delete(nr.Addrs, k)
 			}
 		}
+		for b, hr := range nr.Hours {
+			for k := range hr.Scores {
+				if !keys[k] {
+					delete(hr.Scores, k)
+				}
+			}
+			if len(hr.Scores) == 0 {
+				delete(nr.Hours, b)
+			}
+		}
+		if len(nr.Hours) == 0 {
+			nr.Hours = nil
+		}
 		if len(nr.Scores) == 0 {
 			delete(st.Networks, asn)
 		}
@@ -161,6 +176,15 @@ func forgetStaleRanks(st *state.State) {
 // there, with that network's clean IPs. It returns st itself, and "", when there is no fresh
 // ranking for asn.
 func forNetwork(st *state.State, asn string, now time.Time) (*state.State, string) {
+	return forNetworkAt(st, asn, now, -1)
+}
+
+// hourWeight is how much the scores from this time of day count over the all-day ones.
+const hourWeight = 0.6
+
+// forNetworkAt is forNetwork for a client whose local hour is hour (0-23; -1: not known): configs
+// that work at this time of day there come first.
+func forNetworkAt(st *state.State, asn string, now time.Time, hour int) (*state.State, string) {
 	nr := st.Networks[asn]
 	if nr == nil || now.Sub(time.Unix(nr.Updated, 0)) > netRankFresh {
 		return st, ""
@@ -173,8 +197,26 @@ func forNetwork(st *state.State, asn string, now time.Time) (*state.State, strin
 			e.Addr = a
 		}
 	}
+	var hr *state.HourRank
+	if b := state.HourBlock(hour); b != "" {
+		if h := nr.Hours[b]; h != nil && now.Sub(time.Unix(h.Updated, 0)) <= netRankFresh {
+			hr = h
+		}
+	}
 	rank := func(e state.Entry) float64 {
 		s, ok := nr.Scores[state.EntryKey(e)]
+		if hr != nil {
+			if hs, hok := hr.Scores[state.EntryKey(e)]; hok {
+				switch {
+				case hs == 0:
+					return -2 // blocked at this time of day, whatever it does at others
+				case ok && s > 0:
+					s = hourWeight*hs + (1-hourWeight)*s
+				default:
+					s, ok = hs, true
+				}
+			}
+		}
 		switch {
 		case !ok:
 			return -1 // not measured there: after the ones that work, before the blocked ones

@@ -463,7 +463,8 @@ class AppState extends ChangeNotifier {
     final saving = await savingData();
     final j = await core.call('probe.start', {
       'profile': s.profile,
-      'options': saving ? {'seconds': -1} : {},
+      // the network: the results join this device's ranking for it at this time of day
+      'options': {if (saving) 'seconds': -1, 'asn': _asn},
     });
     check = Map<String, dynamic>.from(j as Map);
     checkSubId = s.id;
@@ -519,6 +520,7 @@ class AppState extends ChangeNotifier {
             'ids': [id],
             'probes': 3,
             'seconds': await savingData() ? 2 : 5,
+            'asn': _asn,
           },
         }) as Map,
       );

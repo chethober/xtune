@@ -226,6 +226,11 @@ func chosen(p *Profile, o Options) ([]protocols.ClientEntry, error) {
 			}
 			out = append(out, c)
 		}
+		if p.Network == "" {
+			// no server ranked these for this network: start from what this device's checks
+			// found works here at this time of day
+			out = byHour(out, o.ASN, time.Now())
+		}
 	}
 	if len(out) == 0 {
 		return nil, errors.New("no config this app can run (check the Auto pool)")

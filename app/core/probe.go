@@ -50,6 +50,7 @@ type ProbeOptions struct {
 	ProbeURL  string   `json:"probeUrl,omitempty"`
 	SpeedURL  string   `json:"speedUrl,omitempty"`
 	TimeoutMs int      `json:"timeoutMs,omitempty"`
+	ASN       string   `json:"asn,omitempty"` // the network it runs from, for the time-of-day ranking
 }
 
 // Job is a check in progress.
@@ -144,6 +145,7 @@ func StartProbe(p *Profile, o ProbeOptions) *Job {
 		}
 		wg.Wait()
 		j.mu.Lock()
+		recordHours(trimAS(o.ASN), j.Results, time.Now())
 		j.Done = true
 		j.mu.Unlock()
 		cancel()
@@ -450,8 +452,9 @@ func SendReport(subURL string, n Network, results []Result) error {
 	in := struct {
 		ASN     string `json:"asn"`
 		Name    string `json:"name"`
+		Hour    int    `json:"hour"` // local: the server keeps a ranking for each time of day
 		Results []res  `json:"results"`
-	}{ASN: trimAS(n.ASN), Name: n.Name}
+	}{ASN: trimAS(n.ASN), Name: n.Name, Hour: time.Now().Hour()}
 	for _, r := range results {
 		if r.State == "skipped" || r.State == "testing" || r.Key == "" {
 			continue

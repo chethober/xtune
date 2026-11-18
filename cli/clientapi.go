@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,8 +24,9 @@ import (
 
 // ClientReport is what the app sends after checking its configs.
 type ClientReport struct {
-	ASN     string               `json:"asn"`  // the network it measured from (looked up before connecting)
-	Name    string               `json:"name"` // the network's name
+	ASN     string               `json:"asn"`            // the network it measured from (looked up before connecting)
+	Name    string               `json:"name"`           // the network's name
+	Hour    *int                 `json:"hour,omitempty"` // the device's local hour (0-23), for time-of-day ranking
 	Results []ClientReportResult `json:"results"`
 }
 
@@ -48,10 +50,19 @@ func clientNetwork(req *http.Request, st *state.State, now time.Time) string {
 	return netinfo.ASNOf(requesterIP(req, st), now)
 }
 
+// clientHour is the app's local hour (?hour=0-23), or -1.
+func clientHour(req *http.Request) int {
+	h, err := strconv.Atoi(req.URL.Query().Get("hour"))
+	if err != nil || h < 0 || h > 23 {
+		return -1
+	}
+	return h
+}
+
 func serveClientProfile(w http.ResponseWriter, req *http.Request, st *state.State, u state.User, uu *state.UserUsage, now time.Time) {
 	view, netName := st, ""
 	if len(st.Networks) > 0 {
-		view, netName = forNetwork(st, clientNetwork(req, st, now), now)
+		view, netName = forNetworkAt(st, clientNetwork(req, st, now), now, clientHour(req))
 	}
 	p := protocols.ClientProfileFor(view, u)
 	p.Network = netName
@@ -113,6 +124,7 @@ func applyClientReport(lock func() func(), load func() (*state.State, error), sa
 		nr = &state.NetRank{Scores: map[string]float64{}}
 	}
 	changed := false
+	hourScores := map[string]float64{}
 	for _, r := range in.Results {
 		if !keys[r.Key] || r.N <= 0 || r.N > 100 || r.Ok < 0 || r.Ok > r.N || r.Down < 0 || r.Up < 0 || r.Down > 10000 || r.Up > 10000 {
 			continue
@@ -122,6 +134,7 @@ func applyClientReport(lock func() func(), load func() (*state.State, error), sa
 			s = round2((old + s) / 2)
 		}
 		nr.Scores[r.Key] = s
+		hourScores[r.Key] = score(&Variant{Ok: r.Ok, N: r.N, Warm: r.Warm, Down: r.Down, Up: r.Up})
 		changed = true
 	}
 	if !changed {
@@ -131,6 +144,9 @@ func applyClientReport(lock func() func(), load func() (*state.State, error), sa
 		nr.Name = in.Name
 	}
 	nr.Updated = now.Unix()
+	if in.Hour != nil {
+		nr.SetHour(*in.Hour, hourScores, nr.Updated, true)
+	}
 	st.Networks[in.ASN] = nr
 	forgetStaleRanks(st)
 	return save(st)
