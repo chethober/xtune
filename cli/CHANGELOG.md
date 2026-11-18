@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-19
+
+### Changed
+- Nothing changed for the CLI. This release fixes a crash in the app's connection core (see the app's notes).
+
 ## [1.6.0] - 2026-11-18
 
 ### Added
