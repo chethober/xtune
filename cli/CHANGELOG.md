@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-18
+
 ### Added
 - `xtune change ID [--sni] [--port] [--path] [--json]` gives one deployed config new settings in place (a new
   REALITY target, path or gRPC service name, or port; none given: the usual one for its kind), for a config blocked on

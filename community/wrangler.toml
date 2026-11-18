@@ -13,7 +13,7 @@ compatibility_date = "2026-10-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "xtune-community"
-database_id = "REPLACE_WITH_THE_ID_FROM_wrangler_d1_create"
+database_id = "b861e68a-b431-4e5c-98bb-1705ae27bc97"
 
 # health checks of the VPNs shared from the app (the bot checks its own)
 [triggers]
