@@ -60,6 +60,7 @@ func HostRTTs(hosts []string, timeout time.Duration) map[string]int {
 		wg.Add(1)
 		go func(h string) {
 			defer wg.Done()
+			defer recovered("measure a hop")
 			ms := HostRTT(ctx, h, timeout)
 			mu.Lock()
 			out[h] = ms

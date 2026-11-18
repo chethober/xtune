@@ -11,6 +11,7 @@
 |---|---|
 | [`cli/`](cli/README.md) | **xtune**, the command-line tool: it tunes, deploys and manages a server over SSH, from one binary |
 | [`app/`](app/README.md) | **xtune client**, the app for Android, Linux and Windows: connect, check configs, manage the server |
+| [`community/`](community/README.md) | the **community directory**: VPNs shared with everyone, in the app and in @chthvpnbot (a Cloudflare Worker) |
 
 <p align="center">
   <img src="app/docs/screenshots/home.png" width="180" alt="The app's Home: connected, with the config in use">

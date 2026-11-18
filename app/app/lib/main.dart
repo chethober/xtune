@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -26,6 +27,15 @@ void main() async {
     }
   });
   final state = AppState(CoreClient.instance);
+  // errors the app carries on after go to the crash log (Settings → Diagnostics)
+  FlutterError.onError = (d) {
+    FlutterError.presentError(d);
+    unawaited(state.recordError('flutter${d.context != null ? ': ${d.context}' : ''}', d.exception, d.stack));
+  };
+  PlatformDispatcher.instance.onError = (e, st) {
+    unawaited(state.recordError('dart', e, st));
+    return true;
+  };
   await state.init();
   runApp(XtuneApp(state: state));
   DesktopTray.init(state);
@@ -139,6 +149,13 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
     if (link == null || !link.startsWith('xtune://') || !mounted) return;
     if (link.startsWith('xtune://manage')) {
       go(3); // the server widget
+      return;
+    }
+    if (link.startsWith('xtune://connect')) {
+      // the notification Android's background limits leave: connect now, from the foreground
+      go(0);
+      final s = AppScope.of(context);
+      if (!s.connected && !s.busy) await s.connect();
       return;
     }
     await showAddSub(context, initial: link);

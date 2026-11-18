@@ -17,6 +17,8 @@ permissions:
 
 env:
   FLUTTER_VERSION: 3.50.0
+  # the community directory the app lists (community/); empty: the app says none is set up
+  COMMUNITY_URL: ${{ vars.COMMUNITY_URL }}
 
 jobs:
   cli:

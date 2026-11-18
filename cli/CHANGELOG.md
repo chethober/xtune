@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-18
+
+### Added
+- `xtune change ID [--sni] [--port] [--path] [--json]` gives one deployed config new settings in place (a new
+  REALITY target, path or gRPC service name, or port; none given: the usual one for its kind), for a config blocked on
+  users' networks while the server still works. The app's Manage tab does it from a tap.
+- Time-of-day rankings: each network's ranking is kept for every four hours of the day as well as all day. The app
+  sends its local hour with reports and asks for its profile with `?hour=`; configs that work there at this time of
+  day come first (60% this time of day, 40% all day), and one blocked at this time goes last.
+- `xtune public --json` (list, add, limit, link, token) prints the pools as JSON with their connect links, for the
+  app's Manage → Share, which lists a pool in the xtune community directory (`community/`).
+
 ## [1.5.0] - 2026-11-14
 
 ### Changed

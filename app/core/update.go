@@ -208,6 +208,7 @@ func StartUpdateDownload(info UpdateInfo) (UpdateJob, error) {
 	j := &UpdateJob{State: "downloading", Total: info.Size, Name: info.Name}
 	updJob = j
 	go func() {
+		defer recovered("download an update")
 		err := download(info, dir, dst, j)
 		updMu.Lock()
 		defer updMu.Unlock()

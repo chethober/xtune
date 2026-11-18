@@ -42,6 +42,7 @@ func (s *socksServer) Port() int { return s.ln.Addr().(*net.TCPAddr).Port }
 
 func (s *socksServer) serve() {
 	defer s.wg.Done()
+	defer recovered("local SOCKS server")
 	for {
 		c, err := s.ln.Accept()
 		if err != nil {
@@ -49,6 +50,7 @@ func (s *socksServer) serve() {
 		}
 		s.track(c, true)
 		go func() {
+			defer recovered("local SOCKS connection")
 			defer s.track(c, false)
 			defer c.Close()
 			s.handle(c)
@@ -158,13 +160,14 @@ func socksHandshake(c net.Conn) (string, error) {
 func relay(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
+		defer func() { done <- struct{}{} }()
+		defer recovered("relay")
 		io.Copy(dst, src)
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		} else {
 			dst.Close()
 		}
-		done <- struct{}{}
 	}
 	go cp(a, b)
 	go cp(b, a)

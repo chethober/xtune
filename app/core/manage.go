@@ -178,6 +178,7 @@ func dialServer(c ServerConn) (*remote.Server, string, error) {
 		}
 	}
 	go func() { // keepalive; a dead connection leaves the cache
+		defer recovered("server keepalive")
 		tk := time.NewTicker(30 * time.Second)
 		defer tk.Stop()
 		for range tk.C {
@@ -250,6 +251,37 @@ type EntryInfo struct {
 	Kind  string `json:"kind"`
 	Port  int    `json:"port"`
 	Users int    `json:"users"` // users online on it at the last count
+	SNI   string `json:"sni,omitempty"`
+	Path  bool   `json:"path,omitempty"`  // has a path (or gRPC service name) that xtune change can replace
+	Quiet int64  `json:"quiet,omitempty"` // seconds it carried nothing while others were in use: probably blocked
+}
+
+// The server's rule for a config that is probably blocked (xtune's traffic.go): nothing for
+// quietAfter while another config carried traffic within busyWithin.
+const (
+	quietAfter = 2 * time.Hour
+	busyWithin = 15 * time.Minute
+)
+
+func quietEntries(st *state.State, us *state.Usage, now time.Time) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	busy := false
+	for _, e := range st.Entries {
+		if eu := us.Entries[state.EntryKey(e)]; eu != nil && now.Unix()-eu.Active < int64(busyWithin/time.Second) {
+			busy = true
+		}
+	}
+	if !busy {
+		return out
+	}
+	for _, e := range st.Entries {
+		if eu := us.Entries[state.EntryKey(e)]; eu != nil {
+			if d := now.Sub(time.Unix(max(eu.Active, eu.First), 0)); d >= quietAfter {
+				out[e.ID] = d
+			}
+		}
+	}
+	return out
 }
 
 type NetworkInfo struct {
@@ -321,8 +353,10 @@ func ServerOverview(c ServerConn) (*Overview, error) {
 			}
 		}
 	}
+	quiet := quietEntries(st, us, now)
 	for _, e := range st.Entries {
-		o.Entries = append(o.Entries, EntryInfo{ID: e.ID, Kind: e.Kind, Port: e.Port})
+		o.Entries = append(o.Entries, EntryInfo{ID: e.ID, Kind: e.Kind, Port: e.Port, SNI: e.SNI, Path: e.Path != "" || e.Svc != "",
+			Quiet: int64(quiet[e.ID] / time.Second)})
 	}
 	for _, rl := range st.Relays {
 		o.Relays = append(o.Relays, rl.Name)

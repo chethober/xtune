@@ -1,0 +1,20 @@
+# The xtune community directory. Deploy (once, then on changes):
+#   npx wrangler d1 create xtune-community          # put the database_id it prints below
+#   npx wrangler d1 execute xtune-community --remote --file schema.sql
+#   npx wrangler secret put BOT_KEY                 # the same value as the bot's DIRECTORY_KEY
+#   npx wrangler secret put ADMIN_KEY
+#   npx wrangler secret put SALT                    # any random text: rate limits hash addresses with it
+#   npx wrangler deploy
+# A custom domain (Workers → Settings → Domains) reaches more networks than workers.dev.
+name = "xtune-community"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "xtune-community"
+database_id = "b861e68a-b431-4e5c-98bb-1705ae27bc97"
+
+# health checks of the VPNs shared from the app (the bot checks its own)
+[triggers]
+crons = ["*/30 * * * *"]

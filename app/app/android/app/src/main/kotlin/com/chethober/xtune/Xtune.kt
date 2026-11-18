@@ -63,42 +63,150 @@ object Xtune {
         setUp = true
     }
 
-    /** The connection the app last started: its arguments, per-app mode and apps. */
+    /** The connection the app last started: the core's arguments, the per-app mode and apps. */
+    class Last(val args: String, val mode: String, val apps: ArrayList<String>)
+
+    private fun lastFile(c: Context) = File(c.filesDir, "last-connection.json")
+
+    /**
+     * Kept in a file, not in the preferences: a subscription can be hundreds of KB, and Android
+     * reads the whole preferences file into memory and rewrites it on every change.
+     */
+    @Synchronized
     fun saveLast(c: Context, args: String, mode: String, apps: List<String>) {
-        prefs(c).edit().putString("lastArgs", args).putString("lastMode", mode).putString("lastApps", JSONArray(apps).toString()).apply()
+        val j = JSONObject().put("args", args).put("mode", mode).put("apps", JSONArray(apps))
+        val f = lastFile(c)
+        val tmp = File(f.path + ".tmp")
+        tmp.writeText(j.toString())
+        if (!tmp.renameTo(f)) {
+            f.writeText(j.toString())
+            tmp.delete()
+        }
+        prefs(c).edit().putBoolean("hasLast", true).remove("lastArgs").remove("lastMode").remove("lastApps").apply()
     }
 
-    fun hasLast(c: Context) = prefs(c).getString("lastArgs", null) != null
+    @Synchronized
+    fun loadLast(c: Context): Last? {
+        val f = lastFile(c)
+        if (f.exists()) {
+            return try {
+                val j = JSONObject(f.readText())
+                val a = j.optJSONArray("apps") ?: JSONArray()
+                Last(j.getString("args"), j.optString("mode", "off"), ArrayList((0 until a.length()).map { a.getString(it) }))
+            } catch (e: Exception) {
+                CrashLog.write(c, "error", "read the last connection", e)
+                null
+            }
+        }
+        // 1.5 and older kept it in the preferences
+        val p = prefs(c)
+        val args = p.getString("lastArgs", null) ?: return null
+        val a = JSONArray(p.getString("lastApps", "[]") ?: "[]")
+        val apps = ArrayList((0 until a.length()).map { a.getString(it) })
+        val mode = p.getString("lastMode", "off") ?: "off"
+        saveLast(c, args, mode, apps)
+        return Last(args, mode, apps)
+    }
+
+    fun hasLast(c: Context) = prefs(c).getBoolean("hasLast", false) || prefs(c).getString("lastArgs", null) != null
+
+    /** The notification's Next config: the next connect starts from it too. */
+    fun setSelected(c: Context, id: String) {
+        val last = loadLast(c) ?: return
+        val j = JSONObject(last.args)
+        (j.optJSONObject("options") ?: JSONObject().also { j.put("options", it) }).put("selected", id)
+        saveLast(c, j.toString(), last.mode, last.apps)
+    }
 
     /** Starts the last connection, when there is one and the VPN permission was given. */
     fun startLast(c: Context, reason: String): Boolean {
-        val p = prefs(c)
-        val args = p.getString("lastArgs", null) ?: return false
+        if (!hasLast(c)) return false
         if (VpnService.prepare(c) != null) return false
-        val apps = JSONArray(p.getString("lastApps", "[]") ?: "[]").let { a -> ArrayList((0 until a.length()).map { a.getString(it) }) }
-        XtuneVpnService.start(c, args, p.getString("lastMode", "off") ?: "off", apps, reason)
+        if (XtuneVpnService.start(c, reason) != null) askToConnect(c, reason) // Android refused: ask the user
         return true
     }
 
     fun toggle(c: Context, reason: String) {
         if (running) {
-            XtuneVpnService.stop(c)
+            if (!XtuneVpnService.stop(c)) running = false
         } else if (!startLast(c, reason)) {
             // no connection yet, or the permission is missing: the app asks
-            c.startActivity(Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            try {
+                c.startActivity(Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: Exception) {
+            }
         }
+    }
+
+    // ------------------------------------------------ connecting from the background
+
+    private const val CONNECT_NOTE = 4
+
+    /**
+     * Android 12 and later do not let an app start its VPN from the background (Wi-Fi, a late
+     * alarm) unless it is exempt from battery optimization. Then a notification asks instead: a
+     * tap opens the app, which connects.
+     */
+    fun askToConnect(c: Context, reason: String) {
+        try {
+            val fa = prefs(c).getString("lang", "en") == "fa"
+            val nm = c.getSystemService(android.app.NotificationManager::class.java) ?: return
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    android.app.NotificationChannel("connect", if (fa) "اتصال" else "Connecting", android.app.NotificationManager.IMPORTANCE_DEFAULT)
+                )
+            }
+            val open = PendingIntent.getActivity(
+                c, 12, Intent(c, MainActivity::class.java).setData(android.net.Uri.parse("xtune://connect?reason=$reason"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val b = if (Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(c, "connect") else @Suppress("DEPRECATION") android.app.Notification.Builder(c)
+            nm.notify(
+                CONNECT_NOTE,
+                b.setSmallIcon(R.drawable.ic_vpn)
+                    .setContentTitle(if (fa) "برای اتصال بزنید" else "Tap to connect")
+                    .setContentText(
+                        if (fa) "اندروید نگذاشت xtune در پس‌زمینه وصل شود"
+                        else "Android did not let xtune connect in the background"
+                    )
+                    .setContentIntent(open)
+                    .setAutoCancel(true)
+                    .build()
+            )
+        } catch (e: Exception) {
+            CrashLog.write(c, "error", "ask to connect", e)
+        }
+    }
+
+    fun cancelAskToConnect(c: Context) {
+        try {
+            c.getSystemService(android.app.NotificationManager::class.java)?.cancel(CONNECT_NOTE)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Exempt from battery optimization: Android then lets it connect from the background. */
+    fun batteryExempt(c: Context): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return true
+        return c.getSystemService(android.os.PowerManager::class.java)?.isIgnoringBatteryOptimizations(c.packageName) ?: false
     }
 
     /** The VPN came up or went down: the tile and the widget follow. */
     fun setRunning(c: Context, on: Boolean) {
         running = on
+        if (on) cancelAskToConnect(c)
         try {
             TileService.requestListeningState(c, ComponentName(c, XtuneTileService::class.java))
         } catch (_: Exception) {
         }
-        val wm = AppWidgetManager.getInstance(c)
-        val ids = wm.getAppWidgetIds(ComponentName(c, XtuneWidget::class.java))
-        if (ids.isNotEmpty()) XtuneWidget.update(c, wm, ids)
+        try {
+            // null on devices without home-screen widgets
+            val wm: AppWidgetManager? = AppWidgetManager.getInstance(c)
+            val ids = wm?.getAppWidgetIds(ComponentName(c, XtuneWidget::class.java)) ?: IntArray(0)
+            if (wm != null && ids.isNotEmpty()) XtuneWidget.update(c, wm, ids)
+        } catch (_: Exception) {
+        }
     }
 
     // ------------------------------------------------ auto-connect
@@ -121,7 +229,11 @@ object Xtune {
         }
         if (on) {
             val req = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
-            cm.registerNetworkCallback(req, pi)
+            try {
+                cm.registerNetworkCallback(req, pi)
+            } catch (e: Exception) {
+                CrashLog.write(c, "error", "watch Wi-Fi", e)
+            }
         }
     }
 
@@ -208,6 +320,11 @@ object Xtune {
             }
         }
         waiting = cb
-        cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), cb)
+        try {
+            cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), cb)
+        } catch (e: Exception) {
+            waiting = null
+            CrashLog.write(c, "error", "wait for the Wi-Fi sign-in", e)
+        }
     }
 }

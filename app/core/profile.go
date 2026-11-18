@@ -113,9 +113,10 @@ func FetchProfile(subURL, asn string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	q := ""
+	// the network, and the local hour: the server lists first what works there at this time of day
+	q := fmt.Sprintf("?hour=%d", time.Now().Hour())
 	if a := strings.TrimPrefix(strings.ToUpper(asn), "AS"); a != "" {
-		q = "?asn=" + url.QueryEscape(a)
+		q += "&asn=" + url.QueryEscape(a)
 	}
 	resp, err := directGet(base + "/client" + q)
 	if err != nil {

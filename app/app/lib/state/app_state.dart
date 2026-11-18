@@ -85,7 +85,9 @@ class AppState extends ChangeNotifier {
   Future<void> _afterStart() async {
     try {
       final dir = await getApplicationSupportDirectory();
-      await core.call('setup', {'dataDir': dir.path});
+      // Android: the same folder the VPN service gives the core (files/core), so the log and the
+      // crash log are in one place whichever side set it up last
+      await core.call('setup', {'dataDir': Platform.isAndroid ? '${dir.path}/core' : dir.path});
     } catch (_) {}
     await refreshStatus();
     _lastSince = (status['since'] as num?)?.toInt() ?? 0;
@@ -111,6 +113,7 @@ class AppState extends ChangeNotifier {
         Process.run(DesktopCore.coreExe, ['--cleanup', File(Platform.resolvedExecutable).parent.path]).catchError((_) => ProcessResult(0, 0, '', '')),
       );
     }
+    unawaited(refreshCrashCount());
     await _maintenance();
   }
 
@@ -268,6 +271,7 @@ class AppState extends ChangeNotifier {
       'socksPort': st.socksPort,
       'httpPort': st.httpPort,
       'autoMode': st.autoMode,
+      'logLevel': st.logLevel,
     };
   }
 
@@ -459,7 +463,8 @@ class AppState extends ChangeNotifier {
     final saving = await savingData();
     final j = await core.call('probe.start', {
       'profile': s.profile,
-      'options': saving ? {'seconds': -1} : {},
+      // the network: the results join this device's ranking for it at this time of day
+      'options': {if (saving) 'seconds': -1, 'asn': _asn},
     });
     check = Map<String, dynamic>.from(j as Map);
     checkSubId = s.id;
@@ -515,6 +520,7 @@ class AppState extends ChangeNotifier {
             'ids': [id],
             'probes': 3,
             'seconds': await savingData() ? 2 : 5,
+            'asn': _asn,
           },
         }) as Map,
       );
@@ -677,6 +683,51 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // ------------------------------------------------------------ crash log
+
+  /// The crash log, newest first: {at (ms), source (go, android, dart), kind (crash, error), where, title, text}.
+  Future<List<Map<String, dynamic>>> crashes() async =>
+      ((await core.call('crash.list', {'n': 30})) as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+
+  final _recentErrors = <String, DateTime>{};
+
+  /// Entries the user has not opened the crash log since.
+  int newCrashes = 0;
+
+  Future<void> refreshCrashCount() async {
+    try {
+      final l = await crashes();
+      newCrashes = l.where((e) => ((e['at'] as num?) ?? 0) > settings.crashSeen).length;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> markCrashesSeen(List<Map<String, dynamic>> l) async {
+    newCrashes = 0;
+    final newest = l.isEmpty ? 0 : ((l.first['at'] as num?) ?? 0).toInt();
+    if (newest > settings.crashSeen) await updateSettings((s) => s.crashSeen = newest);
+    notifyListeners();
+  }
+
+  Future<void> clearCrashes() async {
+    await core.call('crash.clear');
+    newCrashes = 0;
+    notifyListeners();
+  }
+
+  /// A Dart error, kept in the crash log (the app carries on after these).
+  Future<void> recordError(String where, Object error, StackTrace? stack) async {
+    // the same error again soon (a broken frame repeats every frame) is written once
+    final key = '$where|$error';
+    final now = DateTime.now();
+    _recentErrors.removeWhere((_, t) => now.difference(t) > const Duration(minutes: 1));
+    if (_recentErrors.containsKey(key)) return;
+    _recentErrors[key] = now;
+    try {
+      await core.call('crash.record', {'source': 'dart', 'kind': 'error', 'where': where, 'text': '$error\n\n${stack ?? ''}'});
+    } catch (_) {}
+  }
+
   // ------------------------------------------------------------ timeline, leak test
 
   Future<List<Map<String, dynamic>>> timeline() async =>
@@ -775,6 +826,7 @@ class AppState extends ChangeNotifier {
     final ok = entries.length - entries.where((e) => blocked.contains((e as Map)['id'])).length;
     try {
       await (core as AndroidCore).native('serverWidget', {
+        'id': srv.id,
         'json': jsonEncode({
           'name': srv.name.isNotEmpty ? srv.name : srv.host,
           'online': o['online'] ?? 0,
@@ -826,9 +878,36 @@ class AppState extends ChangeNotifier {
       await Secrets.delete('srv-${s.id}-$k');
     }
     servers.remove(s);
+    overviews.remove(s.id);
     if (activeServerId == s.id) activeServerId = servers.firstOrNull?.id;
     notifyListeners();
     await _save();
+    if (Platform.isAndroid) {
+      try {
+        await (core as AndroidCore).native('serverWidgetKeep', {'ids': servers.map((x) => x.id).toList()});
+      } catch (_) {}
+    }
+  }
+
+  /// Every server's dashboard as last loaded (All servers), by server ID: the overview, or the
+  /// error, and when.
+  final Map<String, ({Map<String, dynamic>? overview, String? error, DateTime at})> overviews = {};
+
+  /// Loads every server's dashboard at once; each one fills in as it answers.
+  Future<void> loadOverviews() async {
+    await Future.wait([
+      for (final srv in List.of(servers))
+        () async {
+          try {
+            final o = Map<String, dynamic>.from(await manage('manage.overview', srv) as Map);
+            overviews[srv.id] = (overview: o, error: null, at: DateTime.now());
+            unawaited(serverWidget(srv, o));
+          } catch (e) {
+            overviews[srv.id] = (overview: overviews[srv.id]?.overview, error: '$e', at: DateTime.now());
+          }
+          notifyListeners();
+        }(),
+    ]);
   }
 
   Future<void> selectServer(ServerEntry s) async {
@@ -841,5 +920,146 @@ class AppState extends ChangeNotifier {
     final conn = await serverConn(s);
     if (extra.isEmpty) return core.call(method, conn);
     return core.call(method, {'server': conn, ...extra});
+  }
+
+  // ------------------------------------------------------------ the community directory
+
+  /// One call to the community directory's API (community/ in the repository).
+  Future<dynamic> community(String method, String path, {Map<String, dynamic>? body, String? auth}) =>
+      core.call('community.request', {'base': settings.communityUrl, 'method': method, 'path': path, 'body': ?body, 'auth': ?auth});
+
+  /// The directory's VPNs, most free places first.
+  Future<List<Map<String, dynamic>>> communityList() async {
+    final r = Map<String, dynamic>.from(await community('GET', '/v1/vpns') as Map);
+    return ((r['vpns'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+  }
+
+  /// This device's member key: random, made once, kept in secure storage. The directory sees a
+  /// hash of it per VPN; an xtune pool sees a label made from that hash.
+  Future<String> communityMember() async {
+    var k = await Secrets.read('community-member');
+    if (k == null || !RegExp(r'^[0-9a-f]{32,64}$').hasMatch(k)) {
+      final r = Random.secure();
+      k = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
+      await Secrets.write('community-member', k);
+    }
+    return k;
+  }
+
+  /// The subscription that came from this community VPN, if joined.
+  Sub? communitySub(String id) => subs.where((s) => s.community == id).firstOrNull;
+
+  /// Joins a community VPN: an xtune pool gives this device its own user and subscription; a
+  /// shared subscription or links are added as they are. It becomes the subscription in use.
+  Future<Sub> joinCommunity(Map<String, dynamic> vpn) async {
+    final id = vpn['id'] as String;
+    final r = Map<String, dynamic>.from(await community('POST', '/v1/vpns/$id/join', body: {'member': await communityMember()}) as Map);
+    final text = (r['sub'] as String?) ?? (r['source'] as String?) ?? '';
+    if (text.isEmpty) throw CoreError('the directory sent nothing to connect with');
+    final (s, _) = await addSub(text);
+    s.community = id;
+    if (s.local && (s.profile['name'] as String?)?.isNotEmpty != true) s.profile['name'] = vpn['name'];
+    notifyListeners();
+    await _save();
+    return s;
+  }
+
+  /// Leaves a community VPN: an xtune pool deletes this device's user; the subscription goes.
+  Future<void> leaveCommunity(Sub s) async {
+    try {
+      await community('POST', '/v1/vpns/${s.community}/leave', body: {'member': await communityMember()});
+    } catch (_) {} // gone from the directory already: leaving here is what matters
+    await removeSub(s);
+  }
+
+  Future<void> reportCommunity(String id, String reason) async {
+    await community('POST', '/v1/vpns/$id/report', body: {'member': await communityMember(), 'reason': reason});
+  }
+
+  /// Shares one of the user's servers with the community: makes an xtune public pool on it with
+  /// these limits (each member gets their own user), and lists its connect link in the directory.
+  Future<SharedVpn> shareServer(
+    ServerEntry srv, {
+    required String pool,
+    required String name,
+    String description = '',
+    String country = '',
+    int members = 0,
+    double quotaGb = 0,
+    int days = 0,
+    int devices = 0,
+  }) async {
+    final out =
+        ((await manage('manage.xtune', srv, {
+              'args': ['public', 'add', pool, '--json', '--members', '$members', '--quota', '$quotaGb', '--days', '$days', '--devices', '$devices'],
+            })) as Map)['output']
+            as String? ??
+        '';
+    Map<String, dynamic> p;
+    try {
+      p = Map<String, dynamic>.from(jsonDecode(out.trim().split('\n').last) as Map);
+    } catch (_) {
+      throw CoreError(out.contains('Xray tuner and manager') ? 'old xtune' : out.trim());
+    }
+    final link = p['link'] as String? ?? '';
+    if (link.isEmpty) throw CoreError('no subscription server');
+    return shareSource(link, name: name, description: description, country: country, serverId: srv.id, pool: pool);
+  }
+
+  /// Lists a connect link, subscription URL or share links in the directory.
+  Future<SharedVpn> shareSource(
+    String source, {
+    required String name,
+    String description = '',
+    String country = '',
+    String serverId = '',
+    String pool = '',
+  }) async {
+    final r = Map<String, dynamic>.from(
+      await community('POST', '/v1/vpns', body: {'source': source, 'name': name, 'description': description, 'country': country.toUpperCase()})
+          as Map,
+    );
+    final v = SharedVpn(id: r['id'] as String, name: name, serverId: serverId, pool: pool);
+    await Secrets.write('community-owner-${v.id}', r['ownerKey'] as String);
+    await updateSettings((x) => x.shared = [...x.shared, v]);
+    return v;
+  }
+
+  /// The owner's view of a shared VPN: status, members from the app, reports.
+  Future<Map<String, dynamic>> sharedStatus(SharedVpn v) async =>
+      Map<String, dynamic>.from(await community('GET', '/v1/vpns/${v.id}/owner', auth: await _ownerAuth(v)) as Map);
+
+  Future<void> editShared(SharedVpn v, Map<String, dynamic> change) async {
+    await community('PATCH', '/v1/vpns/${v.id}', body: change, auth: await _ownerAuth(v));
+    if (change['name'] is String) {
+      v.name = change['name'] as String;
+      await updateSettings((_) {});
+    }
+  }
+
+  /// Takes a shared VPN out of the directory; with removePool, also deletes the pool and its
+  /// members' users on the server.
+  Future<void> unshare(SharedVpn v, {bool removePool = false}) async {
+    try {
+      await community('DELETE', '/v1/vpns/${v.id}', auth: await _ownerAuth(v));
+    } on CoreError catch (e) {
+      if (!e.message.contains('gone')) rethrow;
+    }
+    if (removePool && v.pool.isNotEmpty) {
+      final srv = servers.where((x) => x.id == v.serverId).firstOrNull;
+      if (srv != null) {
+        await manage('manage.xtune', srv, {
+          'args': ['public', 'del', v.pool, '--yes'],
+        });
+      }
+    }
+    await Secrets.delete('community-owner-${v.id}');
+    await updateSettings((x) => x.shared = x.shared.where((y) => y.id != v.id).toList());
+  }
+
+  Future<String> _ownerAuth(SharedVpn v) async {
+    final k = await Secrets.read('community-owner-${v.id}');
+    if (k == null) throw CoreError('the owner key for ${v.name} is not on this device');
+    return 'Owner $k';
   }
 }

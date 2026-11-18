@@ -3,10 +3,18 @@ import '../ui/fmt.dart';
 /// A subscription the user added (or links they pasted: no URL), the last profile fetched from it,
 /// and what the user did to its configs.
 class Sub {
-  Sub({required this.id, required this.url, required this.profile, required this.fetched, Map<String, ConfigMeta>? meta, List<String>? pool})
-    : meta = meta ?? {},
-      pool = pool ?? [];
+  Sub({
+    required this.id,
+    required this.url,
+    required this.profile,
+    required this.fetched,
+    Map<String, ConfigMeta>? meta,
+    List<String>? pool,
+    this.community = '',
+  }) : meta = meta ?? {},
+       pool = pool ?? [];
   final String id;
+  String community; // joined from the community directory: the VPN's ID there ('' otherwise)
   final String url; // empty: pasted links, nothing to refresh
   Map<String, dynamic> profile;
   DateTime fetched;
@@ -30,6 +38,7 @@ class Sub {
     'fetched': fetched.millisecondsSinceEpoch,
     'meta': meta.map((k, v) => MapEntry(k, v.toJson())),
     'pool': pool,
+    if (community.isNotEmpty) 'community': community,
   };
   static Sub fromJson(Map<String, dynamic> j) => Sub(
     id: j['id'] as String,
@@ -38,6 +47,24 @@ class Sub {
     fetched: DateTime.fromMillisecondsSinceEpoch(j['fetched'] as int? ?? 0),
     meta: ((j['meta'] as Map?) ?? {}).map((k, v) => MapEntry(k as String, ConfigMeta.fromJson(Map<String, dynamic>.from(v as Map)))),
     pool: ((j['pool'] as List?) ?? []).cast<String>(),
+    community: j['community'] as String? ?? '',
+  );
+}
+
+/// A VPN this user shared to the community directory from Manage. Its owner key is in Secrets.
+class SharedVpn {
+  SharedVpn({required this.id, required this.name, this.serverId = '', this.pool = ''});
+  final String id; // in the directory
+  String name;
+  final String serverId; // the server it is a pool on ('' for a shared subscription)
+  final String pool; // the pool's name there (xtune public)
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'serverId': serverId, 'pool': pool};
+  static SharedVpn fromJson(Map<String, dynamic> j) => SharedVpn(
+    id: j['id'] as String? ?? '',
+    name: j['name'] as String? ?? '',
+    serverId: j['serverId'] as String? ?? '',
+    pool: j['pool'] as String? ?? '',
   );
 }
 
@@ -194,6 +221,14 @@ class Settings {
   bool dataSaver = true; // on mobile data: no throughput tests, smaller checks
   String updateMode = 'notify'; // app updates: off | notify (tell me) | auto (download, then install)
 
+  // diagnostics
+  String logLevel = 'warning'; // the connection log: debug | info | warning | error | none
+  int crashSeen = 0; // the newest crash-log entry the user has seen (ms), for the "new" count
+
+  // the community directory
+  String communityUrl = ''; // '' : the one this build came with
+  List<SharedVpn> shared = []; // what this user shared from Manage
+
   /// The apps Android leaves out of the VPN, for the bypass mode.
   List<String> get excludedApps => perAppMode == 'bypass' ? apps : const [];
 
@@ -237,6 +272,10 @@ class Settings {
     'onboarded': onboarded,
     'dataSaver': dataSaver,
     'updateMode': updateMode,
+    'logLevel': logLevel,
+    'crashSeen': crashSeen,
+    'communityUrl': communityUrl,
+    'shared': shared.map((x) => x.toJson()).toList(),
   };
 
   static Settings fromJson(Map<String, dynamic>? j) {
@@ -289,6 +328,10 @@ class Settings {
     s.onboarded = get('onboarded', true);
     s.dataSaver = get('dataSaver', s.dataSaver);
     s.updateMode = get('updateMode', s.updateMode);
+    s.logLevel = const ['debug', 'info', 'warning', 'error', 'none'].contains(j['logLevel']) ? j['logLevel'] as String : s.logLevel;
+    s.crashSeen = (j['crashSeen'] as num?)?.toInt() ?? 0;
+    s.communityUrl = get('communityUrl', s.communityUrl);
+    s.shared = ((j['shared'] as List?) ?? []).map((x) => SharedVpn.fromJson(Map<String, dynamic>.from(x as Map))).toList();
     return s;
   }
 }

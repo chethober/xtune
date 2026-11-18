@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"regexp"
@@ -468,6 +469,7 @@ func cmdPublic(args []string) error {
 	plan := fs.String("plan", "", "members get this plan's limits (xtune plans)")
 	members := fs.Int("members", 0, "most active members at once (0 = unlimited)")
 	yes := fs.Bool("yes", false, "del: do not ask for confirmation")
+	asJSON := fs.Bool("json", false, "list, add, limit, link, token: print JSON (the app's Manage tab reads it)")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
@@ -483,6 +485,13 @@ func cmdPublic(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *asJSON {
+			us, err := state.LoadUsage(r)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(publicJSON(st, us, pos[1], time.Now()))
+		}
 		fmt.Printf("%s: %s\n\nconnect link (send it to the community VPN bot; keep it private, it adds users):\n%s\n",
 			pos[1], st.Public[pos[1]], PublicURL(st, pos[1]))
 		return nil
@@ -496,6 +505,13 @@ func cmdPublic(args []string) error {
 		us, err := state.LoadUsage(r)
 		if err != nil {
 			return err
+		}
+		if *asJSON {
+			out := []PublicJSON{}
+			for _, n := range slices.Sorted(maps.Keys(st.Public)) {
+				out = append(out, publicJSON(st, us, n, time.Now()))
+			}
+			return json.NewEncoder(os.Stdout).Encode(out)
 		}
 		return printPublic(os.Stdout, st, us)
 	case "add", "limit":
@@ -560,6 +576,29 @@ func cmdPublic(args []string) error {
 		return DeletePublic(r, pos[1])
 	}
 	return fmt.Errorf("unknown public action %q", pos[0])
+}
+
+// PublicJSON is a pool as `xtune public --json` prints it. Link is the connect link: a secret,
+// for the community directory or the bot, never for members.
+type PublicJSON struct {
+	Name      string   `json:"name"`
+	Link      string   `json:"link"` // "" when the subscription server is off
+	Paused    bool     `json:"paused"`
+	Active    int      `json:"active"`
+	Members   int      `json:"members"` // all members, active or not
+	Max       int      `json:"max"`     // 0 = unlimited
+	QuotaGB   float64  `json:"quotaGB"`
+	Days      int      `json:"days"`
+	Devices   int      `json:"devices"`
+	Plan      string   `json:"plan,omitempty"`
+	Protocols []string `json:"protocols"`
+}
+
+func publicJSON(st *state.State, us *state.Usage, name string, now time.Time) PublicJSON {
+	p := st.Public[name]
+	info := poolInfo(st, name, p, us, now)
+	return PublicJSON{Name: name, Link: PublicURL(st, name), Paused: p.Paused, Active: info.Active, Members: len(info.Members),
+		Max: p.Members, QuotaGB: info.QuotaGB, Days: info.Days, Devices: info.Devices, Plan: p.Plan, Protocols: info.Protocols}
 }
 
 func printPublic(w io.Writer, st *state.State, us *state.Usage) error {

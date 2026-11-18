@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chethober/xtune/pkg/state"
 )
@@ -74,6 +75,12 @@ func TestCompatJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireKeys(t, "users links --json", jsonKeys(t, b.Bytes()), "enabled failover links name subscription")
+	st.Public = map[string]*state.PublicPool{"community": {Token: strings.Repeat("a", 32), QuotaGB: 20, Days: 30, Members: 100}}
+	pj, _ := json.Marshal(publicJSON(st, &state.Usage{Users: map[string]*state.UserUsage{}}, "community", time.Now()))
+	requireKeys(t, "public --json", jsonKeys(t, pj), "active days devices link max members name paused protocols quotaGB")
+	if !strings.HasSuffix(publicJSON(st, &state.Usage{}, "community", time.Now()).Link, "/pub/"+strings.Repeat("a", 32)) {
+		t.Error("public --json: the connect link")
+	}
 }
 
 // requireKeys fails when a promised key is missing; new keys are allowed.

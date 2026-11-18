@@ -27,6 +27,10 @@ class MainActivity : FlutterFragmentActivity() {
 
     private var locationResult: MethodChannel.Result? = null
 
+    // The core's calls: a pool, not a new thread for each. Status polls every second would otherwise
+    // pile up threads while a connect holds the core's lock.
+    private val calls = java.util.concurrent.Executors.newCachedThreadPool()
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         thread { Xtune.setup(applicationContext) }
@@ -37,12 +41,18 @@ class MainActivity : FlutterFragmentActivity() {
                 "call" -> {
                     val method = call.argument<String>("method") ?: ""
                     val args = call.argument<String>("args") ?: "{}"
-                    thread {
-                        val reply = Mobile.call(method, args)
+                    calls.execute {
+                        val reply = try {
+                            Mobile.call(method, args)
+                        } catch (e: Throwable) {
+                            XtuneVpnService.fail(e.message ?: e.toString())
+                        }
                         runOnUiThread { result.success(reply) }
                     }
                 }
                 "startVpn" -> {
+                    // a Connect still waiting for the consent dialog: answer it before replacing it
+                    pendingResult?.success(XtuneVpnService.fail("replaced by a newer connect"))
                     pendingArgs = call.argument<String>("args")
                     pendingMode = call.argument<String>("perAppMode") ?: "off"
                     pendingApps = ArrayList(call.argument<List<String>>("apps") ?: emptyList())
@@ -65,11 +75,20 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "askLocation" -> askLocation(result)
                 "vpnSettings" -> {
-                    try {
-                        startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
-                    } catch (_: Exception) {
-                        startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
-                    }
+                    openFirst(Intent(android.provider.Settings.ACTION_VPN_SETTINGS), Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+                    result.success(null)
+                }
+                "batteryExempt" -> result.success(Xtune.batteryExempt(applicationContext))
+                "askBattery" -> {
+                    // Android's own dialog: "Let xtune always run in the background?"
+                    @android.annotation.SuppressLint("BatteryLife")
+                    val ask = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName"))
+                    openFirst(ask, Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    result.success(null)
+                }
+                "testCrash" -> {
+                    // debug builds only: checks that the crash log catches a crash
+                    if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) main().post { throw RuntimeException("test crash from Settings") }
                     result.success(null)
                 }
                 "setLang" -> {
@@ -84,7 +103,11 @@ class MainActivity : FlutterFragmentActivity() {
                     getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
                 )
                 "serverWidget" -> {
-                    XtuneServerWidget.save(applicationContext, call.argument<String>("json") ?: "{}")
+                    XtuneServerWidget.save(applicationContext, call.argument<String>("id") ?: "", call.argument<String>("json") ?: "{}")
+                    result.success(null)
+                }
+                "serverWidgetKeep" -> {
+                    XtuneServerWidget.keep(applicationContext, call.argument<List<String>>("ids") ?: emptyList())
                     result.success(null)
                 }
                 "stopVpn" -> {
@@ -100,6 +123,19 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    private fun main() = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Opens the first of these settings pages the phone has. */
+    private fun openFirst(vararg pages: Intent) {
+        for (i in pages) {
+            try {
+                startActivity(i)
+                return
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         intent.data?.let { channel?.invokeMethod("link", it.toString()) }
@@ -108,13 +144,28 @@ class MainActivity : FlutterFragmentActivity() {
     private fun startVpn() {
         val result = pendingResult ?: return
         pendingResult = null
-        XtuneVpnService.onStarted = { reply ->
+        val once = Once(result)
+        try {
+            Xtune.saveLast(applicationContext, pendingArgs ?: "{}", pendingMode, pendingApps)
+        } catch (e: Exception) {
+            once.success(XtuneVpnService.fail("could not save the connection: ${e.message}"))
+            return
+        }
+        val refused = XtuneVpnService.start(applicationContext) { reply ->
             runOnUiThread {
-                result.success(reply)
+                once.success(reply)
                 askNotifications() // after the VPN consent dialog, never on top of it
             }
         }
-        XtuneVpnService.start(this, pendingArgs ?: "{}", pendingMode, pendingApps)
+        if (refused != null) once.success(XtuneVpnService.fail("Android did not start the VPN: $refused"))
+    }
+
+    /** A method call's reply, sent at most once: a second reply would close the app. */
+    private class Once(private val r: MethodChannel.Result) {
+        private val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun success(v: Any?) {
+            if (done.compareAndSet(false, true)) r.success(v)
+        }
     }
 
     @Deprecated("Deprecated in Java")
@@ -122,7 +173,13 @@ class MainActivity : FlutterFragmentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != VPN_REQUEST) return
         if (resultCode == RESULT_OK) {
-            startVpn()
+            try {
+                startVpn()
+            } catch (e: Exception) {
+                CrashLog.write(this, "error", "start the VPN after consent", e)
+                pendingResult?.success(XtuneVpnService.fail(e.message ?: e.toString()))
+                pendingResult = null
+            }
         } else {
             pendingResult?.success("{\"ok\":false,\"error\":\"VPN permission was not given\"}")
             pendingResult = null
