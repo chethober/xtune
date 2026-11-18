@@ -85,7 +85,9 @@ class AppState extends ChangeNotifier {
   Future<void> _afterStart() async {
     try {
       final dir = await getApplicationSupportDirectory();
-      await core.call('setup', {'dataDir': dir.path});
+      // Android: the same folder the VPN service gives the core (files/core), so the log and the
+      // crash log are in one place whichever side set it up last
+      await core.call('setup', {'dataDir': Platform.isAndroid ? '${dir.path}/core' : dir.path});
     } catch (_) {}
     await refreshStatus();
     _lastSince = (status['since'] as num?)?.toInt() ?? 0;
@@ -111,6 +113,7 @@ class AppState extends ChangeNotifier {
         Process.run(DesktopCore.coreExe, ['--cleanup', File(Platform.resolvedExecutable).parent.path]).catchError((_) => ProcessResult(0, 0, '', '')),
       );
     }
+    unawaited(refreshCrashCount());
     await _maintenance();
   }
 
@@ -268,6 +271,7 @@ class AppState extends ChangeNotifier {
       'socksPort': st.socksPort,
       'httpPort': st.httpPort,
       'autoMode': st.autoMode,
+      'logLevel': st.logLevel,
     };
   }
 
@@ -675,6 +679,51 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       return false;
     }
+  }
+
+  // ------------------------------------------------------------ crash log
+
+  /// The crash log, newest first: {at (ms), source (go, android, dart), kind (crash, error), where, title, text}.
+  Future<List<Map<String, dynamic>>> crashes() async =>
+      ((await core.call('crash.list', {'n': 30})) as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+
+  final _recentErrors = <String, DateTime>{};
+
+  /// Entries the user has not opened the crash log since.
+  int newCrashes = 0;
+
+  Future<void> refreshCrashCount() async {
+    try {
+      final l = await crashes();
+      newCrashes = l.where((e) => ((e['at'] as num?) ?? 0) > settings.crashSeen).length;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> markCrashesSeen(List<Map<String, dynamic>> l) async {
+    newCrashes = 0;
+    final newest = l.isEmpty ? 0 : ((l.first['at'] as num?) ?? 0).toInt();
+    if (newest > settings.crashSeen) await updateSettings((s) => s.crashSeen = newest);
+    notifyListeners();
+  }
+
+  Future<void> clearCrashes() async {
+    await core.call('crash.clear');
+    newCrashes = 0;
+    notifyListeners();
+  }
+
+  /// A Dart error, kept in the crash log (the app carries on after these).
+  Future<void> recordError(String where, Object error, StackTrace? stack) async {
+    // the same error again soon (a broken frame repeats every frame) is written once
+    final key = '$where|$error';
+    final now = DateTime.now();
+    _recentErrors.removeWhere((_, t) => now.difference(t) > const Duration(minutes: 1));
+    if (_recentErrors.containsKey(key)) return;
+    _recentErrors[key] = now;
+    try {
+      await core.call('crash.record', {'source': 'dart', 'kind': 'error', 'where': where, 'text': '$error\n\n${stack ?? ''}'});
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------ timeline, leak test

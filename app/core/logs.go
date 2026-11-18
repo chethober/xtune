@@ -29,6 +29,9 @@ func SetDataDir(dir string) {
 	dataMu.Lock()
 	dataDir = dir
 	dataMu.Unlock()
+	if dir != "" {
+		setupCrashOutput(dir)
+	}
 	// not under dataMu: record takes tlMu, then dataMu
 	tlMu.Lock()
 	tlLoaded = false // read the timeline kept there
@@ -137,6 +140,19 @@ func Diagnostics(extra map[string]any) string {
 		cfg := BuildConfig(p, o, cs, map[string]int{}, nil)
 		cj, _ := json.MarshalIndent(cfg, "", "  ")
 		fmt.Fprintf(&b, "\n\n== xray config\n%s\n\n", Redact(string(cj)))
+	}
+	if o.LogLevel != "" {
+		fmt.Fprintf(&b, "== log level\n%s\n\n", o.LogLevel)
+	}
+	if cs := CrashList(5); len(cs) > 0 {
+		fmt.Fprintf(&b, "== crash log (newest %d)\n", len(cs))
+		for _, c := range cs {
+			t := c.Text
+			if len(t) > 6<<10 {
+				t = t[:6<<10] + "\n…"
+			}
+			fmt.Fprintf(&b, "-- %s · %s %s · %s\n%s\n\n", time.UnixMilli(c.At).UTC().Format(time.RFC3339), c.Source, c.Kind, c.Where, t)
+		}
 	}
 	fmt.Fprintf(&b, "== log\n%s\n", LogTail(96<<10))
 	return b.String()

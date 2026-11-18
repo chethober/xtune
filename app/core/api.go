@@ -15,7 +15,9 @@ import (
 func Call(method string, args []byte) (reply []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			reply = fail(fmt.Errorf("internal error in %s: %v\n%s", method, r, debug.Stack()))
+			stack := debug.Stack()
+			RecordCrash("go", "error", method, fmt.Sprintf("panic: %v\n\n%s", r, stack))
+			reply = fail(fmt.Errorf("internal error in %s: %v\n%s", method, r, stack))
 		}
 	}()
 	h, ok := handlers[method]
@@ -99,6 +101,26 @@ var handlers = map[string]handler{
 			return nil, err
 		}
 		return Import(in.Text, in.ASN)
+	},
+	"crash.list": func(a []byte) (any, error) {
+		in, _ := decode[struct {
+			N int `json:"n"`
+		}](a)
+		return CrashList(in.N), nil
+	},
+	"crash.clear": func([]byte) (any, error) { ClearCrashes(); return nil, nil },
+	"crash.record": func(a []byte) (any, error) { // the app's own errors (Dart)
+		in, err := decode[struct {
+			Source string `json:"source"`
+			Kind   string `json:"kind"`
+			Where  string `json:"where"`
+			Text   string `json:"text"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		RecordCrash(orStr(in.Source, "dart"), in.Kind, in.Where, in.Text)
+		return nil, nil
 	},
 	"logs.tail": func(a []byte) (any, error) {
 		in, _ := decode[struct {

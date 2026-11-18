@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -123,6 +124,7 @@ func StartProbe(p *Profile, o ProbeOptions) *Job {
 		byID[c.ID] = c
 	}
 	go func() {
+		defer recovered("check")
 		sem := make(chan struct{}, o.Parallel)
 		var wg sync.WaitGroup
 		for _, i := range todo {
@@ -134,7 +136,7 @@ func StartProbe(p *Profile, o ProbeOptions) *Job {
 				j.mu.Lock()
 				c := byID[j.Results[i].ID]
 				j.mu.Unlock()
-				r := probeOne(ctx, p, c, o)
+				r := safeProbe(ctx, p, c, o)
 				j.mu.Lock()
 				j.Results[i] = r
 				j.mu.Unlock()
@@ -166,6 +168,18 @@ func StopJob(id string) {
 	if j != nil {
 		j.cancel()
 	}
+}
+
+// safeProbe is probeOne, with a panic (a config Xray cannot handle) written down and the config
+// marked failed, instead of ending the app.
+func safeProbe(ctx context.Context, p *Profile, c protocols.ClientEntry, o ProbeOptions) (r Result) {
+	defer func() {
+		if x := recover(); x != nil {
+			RecordCrash("go", "error", "check "+c.Name, fmt.Sprintf("panic: %v\n\n%s", x, debug.Stack()))
+			r = Result{ID: c.ID, Key: c.Key, Name: c.Name, State: "blocked", Detail: fmt.Sprintf("internal error: %v", x)}
+		}
+	}()
+	return probeOne(ctx, p, c, o)
 }
 
 // probeOne measures config c.

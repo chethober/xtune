@@ -105,6 +105,13 @@ class SettingsScreen extends StatelessWidget {
             _Value(T.s('usage'), T.s('usageHint'), '', () => push(const UsagePage())),
             _Value(T.s('timeline'), T.s('timelineHint'), '', () => push(const TimelinePage())),
             _Value(T.s('connectionLog'), T.s('connectionLogHint'), '', () => push(const LogViewerPage())),
+            _Value(T.s('logLevel'), T.s('logLevelHint'), T.s('logLevel_${st.logLevel}'), () => _pickLogLevel(context, set)),
+            _Value(
+              T.s('crashLog'),
+              T.s('crashLogHint'),
+              s.newCrashes > 0 ? T.s('nNew', {'n': s.newCrashes}) : '',
+              () => push(const CrashLogPage()),
+            ),
             _Value(T.s('shareDiagnostics'), T.s('shareDiagnosticsHint'), '', () => shareDiagnostics(context)),
           ],
         ),
@@ -224,6 +231,7 @@ class SettingsScreen extends StatelessWidget {
                   ),
                 ),
             ],
+            if (android && (st.autoConnectBoot || st.autoConnectWifi)) const _BackgroundRow(),
             _Switch(T.s('smart'), T.s('smartHint'), st.smartReconnect, (v) => set((x) => x.smartReconnect = v)),
             if (android)
               _Value(T.s('alwaysOn'), T.s('alwaysOnHint'), '', () => (CoreClient.instance as AndroidCore).native('vpnSettings'))
@@ -613,6 +621,81 @@ Future<void> _pickLock(BuildContext context, Future<void> Function(void Function
   Lock.unlocked = true; // the person setting it is the owner; it locks after the app has been away
   await set((x) => x.lock = v, reconnects: false);
   Lock.changes.value++;
+}
+
+Future<void> _pickLogLevel(BuildContext context, Future<void> Function(void Function(Settings), {bool reconnects}) set) async {
+  final st = AppScope.of(context).settings;
+  final v = await showXSheet<String>(
+    context,
+    title: T.s('logLevel'),
+    padded: false,
+    builder: (ctx, _) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final m in ['debug', 'info', 'warning', 'error', 'none'])
+          ListTile(
+            leading: Icon(st.logLevel == m ? Icons.radio_button_checked : Icons.radio_button_off, color: st.logLevel == m ? X.accent : X.muted),
+            title: Text(T.s('logLevel_$m')),
+            subtitle: Text(T.s('logLevel_${m}_hint')),
+            onTap: () => Navigator.pop(ctx, m),
+          ),
+      ],
+    ),
+  );
+  // the core reads it when it connects: reconnect so the log follows now
+  if (v != null && v != st.logLevel) await set((x) => x.logLevel = v);
+}
+
+/// Android 12+: auto-connect from the background needs xtune exempt from battery optimization;
+/// without it Android refuses, and a "Tap to connect" notification is all xtune can do.
+class _BackgroundRow extends StatefulWidget {
+  const _BackgroundRow();
+  @override
+  State<_BackgroundRow> createState() => _BackgroundRowState();
+}
+
+class _BackgroundRowState extends State<_BackgroundRow> with WidgetsBindingObserver {
+  bool? exempt;
+
+  AndroidCore get _core => CoreClient.instance as AndroidCore;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // back from Android's dialog or settings page
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final v = await _core.native('batteryExempt') == true;
+      if (mounted) setState(() => exempt = v);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (exempt == null) return const SizedBox.shrink();
+    return ListTile(
+      leading: Icon(exempt! ? Icons.check_circle_outline_rounded : Icons.battery_alert_rounded, color: exempt! ? X.accent : X.warn),
+      title: Text(T.s(exempt! ? 'backgroundOk' : 'backgroundAsk')),
+      subtitle: Text(T.s(exempt! ? 'backgroundOkHint' : 'backgroundAskHint')),
+      onTap: exempt! ? null : () => _core.native('askBattery'),
+      trailing: exempt! ? null : Icon(Icons.chevron_right_rounded, color: X.muted, size: 20),
+    );
+  }
 }
 
 class _Switch extends StatelessWidget {

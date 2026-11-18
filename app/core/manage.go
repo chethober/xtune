@@ -178,6 +178,7 @@ func dialServer(c ServerConn) (*remote.Server, string, error) {
 		}
 	}
 	go func() { // keepalive; a dead connection leaves the cache
+		defer recovered("server keepalive")
 		tk := time.NewTicker(30 * time.Second)
 		defer tk.Stop()
 		for range tk.C {

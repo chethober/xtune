@@ -20,7 +20,10 @@ import mobile.Mobile
 import org.json.JSONObject
 import java.text.DateFormat
 import java.util.Date
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The whole-device connection: Android hands over a TUN descriptor, and the Go core's Xray reads
@@ -43,28 +46,63 @@ class XtuneVpnService : VpnService() {
         private const val PAUSE_MS = 15 * 60 * 1000L
         private const val TICK_MS = 2000L
 
-        @Volatile
-        var onStarted: ((String) -> Unit)? = null
+        /** Who waits for a start's reply (the app's Connect), by the number the start carries. */
+        private val waiting = ConcurrentHashMap<Long, (String) -> Unit>()
+        private val nextReq = AtomicLong(1)
 
         /** Paused, and when it reconnects (wall clock ms); 0 when not paused. */
         @Volatile
         var pausedUntil = 0L
             private set
 
-        /** mode: off, bypass (apps skip the VPN) or only (only apps use it). */
-        /** reason is what started it, for the timeline: boot, wifi, tile, widget; "" from the app. */
-        fun start(context: Context, args: String, mode: String, apps: ArrayList<String>, reason: String = "") {
+        /** The service exists (connected, connecting or paused). */
+        @Volatile
+        var alive = false
+            private set
+
+        fun fail(msg: String): String = JSONObject().put("ok", false).put("error", msg).toString()
+
+        /**
+         * Starts the connection saved with Xtune.saveLast. The profile is not put in the Intent:
+         * a large subscription is more than Android lets one Intent carry
+         * (TransactionTooLargeException), and the service runs in this process anyway.
+         * reason is what started it, for the timeline: boot, wifi, tile, widget; "" from the app.
+         * onDone gets the core's reply. Returns null once asked, or why Android refused to start it.
+         */
+        fun start(context: Context, reason: String = "", onDone: ((String) -> Unit)? = null): String? {
+            val req = if (onDone != null) nextReq.getAndIncrement().also { waiting[it] = onDone } else 0L
             val i = Intent(context, XtuneVpnService::class.java).setAction(ACTION_START)
-                .putExtra("args", args).putExtra("mode", mode).putStringArrayListExtra("apps", apps).putExtra("reason", reason)
-            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
+                .putExtra("reason", reason).putExtra("req", req)
+            return try {
+                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
+                null
+            } catch (e: Exception) {
+                // Android 12+ refuses a foreground service started from the background
+                waiting.remove(req)
+                CrashLog.write(context, "error", "start the VPN ($reason)", e)
+                e.message ?: e.toString()
+            }
         }
 
-        fun stop(context: Context) {
-            context.startService(Intent(context, XtuneVpnService::class.java).setAction(ACTION_STOP))
+        fun stop(context: Context) = send(context, ACTION_STOP)
+
+        /** Sends an action to the running service; false when Android refused (it is not running). */
+        fun send(context: Context, action: String): Boolean = try {
+            context.startService(Intent(context, XtuneVpnService::class.java).setAction(action))
+            true
+        } catch (e: Exception) {
+            false
+        }
+
+        private fun reply(req: Long, msg: String) {
+            waiting.remove(req)?.invoke(msg)
         }
     }
 
+    @Volatile
     private var tun: ParcelFileDescriptor? = null
+    @Volatile
+    private var destroyed = false
     private val worker = Executors.newSingleThreadExecutor() // the core's calls, in order
     private val main = Handler(Looper.getMainLooper())
     private var status = JSONObject()
@@ -75,86 +113,101 @@ class XtuneVpnService : VpnService() {
     private var downRate = 0.0
     private var note: String? = null // a passing message ("No other config"), shown once
 
+    /** Runs f on the worker, after what is queued. An error in it is written down, not fatal. */
+    private fun run(where: String, f: () -> Unit) {
+        if (destroyed) return
+        try {
+            worker.execute { CrashLog.guard(this@XtuneVpnService, where) { f() } }
+        } catch (_: RejectedExecutionException) {
+            // the service is going away
+        }
+    }
+
     private val tick = object : Runnable {
         override fun run() {
+            if (destroyed) return
             val screenOn = getSystemService(PowerManager::class.java)?.isInteractive ?: true
-            if (tun != null && pausedUntil == 0L && screenOn) worker.execute { refresh() }
+            if (tun != null && pausedUntil == 0L && screenOn) run("status") { refresh() }
             main.postDelayed(this, TICK_MS)
         }
     }
 
-    private val resumeLater = Runnable { startService(Intent(this, XtuneVpnService::class.java).setAction(ACTION_RESUME)) }
+    private val resumeLater = Runnable { resume() }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        alive = true
         when (intent?.action) {
             ACTION_STOP -> {
-                worker.execute { shutdown() }
+                run("disconnect") { shutdown() }
                 return START_NOT_STICKY
             }
             ACTION_NEXT -> {
-                worker.execute { next() }
+                run("next config") { next() }
                 return START_NOT_STICKY
             }
             ACTION_PAUSE -> {
-                worker.execute { pause() }
-                return START_NOT_STICKY
-            }
-            ACTION_RESUME -> {
-                foreground(connecting = true)
-                worker.execute { begin(null, null, null, "resume") }
+                run("pause") { pause() }
                 return START_NOT_STICKY
             }
         }
-        foreground(connecting = true)
-        val args = intent?.getStringExtra("args")
-        val mode = intent?.getStringExtra("mode")
-        val apps = intent?.getStringArrayListExtra("apps")
-        // no arguments: the system started it (always-on VPN)
-        val reason = intent?.getStringExtra("reason") ?: if (args == null) "always-on" else ""
-        worker.execute { begin(args, mode, apps, reason) }
+        val req = intent?.getLongExtra("req", 0L) ?: 0L
+        // no action: the system started it (always-on VPN)
+        val reason = when (intent?.action) {
+            ACTION_RESUME -> "resume"
+            ACTION_START -> intent.getStringExtra("reason") ?: ""
+            else -> "always-on"
+        }
+        if (!foreground(connecting = true)) {
+            // Android refused a start from the background: nothing is queued that could run on a
+            // stopped service; the user is asked to connect instead
+            reply(req, fail("Android did not let xtune connect from the background"))
+            if (reason.isNotEmpty()) Xtune.askToConnect(this, reason)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        run("connect") { begin(reason, req) }
         return START_NOT_STICKY
     }
 
-    /** Connects with these arguments, or the last connection's (always-on VPN, Resume, the tile). */
-    private fun begin(argsIn: String?, modeIn: String?, appsIn: ArrayList<String>?, reason: String) {
-        cancelResume()
-        var args = argsIn
-        var mode = modeIn ?: "off"
-        var apps = appsIn ?: arrayListOf()
-        if (args != null) {
-            Xtune.saveLast(this, args, mode, apps)
-        } else {
-            val p = Xtune.prefs(this)
-            args = p.getString("lastArgs", null)
-            if (args == null) {
+    /** Connects with the saved connection (the app's, or the last one: always-on VPN, Resume, the tile). */
+    private fun begin(reason: String, req: Long) {
+        var out = fail("not connected")
+        try {
+            if (destroyed) {
+                out = fail("the VPN service stopped")
+                return
+            }
+            cancelResume()
+            val last = Xtune.loadLast(this)
+            if (last == null) {
+                out = fail("Nothing to connect yet: open xtune and connect once")
                 shutdown()
                 return
             }
-            mode = p.getString("lastMode", "off") ?: "off"
-            apps = org.json.JSONArray(p.getString("lastApps", "[]") ?: "[]").let { a -> ArrayList((0 until a.length()).map { a.getString(it) }) }
+            out = try {
+                Xtune.setup(this)
+                connect(last.args, last.mode, last.apps, reason)
+            } catch (e: Exception) {
+                fail(e.message ?: e.toString())
+            }
+            if (JSONObject(out).optBoolean("ok") && !destroyed) {
+                Xtune.setRunning(this, true)
+                lastUp = -1
+                refresh()
+                main.removeCallbacks(tick)
+                main.postDelayed(tick, TICK_MS)
+            } else {
+                shutdown()
+            }
+        } finally {
+            reply(req, out)
         }
-        val reply = try {
-            Xtune.setup(this)
-            connect(args, mode, apps, reason)
-        } catch (e: Exception) {
-            JSONObject().put("ok", false).put("error", e.message ?: e.toString()).toString()
-        }
-        if (JSONObject(reply).optBoolean("ok")) {
-            Xtune.setRunning(this, true)
-            lastUp = -1
-            refresh()
-            main.removeCallbacks(tick)
-            main.postDelayed(tick, TICK_MS)
-        } else {
-            shutdown()
-        }
-        onStarted?.invoke(reply)
-        onStarted = null
     }
 
     private fun connect(args: String, mode: String, apps: List<String>, reason: String): String {
         Mobile.call("vpn.stop", "{\"reason\":\"restart\"}")
         tun?.close()
+        tun = null
         val j = JSONObject(args)
         if (reason.isNotEmpty()) j.put("reason", reason)
         val opts = j.optJSONObject("options") ?: JSONObject()
@@ -170,14 +223,20 @@ class XtuneVpnService : VpnService() {
         // Android takes either an allow list or a deny list, not both. This app is never in the
         // VPN: in "only" mode it is simply not on the list.
         val chosen = apps.filter { it != packageName }
-        if (mode == "only" && chosen.isNotEmpty()) {
+        var allowed = 0
+        if (mode == "only") {
             for (p in chosen) {
                 try {
                     b.addAllowedApplication(p)
+                    allowed++
                 } catch (_: Exception) {
+                    // uninstalled since it was picked
                 }
             }
-        } else {
+        }
+        if (allowed == 0) {
+            // also "only" with none of its apps installed any more: an empty allow list would put
+            // every app in the VPN, this one too, and the core's own traffic would loop into it
             b.addDisallowedApplication(packageName)
             if (mode == "bypass") {
                 for (p in chosen) {
@@ -198,18 +257,16 @@ class XtuneVpnService : VpnService() {
 
     /** The next config in Auto's order; kept for the tile, the widget and always-on too. */
     private fun next() {
-        if (tun == null || pausedUntil != 0L) return
+        if (tun == null) {
+            if (pausedUntil == 0L) shutdown() // a stale notification of a service that is gone
+            return
+        }
+        if (pausedUntil != 0L) return
         val r = JSONObject(Mobile.call("vpn.next", "{}"))
         if (!r.optBoolean("ok")) {
             note = r.optString("error").ifEmpty { null }
         } else {
-            val sel = r.optJSONObject("result")?.optString("selected") ?: ""
-            val p = Xtune.prefs(this)
-            p.getString("lastArgs", null)?.let { last ->
-                val j = JSONObject(last)
-                (j.optJSONObject("options") ?: JSONObject().also { j.put("options", it) }).put("selected", sel)
-                p.edit().putString("lastArgs", j.toString()).apply()
-            }
+            Xtune.setSelected(this, r.optJSONObject("result")?.optString("selected") ?: "")
         }
         lastUp = -1
         refresh()
@@ -217,14 +274,19 @@ class XtuneVpnService : VpnService() {
 
     /** Closes the tunnel for 15 minutes: traffic goes direct, then it reconnects by itself. */
     private fun pause() {
-        if (tun == null) return
+        if (tun == null) {
+            if (pausedUntil == 0L) shutdown()
+            return
+        }
         Mobile.call("vpn.stop", "{\"reason\":\"pause\"}")
         tun?.close()
         tun = null
         pausedUntil = System.currentTimeMillis() + PAUSE_MS
         Xtune.setRunning(this, false)
         main.removeCallbacks(tick)
-        // a Handler alone stops while the phone sleeps; the alarm wakes it (within minutes in Doze)
+        // a Handler alone stops while the phone sleeps; the alarm wakes it (within minutes in Doze).
+        // The alarm goes to a receiver, not straight to this service: Android 12+ does not let an
+        // inexact alarm start a foreground service, and refusing one would close the app.
         main.postDelayed(resumeLater, PAUSE_MS)
         getSystemService(AlarmManager::class.java)?.setAndAllowWhileIdle(
             AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + PAUSE_MS, resumeIntent()
@@ -232,17 +294,26 @@ class XtuneVpnService : VpnService() {
         show()
     }
 
-    private fun resumeIntent(): PendingIntent {
-        val i = Intent(this, XtuneVpnService::class.java).setAction(ACTION_RESUME)
-        val f = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        // the alarm may come after Android stopped the app: then it must start a foreground service
-        return if (Build.VERSION.SDK_INT >= 26) PendingIntent.getForegroundService(this, 4, i, f) else PendingIntent.getService(this, 4, i, f)
+    /** The pause is over (the Handler, or the alarm through ResumeReceiver). */
+    private fun resume() {
+        if (destroyed || pausedUntil == 0L) return
+        pausedUntil = 0L
+        show(connecting = true)
+        run("resume") { begin("resume", 0L) }
     }
+
+    private fun resumeIntent(): PendingIntent = PendingIntent.getBroadcast(
+        this, 4, Intent(this, ResumeReceiver::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
 
     private fun cancelResume() {
         pausedUntil = 0L
         main.removeCallbacks(resumeLater)
-        getSystemService(AlarmManager::class.java)?.cancel(resumeIntent())
+        try {
+            getSystemService(AlarmManager::class.java)?.cancel(resumeIntent())
+        } catch (_: Exception) {
+        }
     }
 
     /** Reads the core's status and redraws the notification with the config and the speeds. */
@@ -263,7 +334,7 @@ class XtuneVpnService : VpnService() {
         lastUp = up
         lastDown = down
         lastAt = now
-        show()
+        if (!destroyed) show()
     }
 
     private fun channel() {
@@ -275,24 +346,28 @@ class XtuneVpnService : VpnService() {
         }
     }
 
-    private fun foreground(connecting: Boolean) {
-        channel()
-        val n = build(connecting)
-        try {
+    /** Becomes a foreground service; false when Android refused (a start from the background). */
+    private fun foreground(connecting: Boolean): Boolean {
+        return try {
+            channel()
+            val n = build(connecting)
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(NOTIFICATION, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             } else {
                 startForeground(NOTIFICATION, n)
             }
+            true
         } catch (e: Exception) {
-            // Android refused a start from the background (a late resume alarm): stay off; the
-            // app, the tile or always-on connect again
-            stopSelf()
+            CrashLog.write(this, "error", "become a foreground service", e)
+            false
         }
     }
 
-    private fun show() {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION, build(false))
+    private fun show(connecting: Boolean = false) {
+        try {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION, build(connecting))
+        } catch (_: Exception) {
+        }
     }
 
     private fun action(icon: Int, title: String, act: String, code: Int): Notification.Action {
@@ -319,7 +394,7 @@ class XtuneVpnService : VpnService() {
                     .addAction(action(R.drawable.ic_vpn, s.resume, ACTION_RESUME, 3))
                     .addAction(stop)
             }
-            connecting || tun == null -> b.setContentTitle(s.connecting)
+            connecting || tun == null -> b.setContentTitle(s.connecting).addAction(stop)
             else -> {
                 val name = status.optString("activeName").ifEmpty { s.connected }
                 val auto = status.optString("selected").isEmpty()
@@ -345,6 +420,7 @@ class XtuneVpnService : VpnService() {
         return if (i == 0 || v >= 100) "${v.toInt()} ${units[i]}" else String.format(java.util.Locale.US, "%.1f %s", v, units[i])
     }
 
+    /** On the worker: disconnects and ends the service. */
     private fun shutdown() {
         cancelResume()
         main.removeCallbacks(tick)
@@ -357,18 +433,45 @@ class XtuneVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        worker.execute { shutdown() }
+        run("revoked") { shutdown() }
     }
 
     override fun onDestroy() {
-        cancelResume()
+        destroyed = true
+        alive = false
         main.removeCallbacks(tick)
-        Mobile.call("vpn.stop", "{}")
-        Xtune.setRunning(this, false)
-        tun?.close()
-        tun = null
+        main.removeCallbacks(resumeLater)
+        try {
+            getSystemService(AlarmManager::class.java)?.cancel(resumeIntent())
+        } catch (_: Exception) {
+        }
+        pausedUntil = 0L
+        // The core's stop can take a while (it waits for a reconnect in progress): never on the
+        // main thread, where it would freeze the app. It runs after whatever is queued, and closes
+        // a tunnel a connect still running opens.
+        try {
+            worker.execute {
+                CrashLog.guard(this@XtuneVpnService, "stop on destroy") {
+                    Mobile.call("vpn.stop", "{}")
+                    tun?.close()
+                    tun = null
+                    Xtune.setRunning(this@XtuneVpnService, false)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+        }
         worker.shutdown()
         super.onDestroy()
+    }
+}
+
+/** The pause's alarm: resumes the paused service, or asks the user when it is gone. */
+class ResumeReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(c: Context, intent: Intent) {
+        // a running foreground service may be sent to from the background; a stopped one may not
+        if (!XtuneVpnService.alive || !XtuneVpnService.send(c, XtuneVpnService.ACTION_RESUME)) {
+            Xtune.askToConnect(c, "resume")
+        }
     }
 }
 

@@ -88,10 +88,12 @@ func LeakTest() (*LeakResult, error) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		defer recovered("leak test")
 		res.ExitIP, res.ExitCountry, exitErr = trace(tunnelled)
 	}()
 	go func() {
 		defer wg.Done()
+		defer recovered("leak test")
 		res.DirectIP, res.DirectCountry, _ = trace(directClient)
 	}()
 	wg.Wait()
@@ -139,9 +141,14 @@ func dnsLeak(c *http.Client, feature any, res *LeakResult) error {
 			lw.Add(1)
 			go func(i int) {
 				defer lw.Done()
+				defer recovered("leak test DNS")
 				name := fmt.Sprintf("%d.%s.%s", i, id, host)
 				done := make(chan struct{})
-				go func() { client.LookupIP(name, dns.IPOption{IPv4Enable: true}); close(done) }()
+				go func() {
+					defer recovered("leak test DNS")
+					defer close(done)
+					client.LookupIP(name, dns.IPOption{IPv4Enable: true})
+				}()
 				select {
 				case <-done:
 				case <-ctx.Done():

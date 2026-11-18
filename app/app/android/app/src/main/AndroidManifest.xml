@@ -13,10 +13,12 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- auto-connect: Android 12+ lets an app exempt from battery optimization start its VPN from the background -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="xtune"
-        android:name="${applicationName}"
+        android:name=".XtuneApp"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -84,6 +86,9 @@
         </receiver>
         <receiver
             android:name=".WifiReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".ResumeReceiver"
             android:exported="false" />
         <receiver
             android:name=".XtuneWidget"

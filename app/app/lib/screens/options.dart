@@ -429,6 +429,137 @@ class _LogViewerPageState extends State<LogViewerPage> {
   }
 }
 
+// ---------------------------------------------------------------- the crash log
+
+/// What closed the app, and errors it caught and carried on after: newest first, secrets taken out.
+class CrashLogPage extends StatefulWidget {
+  const CrashLogPage({super.key});
+  @override
+  State<CrashLogPage> createState() => _CrashLogPageState();
+}
+
+class _CrashLogPageState extends State<CrashLogPage> {
+  List<Map<String, dynamic>> entries = [];
+  bool loading = true;
+  final open = <int>{};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => load());
+  }
+
+  Future<void> load() async {
+    final s = AppScope.of(context);
+    try {
+      entries = await s.crashes();
+      await s.markCrashesSeen(entries);
+    } catch (_) {}
+    if (mounted) setState(() => loading = false);
+  }
+
+  static String _text(Map<String, dynamic> e) {
+    final at = DateTime.fromMillisecondsSinceEpoch(((e['at'] as num?) ?? 0).toInt());
+    return '${at.toIso8601String()} · ${e['source']} ${e['kind']} · ${e['where']}\n\n${e['text']}';
+  }
+
+  Future<void> _share() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final f = File('${dir.path}/xtune-crash-log-${DateTime.now().millisecondsSinceEpoch}.txt');
+      await f.writeAsString(entries.map(_text).join('\n\n----------------------------------------\n\n'));
+      await SharePlus.instance.share(ShareParams(files: [XFile(f.path)], title: 'xtune crash log'));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScope.of(context);
+    return XPage(
+      title: T.s('crashLog'),
+      subtitle: T.s('crashLogHint'),
+      back: true,
+      onRefresh: load,
+      actions: [
+        RoundIconButton(icon: Icons.ios_share_rounded, tooltip: T.s('share'), onPressed: entries.isEmpty ? null : _share),
+        RoundIconButton(
+          icon: Icons.delete_sweep_outlined,
+          tooltip: T.s('clear'),
+          onPressed: entries.isEmpty
+              ? null
+              : () async {
+                  await s.clearCrashes();
+                  await load();
+                },
+        ),
+      ],
+      children: [
+        if (!loading && entries.isEmpty) Glass(child: Text(T.s('crashLogEmpty'), style: Type.secondary)),
+        for (final (i, e) in entries.indexed)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s),
+            child: Glass(
+              padding: EdgeInsets.zero,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    onTap: () => setState(() => open.contains(i) ? open.remove(i) : open.add(i)),
+                    leading: Icon(
+                      e['kind'] == 'crash' ? Icons.error_rounded : Icons.warning_amber_rounded,
+                      color: e['kind'] == 'crash' ? X.bad : X.warn,
+                    ),
+                    title: Text(
+                      e['title'] as String? ?? '',
+                      maxLines: open.contains(i) ? 6 : 2,
+                      overflow: TextOverflow.ellipsis,
+                      textDirection: TextDirection.ltr,
+                      style: Type.body.copyWith(fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      [
+                        () {
+                          final at = DateTime.fromMillisecondsSinceEpoch(((e['at'] as num?) ?? 0).toInt());
+                          return '${fmtDay(at)} ${fmtTime(at)}';
+                        }(),
+                        T.s(e['kind'] == 'crash' ? 'crashKindCrash' : 'crashKindError'),
+                        '${e['source']} · ${e['where']}',
+                      ].join(' · '),
+                    ),
+                    trailing: Icon(open.contains(i) ? Icons.expand_less_rounded : Icons.expand_more_rounded, color: X.muted),
+                  ),
+                  if (open.contains(i))
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(Space.l, 0, Space.l, Space.m),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Directionality(
+                            textDirection: TextDirection.ltr,
+                            child: SelectableText(e['text'] as String? ?? '', style: Type.mono.copyWith(fontSize: 11)),
+                          ),
+                          Align(
+                            alignment: AlignmentDirectional.centerEnd,
+                            child: TextButton.icon(
+                              onPressed: () => Clipboard.setData(ClipboardData(text: _text(e))),
+                              icon: const Icon(Icons.copy_rounded, size: 18),
+                              label: Text(T.s('copy')),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 /// Builds the diagnostics bundle (secrets removed) and opens the share sheet with it.
 Future<void> shareDiagnostics(BuildContext context) async {
   final s = AppScope.of(context);

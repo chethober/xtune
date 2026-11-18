@@ -194,6 +194,10 @@ class Settings {
   bool dataSaver = true; // on mobile data: no throughput tests, smaller checks
   String updateMode = 'notify'; // app updates: off | notify (tell me) | auto (download, then install)
 
+  // diagnostics
+  String logLevel = 'warning'; // the connection log: debug | info | warning | error | none
+  int crashSeen = 0; // the newest crash-log entry the user has seen (ms), for the "new" count
+
   /// The apps Android leaves out of the VPN, for the bypass mode.
   List<String> get excludedApps => perAppMode == 'bypass' ? apps : const [];
 
@@ -237,6 +241,8 @@ class Settings {
     'onboarded': onboarded,
     'dataSaver': dataSaver,
     'updateMode': updateMode,
+    'logLevel': logLevel,
+    'crashSeen': crashSeen,
   };
 
   static Settings fromJson(Map<String, dynamic>? j) {
@@ -289,6 +295,8 @@ class Settings {
     s.onboarded = get('onboarded', true);
     s.dataSaver = get('dataSaver', s.dataSaver);
     s.updateMode = get('updateMode', s.updateMode);
+    s.logLevel = const ['debug', 'info', 'warning', 'error', 'none'].contains(j['logLevel']) ? j['logLevel'] as String : s.logLevel;
+    s.crashSeen = (j['crashSeen'] as num?)?.toInt() ?? 0;
     return s;
   }
 }

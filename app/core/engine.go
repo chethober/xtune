@@ -677,9 +677,11 @@ func collectAddresses(v any, add func(string)) {
 // Start connects with profile p. A running connection is replaced.
 func Start(p *Profile, o Options) error {
 	o.defaults()
-	Stop()
+	// stopped under the same lock as the start: two starts at once (the app's and smart reconnect's)
+	// could otherwise both stop, then both start, and the first Xray would keep running unseen
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
+	stopLocked()
 	configs, err := chosen(p, o)
 	if err != nil {
 		return err
@@ -773,7 +775,7 @@ func Start(p *Profile, o Options) error {
 	watchASN = trimAS(o.ASN)
 	ksMu.Unlock()
 	if o.SmartURL != "" {
-		go smartWatch(gen, p, o)
+		goSafe("smart reconnect", func() { smartWatch(gen, p, o) })
 	}
 	return nil
 }
@@ -852,6 +854,10 @@ func CurrentProfile() (*Profile, int) {
 func Stop() {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
+	stopLocked()
+}
+
+func stopLocked() {
 	if engine.undo != nil {
 		engine.undo()
 		engine.undo = nil

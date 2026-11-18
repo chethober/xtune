@@ -16,15 +16,17 @@ import android.widget.RemoteViews
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
-        val p = Xtune.prefs(c)
-        if (p.getBoolean("autoWifi", false)) Xtune.watchWifi(c, true)
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED && p.getBoolean("autoBoot", false)) Xtune.startLast(c, "boot")
+        CrashLog.guard(c, "boot") {
+            val p = Xtune.prefs(c)
+            if (p.getBoolean("autoWifi", false)) Xtune.watchWifi(c, true)
+            if (intent.action == Intent.ACTION_BOOT_COMPLETED && p.getBoolean("autoBoot", false)) Xtune.startLast(c, "boot")
+        }
     }
 }
 
 /** A Wi-Fi network came up: connect unless it is a trusted one. */
 class WifiReceiver : BroadcastReceiver() {
-    override fun onReceive(c: Context, intent: Intent) = Xtune.onWifi(c)
+    override fun onReceive(c: Context, intent: Intent) = CrashLog.guard(c, "Wi-Fi auto-connect") { Xtune.onWifi(c) }
 }
 
 /** The Quick Settings tile: tap to connect or disconnect. */
@@ -49,7 +51,7 @@ class XtuneTileService : TileService() {
             }
             return
         }
-        Xtune.toggle(this, "tile")
+        CrashLog.guard(this, "tile") { Xtune.toggle(this, "tile") }
         onStartListening()
     }
 }
@@ -78,7 +80,7 @@ class XtuneWidget : AppWidgetProvider() {
 
     override fun onReceive(c: Context, intent: Intent) {
         super.onReceive(c, intent)
-        if (intent.action == TOGGLE) Xtune.toggle(c, "widget")
+        if (intent.action == TOGGLE) CrashLog.guard(c, "widget") { Xtune.toggle(c, "widget") }
     }
 }
 

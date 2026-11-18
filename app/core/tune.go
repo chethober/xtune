@@ -284,6 +284,7 @@ func DeployTune(id string, n int) (TuneView, error) {
 	}
 	t.set(func(v *TuneView) { v.Phase = "deploying" })
 	go func() {
+		defer recovered("deploy a tune")
 		netw, _ := CurrentNetwork()
 		rep := report(t.tp.ID, netw, t.opts.Network, v.Results)
 		b, _ := json.Marshal(rep)
