@@ -414,6 +414,7 @@ func startXray(config []byte) (*xcore.Instance, error) {
 		return nil, fmt.Errorf("start: %w", err)
 	}
 	if err := inst.Start(); err != nil {
+		closeTun(inst) // the TUN stack starts as the instance is built, not on Start
 		inst.Close()
 		return nil, fmt.Errorf("start: %w", err)
 	}
@@ -423,6 +424,9 @@ func startXray(config []byte) (*xcore.Instance, error) {
 func closeXray(inst *xcore.Instance) {
 	xrayMu.Lock()
 	defer xrayMu.Unlock()
+	if closeTun(inst) {
+		time.Sleep(tunDrain)
+	}
 	inst.Close()
 }
 
