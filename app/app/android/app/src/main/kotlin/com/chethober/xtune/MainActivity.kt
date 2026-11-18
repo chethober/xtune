@@ -103,7 +103,11 @@ class MainActivity : FlutterFragmentActivity() {
                     getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
                 )
                 "serverWidget" -> {
-                    XtuneServerWidget.save(applicationContext, call.argument<String>("json") ?: "{}")
+                    XtuneServerWidget.save(applicationContext, call.argument<String>("id") ?: "", call.argument<String>("json") ?: "{}")
+                    result.success(null)
+                }
+                "serverWidgetKeep" -> {
+                    XtuneServerWidget.keep(applicationContext, call.argument<List<String>>("ids") ?: emptyList())
                     result.success(null)
                 }
                 "stopVpn" -> {

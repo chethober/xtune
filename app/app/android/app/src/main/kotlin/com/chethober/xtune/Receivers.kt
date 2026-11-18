@@ -85,27 +85,87 @@ class XtuneWidget : AppWidgetProvider() {
 }
 
 /**
- * The server widget: the server the app last looked at in Manage, as it was then (the app keeps
- * it current while it runs; logging in to the server from the background would need its
- * password outside the app's secure storage).
+ * The server widget: a server the app looked at in Manage, as it was then (the app keeps it
+ * current while it runs; logging in to the server from the background would need its password
+ * outside the app's secure storage). With more than one server, the arrow shows the next.
  */
 class XtuneServerWidget : AppWidgetProvider() {
     companion object {
-        fun save(c: Context, json: String) {
-            Xtune.prefs(c).edit().putString("serverWidget", json).apply()
-            val wm = AppWidgetManager.getInstance(c)
-            val ids = wm.getAppWidgetIds(android.content.ComponentName(c, XtuneServerWidget::class.java))
-            if (ids.isNotEmpty()) update(c, wm, ids)
+        const val NEXT = "com.chethober.xtune.NEXT_SERVER"
+
+        /** One server's numbers, by its ID in the app. */
+        fun save(c: Context, id: String, json: String) {
+            val p = Xtune.prefs(c)
+            val all = try {
+                org.json.JSONObject(p.getString("serverWidgets", "{}") ?: "{}")
+            } catch (_: Exception) {
+                org.json.JSONObject()
+            }
+            all.put(id.ifEmpty { "_" }, org.json.JSONObject(json))
+            p.edit().putString("serverWidgets", all.toString()).putString("serverWidgetShown", id.ifEmpty { "_" }).remove("serverWidget").apply()
+            refresh(c)
+        }
+
+        /** Forgets the servers the app no longer has. */
+        fun keep(c: Context, ids: List<String>) {
+            val p = Xtune.prefs(c)
+            val all = try {
+                org.json.JSONObject(p.getString("serverWidgets", "{}") ?: "{}")
+            } catch (_: Exception) {
+                return
+            }
+            for (k in all.keys().asSequence().toList()) if (k !in ids) all.remove(k)
+            p.edit().putString("serverWidgets", all.toString()).apply()
+            refresh(c)
+        }
+
+        fun refresh(c: Context) {
+            try {
+                val wm: AppWidgetManager? = AppWidgetManager.getInstance(c)
+                val ids = wm?.getAppWidgetIds(android.content.ComponentName(c, XtuneServerWidget::class.java)) ?: IntArray(0)
+                if (wm != null && ids.isNotEmpty()) update(c, wm, ids)
+            } catch (_: Exception) {
+            }
+        }
+
+        /** The servers' numbers, in the order the app saved them, and which one is shown. */
+        private fun servers(c: Context): Pair<List<Pair<String, org.json.JSONObject>>, Int> {
+            val p = Xtune.prefs(c)
+            val out = mutableListOf<Pair<String, org.json.JSONObject>>()
+            try {
+                val all = org.json.JSONObject(p.getString("serverWidgets", "{}") ?: "{}")
+                for (k in all.keys()) all.optJSONObject(k)?.let { out.add(k to it) }
+            } catch (_: Exception) {
+            }
+            if (out.isEmpty()) {
+                // 1.5 kept one server
+                p.getString("serverWidget", null)?.let { raw ->
+                    try {
+                        out.add("_" to org.json.JSONObject(raw))
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            val shown = p.getString("serverWidgetShown", null)
+            return out to out.indexOfFirst { it.first == shown }.coerceAtLeast(0)
+        }
+
+        fun next(c: Context) {
+            val (list, i) = servers(c)
+            if (list.size < 2) return
+            Xtune.prefs(c).edit().putString("serverWidgetShown", list[(i + 1) % list.size].first).apply()
+            refresh(c)
         }
 
         fun update(c: Context, wm: AppWidgetManager, ids: IntArray) {
             val v = RemoteViews(c.packageName, R.layout.server_widget)
-            val raw = Xtune.prefs(c).getString("serverWidget", null)
             val fa = Xtune.prefs(c).getString("lang", "en") == "fa"
-            if (raw == null) {
+            val (list, i) = servers(c)
+            if (list.isEmpty()) {
                 v.setTextViewText(R.id.srv_name, if (fa) "سروری باز نشده" else "Open a server in xtune")
+                v.setViewVisibility(R.id.srv_next, android.view.View.GONE)
             } else {
-                val j = org.json.JSONObject(raw)
+                val j = list[i].second
                 v.setTextViewText(R.id.srv_name, j.optString("name"))
                 v.setTextViewText(R.id.srv_online, "${j.optInt("online")}/${j.optInt("users")}")
                 v.setTextViewText(R.id.srv_today, j.optString("today"))
@@ -113,8 +173,15 @@ class XtuneServerWidget : AppWidgetProvider() {
                 v.setTextViewText(R.id.srv_online_label, if (fa) "آنلاین" else "online")
                 v.setTextViewText(R.id.srv_today_label, if (fa) "امروز" else "today")
                 val at = j.optLong("at")
-                if (at > 0) v.setTextViewText(R.id.srv_when, java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(at)))
+                val time = if (at > 0) java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(at)) else ""
+                v.setTextViewText(R.id.srv_when, if (list.size > 1) "$time · ${i + 1}/${list.size}" else time)
                 v.setImageViewResource(R.id.srv_dot, if (j.optBoolean("ok", true)) R.drawable.widget_button_on else R.drawable.widget_button_off)
+                v.setViewVisibility(R.id.srv_next, if (list.size > 1) android.view.View.VISIBLE else android.view.View.GONE)
+                val next = PendingIntent.getBroadcast(
+                    c, 13, Intent(c, XtuneServerWidget::class.java).setAction(NEXT),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                v.setOnClickPendingIntent(R.id.srv_next, next)
             }
             val open = PendingIntent.getActivity(
                 c, 11, Intent(c, MainActivity::class.java).setData(android.net.Uri.parse("xtune://manage")),
@@ -126,4 +193,9 @@ class XtuneServerWidget : AppWidgetProvider() {
     }
 
     override fun onUpdate(c: Context, wm: AppWidgetManager, ids: IntArray) = update(c, wm, ids)
+
+    override fun onReceive(c: Context, intent: Intent) {
+        super.onReceive(c, intent)
+        if (intent.action == NEXT) CrashLog.guard(c, "server widget") { next(c) }
+    }
 }

@@ -826,6 +826,7 @@ class AppState extends ChangeNotifier {
     final ok = entries.length - entries.where((e) => blocked.contains((e as Map)['id'])).length;
     try {
       await (core as AndroidCore).native('serverWidget', {
+        'id': srv.id,
         'json': jsonEncode({
           'name': srv.name.isNotEmpty ? srv.name : srv.host,
           'online': o['online'] ?? 0,
@@ -877,9 +878,36 @@ class AppState extends ChangeNotifier {
       await Secrets.delete('srv-${s.id}-$k');
     }
     servers.remove(s);
+    overviews.remove(s.id);
     if (activeServerId == s.id) activeServerId = servers.firstOrNull?.id;
     notifyListeners();
     await _save();
+    if (Platform.isAndroid) {
+      try {
+        await (core as AndroidCore).native('serverWidgetKeep', {'ids': servers.map((x) => x.id).toList()});
+      } catch (_) {}
+    }
+  }
+
+  /// Every server's dashboard as last loaded (All servers), by server ID: the overview, or the
+  /// error, and when.
+  final Map<String, ({Map<String, dynamic>? overview, String? error, DateTime at})> overviews = {};
+
+  /// Loads every server's dashboard at once; each one fills in as it answers.
+  Future<void> loadOverviews() async {
+    await Future.wait([
+      for (final srv in List.of(servers))
+        () async {
+          try {
+            final o = Map<String, dynamic>.from(await manage('manage.overview', srv) as Map);
+            overviews[srv.id] = (overview: o, error: null, at: DateTime.now());
+            unawaited(serverWidget(srv, o));
+          } catch (e) {
+            overviews[srv.id] = (overview: overviews[srv.id]?.overview, error: '$e', at: DateTime.now());
+          }
+          notifyListeners();
+        }(),
+    ]);
   }
 
   Future<void> selectServer(ServerEntry s) async {

@@ -39,6 +39,7 @@ class _ManageScreenState extends State<ManageScreen> {
     });
     try {
       final o = Map<String, dynamic>.from(await s.manage('manage.overview', srv) as Map);
+      s.overviews[srv.id] = (overview: o, error: null, at: DateTime.now());
       if (mounted) setState(() => overview = o);
       unawaited(s.serverWidget(srv, o)); // the home-screen widget shows what this saw
     } catch (e) {
@@ -110,7 +111,11 @@ class _ManageScreenState extends State<ManageScreen> {
           ),
         ),
       ),
-      actions: [RoundIconButton(icon: Icons.refresh_rounded, tooltip: T.s('refresh'), onPressed: loading ? null : () => load(s))],
+      actions: [
+        if (s.servers.length > 1)
+          RoundIconButton(icon: Icons.grid_view_rounded, tooltip: T.s('allServers'), onPressed: () => _push(context, const AllServersPage())),
+        RoundIconButton(icon: Icons.refresh_rounded, tooltip: T.s('refresh'), onPressed: loading ? null : () => load(s)),
+      ],
       // wide: the users beside the dashboard
       sideWidth: 440,
       sidePane: o == null ? null : UsersPage(key: ValueKey(srv.id), server: srv, embedded: true),
@@ -421,6 +426,16 @@ class _ManageScreenState extends State<ManageScreen> {
       builder: (ctx, _) => Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (s.servers.length > 1)
+            ListTile(
+              leading: const Icon(Icons.grid_view_rounded),
+              title: Text(T.s('allServers')),
+              subtitle: Text(T.s('allServersHint')),
+              onTap: () {
+                Navigator.pop(ctx);
+                _push(context, const AllServersPage());
+              },
+            ),
           for (final x in s.servers)
             ListTile(
               leading: Icon(
@@ -1288,6 +1303,159 @@ class _LogsPageState extends State<LogsPage> {
           Expanded(
             child: _Output(text: output, busy: busy, tail: true),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Every server at a glance: whether it answers, who is online, today's traffic, and configs that
+/// look blocked. Each card fills in as its server answers; a tap opens that server.
+class AllServersPage extends StatefulWidget {
+  const AllServersPage({super.key});
+  @override
+  State<AllServersPage> createState() => _AllServersPageState();
+}
+
+class _AllServersPageState extends State<AllServersPage> {
+  bool loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => load());
+  }
+
+  Future<void> load() async {
+    setState(() => loading = true);
+    await AppScope.of(context).loadOverviews();
+    if (mounted) setState(() => loading = false);
+  }
+
+  static int _blocked(Map<String, dynamic> o) {
+    final ids = <String>{};
+    for (final n in (o['networks'] as List?) ?? []) {
+      ids.addAll(((n as Map)['blocked'] as List? ?? []).cast<String>());
+    }
+    for (final e in (o['entries'] as List?) ?? []) {
+      if ((((e as Map)['quiet'] as num?) ?? 0) > 0) ids.add(e['id'] as String);
+    }
+    return ids.length;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScope.of(context);
+    var online = 0, users = 0, today = 0, down = 0, blocked = 0;
+    for (final srv in s.servers) {
+      final r = s.overviews[srv.id];
+      final o = r?.overview;
+      if (r?.error != null) down++;
+      if (o == null) continue;
+      online += ((o['online'] as num?) ?? 0).toInt();
+      users += ((o['users'] as num?) ?? 0).toInt();
+      today += ((o['todayBytes'] as num?) ?? 0).toInt();
+      blocked += _blocked(o);
+    }
+    return XPage(
+      title: T.s('allServers'),
+      subtitle: T.s('allServersHint'),
+      back: true,
+      onRefresh: load,
+      actions: [RoundIconButton(icon: Icons.refresh_rounded, tooltip: T.s('refresh'), onPressed: loading ? null : load)],
+      children: [
+        Row(
+          children: [
+            Expanded(child: _Tile(T.s('online'), '$online', T.s('ofUsers', {'n': users}))),
+            const SizedBox(width: Space.s),
+            Expanded(child: _Tile(T.s('trafficToday'), fmtBytes(today), T.s('nServers', {'n': s.servers.length}))),
+          ],
+        ),
+        if (down > 0 || blocked > 0) ...[
+          const SizedBox(height: Space.s),
+          Notice(
+            [
+              if (down > 0) T.s('serversDown', {'n': down}),
+              if (blocked > 0) T.s('configsBlocked', {'n': blocked}),
+            ].join(' · '),
+            color: X.warn,
+            icon: Icons.warning_amber_rounded,
+          ),
+        ],
+        const SizedBox(height: Space.m),
+        for (final srv in s.servers)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s),
+            child: _ServerCard(
+              srv: srv,
+              result: s.overviews[srv.id],
+              loading: loading,
+              blocked: s.overviews[srv.id]?.overview == null ? 0 : _blocked(s.overviews[srv.id]!.overview!),
+              onTap: () {
+                s.selectServer(srv);
+                Navigator.of(context).maybePop();
+              },
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ServerCard extends StatelessWidget {
+  const _ServerCard({required this.srv, required this.result, required this.loading, required this.blocked, required this.onTap});
+  final ServerEntry srv;
+  final ({Map<String, dynamic>? overview, String? error, DateTime at})? result;
+  final bool loading;
+  final int blocked;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final o = result?.overview;
+    final err = result?.error;
+    final entries = (o?['entries'] as List?)?.length ?? 0;
+    final color = err != null ? X.bad : (blocked > 0 ? X.warn : (o != null ? X.accent : X.muted));
+    return Glass(
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Dot(color),
+              const SizedBox(width: Space.s),
+              if ((o?['country'] as String?)?.isNotEmpty == true) ...[
+                Badge2((o!['country'] as String).toUpperCase(), X.accent),
+                const SizedBox(width: Space.s),
+              ],
+              Expanded(
+                child: Text(srv.name.isNotEmpty ? srv.name : srv.host, style: Type.bodyStrong, overflow: TextOverflow.ellipsis),
+              ),
+              if (loading && result == null)
+                const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              else if (o != null)
+                Text('xtune ${o['version'] ?? ''}', style: Type.caption),
+            ],
+          ),
+          const SizedBox(height: Space.s),
+          if (err != null)
+            Text(err.split('\n').first, style: Type.caption.copyWith(color: X.bad), maxLines: 2, overflow: TextOverflow.ellipsis)
+          else if (o != null)
+            Wrap(
+              spacing: Space.l,
+              runSpacing: Space.xs,
+              children: [
+                Text('${T.s('online')}: ${o['online']}/${o['users']}', style: Type.secondary),
+                Text('${T.s('trafficToday')}: ${fmtBytes((o['todayBytes'] as num?) ?? 0)}', style: Type.secondary),
+                Text(
+                  blocked > 0 ? T.s('nOfConfigsBlocked', {'b': blocked, 'n': entries}) : T.s('configsLive', {'n': entries}),
+                  style: Type.secondary.copyWith(color: blocked > 0 ? X.warn : null),
+                ),
+              ],
+            )
+          else
+            Text(T.s('loading'), style: Type.caption),
         ],
       ),
     );

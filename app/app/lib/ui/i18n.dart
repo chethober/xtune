@@ -15,6 +15,13 @@ class T {
 
   static const _t = <String, Map<String, String>>{
     'en': {
+      'allServers': 'All servers',
+      'allServersHint': 'Every server at a glance',
+      'nServers': '{n} servers',
+      'serversDown': '{n} not answering',
+      'configsBlocked': '{n} configs look blocked',
+      'nOfConfigsBlocked': '{b} of {n} configs look blocked',
+      'loading': 'Loading…',
       'blockedOn': 'blocked on {n}',
       'quietFor': 'no traffic for {h} h: probably blocked',
       'changeHint': 'Tap a config to give it new settings when it is blocked.',
@@ -560,6 +567,13 @@ class T {
       'saveFile': 'Save file',
     },
     'fa': {
+      'allServers': 'همه سرورها',
+      'allServersHint': 'همه سرورها در یک نگاه',
+      'nServers': '{n} سرور',
+      'serversDown': '{n} جواب نمی‌دهد',
+      'configsBlocked': '{n} کانفیگ مسدود به نظر می‌رسد',
+      'nOfConfigsBlocked': '{b} از {n} کانفیگ مسدود به نظر می‌رسد',
+      'loading': 'در حال بارگذاری…',
       'blockedOn': 'مسدود در {n}',
       'quietFor': '{h} ساعت بدون ترافیک: احتمالا مسدود',
       'changeHint': 'برای تنظیمات تازه وقتی کانفیگی مسدود شد، رویش بزنید.',
