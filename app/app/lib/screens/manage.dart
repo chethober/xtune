@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -177,20 +178,40 @@ class _ManageScreenState extends State<ManageScreen> {
             ),
             const SizedBox(height: Space.s),
             for (final e in entries)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(
-                  children: [
-                    Dot(blockedSomewhere.containsKey(e['id']) ? X.warn : X.accent),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text('${e['id']}', style: Type.body.copyWith(fontSize: 14))),
-                    Text(
-                      blockedSomewhere.containsKey(e['id']) ? 'blocked on ${blockedSomewhere[e['id']]!.join(', ')}' : '${e['kind']} · ${e['port']}',
-                      style: Type.caption.copyWith(color: blockedSomewhere.containsKey(e['id']) ? X.warn : X.muted),
+              () {
+                final blocked = blockedSomewhere[e['id']];
+                final quiet = ((e['quiet'] as num?) ?? 0).toInt();
+                final warn = blocked != null || quiet > 0;
+                return InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _change(context, s, srv, e, blocked: blocked, quiet: quiet),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 7),
+                    child: Row(
+                      children: [
+                        Dot(warn ? X.warn : X.accent),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text('${e['id']}', style: Type.body.copyWith(fontSize: 14))),
+                        Flexible(
+                          child: Text(
+                            blocked != null
+                                ? T.s('blockedOn', {'n': blocked.join(', ')})
+                                : quiet > 0
+                                ? T.s('quietFor', {'h': (quiet / 3600).floor()})
+                                : '${e['kind']} · ${e['port']}',
+                            overflow: TextOverflow.ellipsis,
+                            style: Type.caption.copyWith(color: warn ? X.warn : X.muted),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(Icons.tune_rounded, size: 16, color: warn ? X.warn : X.muted),
+                      ],
                     ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              }(),
+            const SizedBox(height: Space.xs),
+            Text(T.s('changeHint'), style: Type.caption),
           ],
         ),
       ),
@@ -231,6 +252,95 @@ class _ManageScreenState extends State<ManageScreen> {
         ],
       ),
     ];
+  }
+
+  /// New settings for one deployed config (xtune change on the server): a new REALITY target, path
+  /// or port, for a config blocked on users' networks while the server itself still works.
+  Future<void> _change(BuildContext context, AppState s, ServerEntry srv, Map<String, dynamic> e, {List<String>? blocked, int quiet = 0}) async {
+    final kind = e['kind'] as String? ?? '';
+    final id = e['id'] as String? ?? '';
+    final reality = kind.startsWith('reality') || kind == 'trojan-reality';
+    final hasPath = e['path'] == true;
+    final worker = kind == 'worker-ws';
+    final fixed = kind == 'ikev2' || kind == 'dnstt';
+    final files = kind.startsWith('openvpn');
+    String? busy, output;
+    var changed = false;
+    await showXSheet<void>(
+      context,
+      title: T.s('changeTitle', {'id': id}),
+      builder: (ctx, setState) {
+        Future<void> run(String what) async {
+          setState(() {
+            busy = what;
+            output = null;
+          });
+          try {
+            final r = await s.manage('manage.xtune', srv, {
+              'args': ['change', id, '--json', if (what.isNotEmpty) '--$what'],
+            });
+            final out = ((r as Map)['output'] as String? ?? '').trim();
+            try {
+              final j = Map<String, dynamic>.from(jsonDecode(out.split('\n').last) as Map);
+              output = [
+                ((j['changed'] as List?) ?? []).join('\n'),
+                T.s(j['auto'] == true ? 'changeAuto' : 'changeManual'),
+              ].join('\n\n');
+              changed = true;
+            } catch (_) {
+              output = out.isEmpty ? T.s('done') : out;
+            }
+          } catch (err) {
+            final m = '$err';
+            // an xtune from before `change` prints its help instead
+            output = m.contains('Xray tuner and manager') ? T.s('changeOld') : m;
+          }
+          if (ctx.mounted) setState(() => busy = null);
+        }
+
+        Widget row(String what, IconData icon, String title, String sub, {bool recommended = false}) => ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(icon, color: recommended ? X.accent : null),
+          title: Text(title),
+          subtitle: Text(sub),
+          trailing: FilledButton.tonal(
+            onPressed: busy != null ? null : () => run(what),
+            child: busy == what ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(T.s('change')),
+          ),
+        );
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              [
+                '$kind · ${e['port']}${(e['sni'] as String?)?.isNotEmpty == true ? ' · ${e['sni']}' : ''}',
+                if (blocked != null) T.s('blockedOn', {'n': blocked.join(', ')}),
+                if (quiet > 0) T.s('quietFor', {'h': (quiet / 3600).floor()}),
+              ].join('\n'),
+              style: Type.secondary,
+            ),
+            const SizedBox(height: Space.m),
+            if (worker || fixed)
+              Notice(T.s(worker ? 'changeWorker' : 'changeFixed'))
+            else ...[
+              row('', Icons.auto_fix_high_rounded, T.s('changeUsual'), T.s(reality ? 'changeUsualSni' : hasPath ? 'changeUsualPath' : 'changeUsualPort'), recommended: true),
+              if (reality) row('sni', Icons.travel_explore_rounded, T.s('changeSni'), T.s('changeSniHint')),
+              if (hasPath) row('path', Icons.alt_route_rounded, T.s('changePath'), T.s('changePathHint')),
+              if (!files) row('port', Icons.numbers_rounded, T.s('changePort'), T.s('changePortHint')),
+            ],
+            if (output != null) ...[
+              const SizedBox(height: Space.s),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: _Output(text: output!, busy: false),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+    if (changed && mounted) load(s);
   }
 
   /// Updates xtune and Xray on the server.

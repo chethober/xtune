@@ -101,6 +101,8 @@ Xray counts traffic per deployed config. When one carries nothing for 2 hours wh
 
 Weekly, the server re-probes the sites its REALITY configs imitate. A target that stopped answering with TLS 1.3 + HTTP/2, or became slow, is replaced by the fastest working candidate when users get configs through subscriptions; otherwise you get an alert, and `xtune sni refresh` does it.
 
+**One config blocked, the server fine**: `xtune change ID` gives one deployed config new settings in place: a new REALITY target for a REALITY config, a new path (or gRPC service name) for a path-based one, a new port for the others (a CDN config moves among the ports the CDN passes through). `--sni`, `--path` and `--port` pick what changes; `--json` prints the result. Filters usually block the combination they saw rather than the server, so this is cheaper than moving the IP or tuning again. Users' apps get it on their next subscription update; links sent by hand need sending again. The app's Manage tab does it too: tap a config (those that look blocked are marked).
+
 ## Dashboard
 
 A live, full-screen overview in both TUIs: each deployed config with its state (active, quiet/probably blocked, idle) and traffic, and the users with quota bars and who is online. Read-only and refreshing; `r` reloads, `q` goes back.

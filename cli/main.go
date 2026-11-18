@@ -98,6 +98,8 @@ On the server (as root):
   xtune cloudflare worker add | remove HOST | limit N|none   more Workers in other accounts (each has its own
                                            100,000 requests a day); usage alerts at 80% and 100% of the limit
   xtune sni       [check | refresh]        REALITY targets: re-probe, replace failing or slow ones
+  xtune change    ID [--sni] [--port] [--path] [--json]   new settings for one config that is blocked on users'
+                                           networks (none given: a new target for REALITY, path for path-based, else port)
   xtune autopilot [status | digitalocean | rotate | off | reset]   alerts when the server's IP looks blocked;
                                            on DigitalOcean, moves it to a new reserved IP (at most once a day)
   xtune backup    schedule [--every 24h] [--telegram] [--s3 https://ENDPOINT/BUCKET[/PREFIX]] | status | now | off
@@ -169,6 +171,8 @@ func main() {
 		err = cmdCloudflare(args)
 	case "sni":
 		err = cmdSNI(args)
+	case "change":
+		err = cmdChange(args)
 	case "check":
 		err = cmdCheck(args)
 	case "history":

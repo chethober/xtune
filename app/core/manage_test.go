@@ -167,3 +167,20 @@ func TestManage(t *testing.T) {
 		t.Errorf("changed host key: %v", err)
 	}
 }
+
+func TestQuietEntries(t *testing.T) {
+	now := time.Now()
+	st := &state.State{Entries: []state.Entry{{ID: "a", Port: 1}, {ID: "b", Port: 2}}}
+	us := &state.Usage{Entries: map[string]*state.EntryUsage{
+		"a/1": {First: now.Add(-48 * time.Hour).Unix(), Active: now.Add(-5 * time.Minute).Unix()},
+		"b/2": {First: now.Add(-48 * time.Hour).Unix(), Active: now.Add(-3 * time.Hour).Unix()},
+	}}
+	q := quietEntries(st, us, now)
+	if len(q) != 1 || q["b"] < 3*time.Hour-time.Minute {
+		t.Fatalf("b carried nothing for 3h while a was in use: %v", q)
+	}
+	us.Entries["a/1"].Active = now.Add(-time.Hour).Unix()
+	if q := quietEntries(st, us, now); len(q) != 0 {
+		t.Errorf("nothing in use recently: nothing is quiet, got %v", q)
+	}
+}
