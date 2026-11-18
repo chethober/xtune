@@ -921,4 +921,145 @@ class AppState extends ChangeNotifier {
     if (extra.isEmpty) return core.call(method, conn);
     return core.call(method, {'server': conn, ...extra});
   }
+
+  // ------------------------------------------------------------ the community directory
+
+  /// One call to the community directory's API (community/ in the repository).
+  Future<dynamic> community(String method, String path, {Map<String, dynamic>? body, String? auth}) =>
+      core.call('community.request', {'base': settings.communityUrl, 'method': method, 'path': path, 'body': ?body, 'auth': ?auth});
+
+  /// The directory's VPNs, most free places first.
+  Future<List<Map<String, dynamic>>> communityList() async {
+    final r = Map<String, dynamic>.from(await community('GET', '/v1/vpns') as Map);
+    return ((r['vpns'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+  }
+
+  /// This device's member key: random, made once, kept in secure storage. The directory sees a
+  /// hash of it per VPN; an xtune pool sees a label made from that hash.
+  Future<String> communityMember() async {
+    var k = await Secrets.read('community-member');
+    if (k == null || !RegExp(r'^[0-9a-f]{32,64}$').hasMatch(k)) {
+      final r = Random.secure();
+      k = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
+      await Secrets.write('community-member', k);
+    }
+    return k;
+  }
+
+  /// The subscription that came from this community VPN, if joined.
+  Sub? communitySub(String id) => subs.where((s) => s.community == id).firstOrNull;
+
+  /// Joins a community VPN: an xtune pool gives this device its own user and subscription; a
+  /// shared subscription or links are added as they are. It becomes the subscription in use.
+  Future<Sub> joinCommunity(Map<String, dynamic> vpn) async {
+    final id = vpn['id'] as String;
+    final r = Map<String, dynamic>.from(await community('POST', '/v1/vpns/$id/join', body: {'member': await communityMember()}) as Map);
+    final text = (r['sub'] as String?) ?? (r['source'] as String?) ?? '';
+    if (text.isEmpty) throw CoreError('the directory sent nothing to connect with');
+    final (s, _) = await addSub(text);
+    s.community = id;
+    if (s.local && (s.profile['name'] as String?)?.isNotEmpty != true) s.profile['name'] = vpn['name'];
+    notifyListeners();
+    await _save();
+    return s;
+  }
+
+  /// Leaves a community VPN: an xtune pool deletes this device's user; the subscription goes.
+  Future<void> leaveCommunity(Sub s) async {
+    try {
+      await community('POST', '/v1/vpns/${s.community}/leave', body: {'member': await communityMember()});
+    } catch (_) {} // gone from the directory already: leaving here is what matters
+    await removeSub(s);
+  }
+
+  Future<void> reportCommunity(String id, String reason) async {
+    await community('POST', '/v1/vpns/$id/report', body: {'member': await communityMember(), 'reason': reason});
+  }
+
+  /// Shares one of the user's servers with the community: makes an xtune public pool on it with
+  /// these limits (each member gets their own user), and lists its connect link in the directory.
+  Future<SharedVpn> shareServer(
+    ServerEntry srv, {
+    required String pool,
+    required String name,
+    String description = '',
+    String country = '',
+    int members = 0,
+    double quotaGb = 0,
+    int days = 0,
+    int devices = 0,
+  }) async {
+    final out =
+        ((await manage('manage.xtune', srv, {
+              'args': ['public', 'add', pool, '--json', '--members', '$members', '--quota', '$quotaGb', '--days', '$days', '--devices', '$devices'],
+            })) as Map)['output']
+            as String? ??
+        '';
+    Map<String, dynamic> p;
+    try {
+      p = Map<String, dynamic>.from(jsonDecode(out.trim().split('\n').last) as Map);
+    } catch (_) {
+      throw CoreError(out.contains('Xray tuner and manager') ? 'old xtune' : out.trim());
+    }
+    final link = p['link'] as String? ?? '';
+    if (link.isEmpty) throw CoreError('no subscription server');
+    return shareSource(link, name: name, description: description, country: country, serverId: srv.id, pool: pool);
+  }
+
+  /// Lists a connect link, subscription URL or share links in the directory.
+  Future<SharedVpn> shareSource(
+    String source, {
+    required String name,
+    String description = '',
+    String country = '',
+    String serverId = '',
+    String pool = '',
+  }) async {
+    final r = Map<String, dynamic>.from(
+      await community('POST', '/v1/vpns', body: {'source': source, 'name': name, 'description': description, 'country': country.toUpperCase()})
+          as Map,
+    );
+    final v = SharedVpn(id: r['id'] as String, name: name, serverId: serverId, pool: pool);
+    await Secrets.write('community-owner-${v.id}', r['ownerKey'] as String);
+    await updateSettings((x) => x.shared = [...x.shared, v]);
+    return v;
+  }
+
+  /// The owner's view of a shared VPN: status, members from the app, reports.
+  Future<Map<String, dynamic>> sharedStatus(SharedVpn v) async =>
+      Map<String, dynamic>.from(await community('GET', '/v1/vpns/${v.id}/owner', auth: await _ownerAuth(v)) as Map);
+
+  Future<void> editShared(SharedVpn v, Map<String, dynamic> change) async {
+    await community('PATCH', '/v1/vpns/${v.id}', body: change, auth: await _ownerAuth(v));
+    if (change['name'] is String) {
+      v.name = change['name'] as String;
+      await updateSettings((_) {});
+    }
+  }
+
+  /// Takes a shared VPN out of the directory; with removePool, also deletes the pool and its
+  /// members' users on the server.
+  Future<void> unshare(SharedVpn v, {bool removePool = false}) async {
+    try {
+      await community('DELETE', '/v1/vpns/${v.id}', auth: await _ownerAuth(v));
+    } on CoreError catch (e) {
+      if (!e.message.contains('gone')) rethrow;
+    }
+    if (removePool && v.pool.isNotEmpty) {
+      final srv = servers.where((x) => x.id == v.serverId).firstOrNull;
+      if (srv != null) {
+        await manage('manage.xtune', srv, {
+          'args': ['public', 'del', v.pool, '--yes'],
+        });
+      }
+    }
+    await Secrets.delete('community-owner-${v.id}');
+    await updateSettings((x) => x.shared = x.shared.where((y) => y.id != v.id).toList());
+  }
+
+  Future<String> _ownerAuth(SharedVpn v) async {
+    final k = await Secrets.read('community-owner-${v.id}');
+    if (k == null) throw CoreError('the owner key for ${v.name} is not on this device');
+    return 'Owner $k';
+  }
 }

@@ -15,6 +15,7 @@ import '../ui/charts.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
 import 'cdn.dart';
+import 'community.dart';
 import 'tune.dart';
 
 class ManageScreen extends StatefulWidget {
@@ -247,6 +248,7 @@ class _ManageScreenState extends State<ManageScreen> {
           _Action(Icons.system_update_alt_rounded, T.s('update'), () => _update(context, s, srv, o)),
           _Action(Icons.cloud_outlined, T.s('cdnShort'), () => _push(context, CdnWizardPage(server: srv, overview: o))),
           _Action(Icons.group_outlined, T.s('users'), () => _push(context, UsersPage(server: srv))),
+          _Action(Icons.public_rounded, T.s('shareShort'), () => _push(context, SharePage(server: srv, overview: o))),
           _Action(
             Icons.monitor_heart_outlined,
             T.s('doctor'),
@@ -287,10 +289,7 @@ class _ManageScreenState extends State<ManageScreen> {
             final out = ((r as Map)['output'] as String? ?? '').trim();
             try {
               final j = Map<String, dynamic>.from(jsonDecode(out.split('\n').last) as Map);
-              output = [
-                ((j['changed'] as List?) ?? []).join('\n'),
-                T.s(j['auto'] == true ? 'changeAuto' : 'changeManual'),
-              ].join('\n\n');
+              output = [((j['changed'] as List?) ?? []).join('\n'), T.s(j['auto'] == true ? 'changeAuto' : 'changeManual')].join('\n\n');
               changed = true;
             } catch (_) {
               output = out.isEmpty ? T.s('done') : out;
@@ -329,7 +328,19 @@ class _ManageScreenState extends State<ManageScreen> {
             if (worker || fixed)
               Notice(T.s(worker ? 'changeWorker' : 'changeFixed'))
             else ...[
-              row('', Icons.auto_fix_high_rounded, T.s('changeUsual'), T.s(reality ? 'changeUsualSni' : hasPath ? 'changeUsualPath' : 'changeUsualPort'), recommended: true),
+              row(
+                '',
+                Icons.auto_fix_high_rounded,
+                T.s('changeUsual'),
+                T.s(
+                  reality
+                      ? 'changeUsualSni'
+                      : hasPath
+                      ? 'changeUsualPath'
+                      : 'changeUsualPort',
+                ),
+                recommended: true,
+              ),
               if (reality) row('sni', Icons.travel_explore_rounded, T.s('changeSni'), T.s('changeSniHint')),
               if (hasPath) row('path', Icons.alt_route_rounded, T.s('changePath'), T.s('changePathHint')),
               if (!files) row('port', Icons.numbers_rounded, T.s('changePort'), T.s('changePortHint')),
@@ -1440,7 +1451,12 @@ class _ServerCard extends StatelessWidget {
           ),
           const SizedBox(height: Space.s),
           if (err != null)
-            Text(err.split('\n').first, style: Type.caption.copyWith(color: X.bad), maxLines: 2, overflow: TextOverflow.ellipsis)
+            Text(
+              err.split('\n').first,
+              style: Type.caption.copyWith(color: X.bad),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            )
           else if (o != null)
             Wrap(
               spacing: Space.l,

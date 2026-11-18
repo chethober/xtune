@@ -9,6 +9,7 @@ import '../main.dart';
 import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
+import 'community.dart';
 import 'lock.dart';
 import 'options.dart';
 import 'tools.dart';
@@ -66,6 +67,12 @@ class SettingsScreen extends StatelessWidget {
               () => _pickUpdate(context),
             ),
             for (final sub in s.subs) _SubRow(sub: sub),
+            _Value(
+              T.s('communityUrl'),
+              T.s('communityBrowseHint'),
+              st.communityUrl.isEmpty ? T.s('communityUrlDefault') : Uri.tryParse(st.communityUrl)?.host ?? st.communityUrl,
+              () => editCommunityUrl(context),
+            ),
           ],
         ),
 
@@ -106,12 +113,7 @@ class SettingsScreen extends StatelessWidget {
             _Value(T.s('timeline'), T.s('timelineHint'), '', () => push(const TimelinePage())),
             _Value(T.s('connectionLog'), T.s('connectionLogHint'), '', () => push(const LogViewerPage())),
             _Value(T.s('logLevel'), T.s('logLevelHint'), T.s('logLevel_${st.logLevel}'), () => _pickLogLevel(context, set)),
-            _Value(
-              T.s('crashLog'),
-              T.s('crashLogHint'),
-              s.newCrashes > 0 ? T.s('nNew', {'n': s.newCrashes}) : '',
-              () => push(const CrashLogPage()),
-            ),
+            _Value(T.s('crashLog'), T.s('crashLogHint'), s.newCrashes > 0 ? T.s('nNew', {'n': s.newCrashes}) : '', () => push(const CrashLogPage())),
             _Value(T.s('shareDiagnostics'), T.s('shareDiagnosticsHint'), '', () => shareDiagnostics(context)),
           ],
         ),

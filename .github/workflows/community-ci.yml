@@ -1,0 +1,25 @@
+name: community
+
+# The community directory (community/): a Cloudflare Worker. Its tests run on node:sqlite.
+on:
+  push:
+    branches: [main]
+    paths: ['community/**', '.github/workflows/community-ci.yml']
+  pull_request:
+    paths: ['community/**', '.github/workflows/community-ci.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: community
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test test/*.test.mjs

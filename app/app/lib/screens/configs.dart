@@ -13,6 +13,7 @@ import '../state/models.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
 import 'add_sub.dart';
+import 'community.dart';
 import 'options.dart';
 
 class ConfigsScreen extends StatefulWidget {
@@ -137,6 +138,7 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
           items: [for (final k in sorts) XMenuItem(k, T.s('sort${k[0].toUpperCase()}${k.substring(1)}'))],
         ),
         if (sub != null) RoundIconButton(icon: Icons.low_priority_rounded, tooltip: T.s('autoPool'), onPressed: () => _editPool(context)),
+        RoundIconButton(icon: Icons.public_rounded, tooltip: T.s('communityBrowse'), onPressed: () => openCommunity(context)),
         RoundIconButton(icon: Icons.add_rounded, tooltip: T.s('addSub'), filled: true, onPressed: () => showAddSub(context)),
       ],
       side: [
@@ -168,6 +170,28 @@ class _ConfigsScreenState extends State<ConfigsScreen> {
           ],
           selected: filter,
           onSelect: (i) => setState(() => filter = i),
+        ),
+        const SizedBox(height: Space.m),
+        // the community's VPNs: pick one, and it becomes a subscription here
+        Glass(
+          onTap: () => openCommunity(context),
+          padding: const EdgeInsets.symmetric(horizontal: Space.l, vertical: Space.m),
+          child: Row(
+            children: [
+              Icon(Icons.public_rounded, color: X.accent),
+              const SizedBox(width: Space.m),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(T.s('communityBrowse'), style: Type.bodyStrong),
+                    Text(T.s('communityBrowseHint'), style: Type.caption),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: X.muted),
+            ],
+          ),
         ),
         const SizedBox(height: Space.m),
         if (sub != null)

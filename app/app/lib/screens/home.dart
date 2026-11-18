@@ -12,6 +12,7 @@ import '../ui/i18n.dart';
 import '../ui/power_button.dart';
 import '../ui/route_map.dart';
 import 'add_sub.dart';
+import 'community.dart';
 import 'options.dart';
 import 'settings.dart' show updateNow;
 
@@ -340,6 +341,16 @@ void _pickSub(BuildContext context, AppState state) {
             showAddSub(context);
           },
         ),
+        ListTile(
+          contentPadding: const EdgeInsetsDirectional.only(start: Space.l, end: Space.s),
+          leading: Icon(Icons.public_rounded, color: X.accent),
+          title: Text(T.s('communityBrowse')),
+          subtitle: Text(T.s('communityBrowseHint')),
+          onTap: () {
+            Navigator.pop(ctx);
+            openCommunity(context);
+          },
+        ),
       ],
     ),
   );
@@ -366,6 +377,13 @@ class _EmptyState extends StatelessWidget {
             onPressed: onAdd,
             icon: const Icon(Icons.add_rounded),
             label: Text(T.s('addSub')),
+          ),
+          const SizedBox(height: Space.s),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(minimumSize: const Size(200, 48)),
+            onPressed: () => openCommunity(context),
+            icon: const Icon(Icons.public_rounded),
+            label: Text(T.s('communityBrowse')),
           ),
           if (Platform.isAndroid) ...[
             const SizedBox(height: Space.s),

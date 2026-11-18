@@ -102,6 +102,14 @@ var handlers = map[string]handler{
 		}
 		return Import(in.Text, in.ASN)
 	},
+	"community.request": func(a []byte) (any, error) {
+		in, err := decode[CommunityRequest](a)
+		if err != nil {
+			return nil, err
+		}
+		return Community(in)
+	},
+	"community.url": func([]byte) (any, error) { return map[string]string{"url": CommunityURL}, nil },
 	"crash.list": func(a []byte) (any, error) {
 		in, _ := decode[struct {
 			N int `json:"n"`
