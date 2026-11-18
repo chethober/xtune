@@ -102,7 +102,7 @@ func TestAWGProfile(t *testing.T) {
 		}
 	}
 	e.Mode = ""
-	if strings.Contains(protocols.AWGConfFile(st, e, u), "I1") {
+	if strings.Contains(protocols.AWGConfFile(st, e, u), "\nI1 = ") {
 		t.Error("the I1 line is only for the quic variant (older apps reject it)")
 	}
 	ps := protocols.Profiles(st, u)
