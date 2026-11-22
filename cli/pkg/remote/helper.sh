@@ -481,6 +481,16 @@ relay-apply)
   systemctl restart xray-autotune-relay
   fw_close $D/fw.relay; fw_open $D/fw.relay "$@"
   sleep 1; systemctl is-active xray-autotune-relay ;;
+relay-test-start)
+  # tuning through this relay: forward the main server's test ports (relay-test.json) for 2 hours at most
+  if ! $X run -test -c $D/relay-test.json >/dev/null 2>&1; then $X run -test -c $D/relay-test.json 2>&1 | tail -5; exit 1; fi
+  fw_close $D/fw.relaytest; fw_open $D/fw.relaytest "$@"
+  start_test_unit xray-autotune-test-relay --property=LimitNOFILE=65535 $X run -c $D/relay-test.json
+  sleep 1; systemctl is-active xray-autotune-test-relay ;;
+relay-test-stop)
+  systemctl stop xray-autotune-test-relay 2>/dev/null || true
+  systemctl reset-failed xray-autotune-test-relay 2>/dev/null || true
+  fw_close $D/fw.relaytest; rm -f $D/relay-test.json; echo stopped ;;
 relay-check)
   # relay-check HOST PORT...: TCP connect time from here to the main server, in ms, or "fail"
   h=$1; shift
@@ -520,8 +530,8 @@ cleanup)
   else unlink_xt; rm -rf $D; echo removed; fi ;;
 uninstall)
   remove_units
-  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; fw_close $D/fw.relay; vpn_net_down
+  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; fw_close $D/fw.relay; fw_close $D/fw.relaytest; vpn_net_down
   unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|relay-apply|relay-check|relay-remove|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|relay-apply|relay-test-start|relay-test-stop|relay-check|relay-remove|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
 esac

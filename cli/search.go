@@ -314,6 +314,10 @@ func Evolve(best []*Variant, tried []*Variant, depth string, prior Prior, rng *m
 				v.K.Addr = p.K.Addr
 				v.Label += " ip=" + p.K.Addr
 			}
+			if p.Via != "" { // a route keeps its relay
+				v.Via, v.viaPort, v.viaSt = p.Via, p.viaPort, p.viaSt
+				v.Label = "via " + p.Via + " " + v.Label
+			}
 			if !seen[v.Label] {
 				seen[v.Label] = true
 				out = append(out, v)

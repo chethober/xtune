@@ -62,11 +62,9 @@ type ClientEntry struct {
 // ClientProfileFor builds u's profile from st, which is already ordered for the requester.
 func ClientProfileFor(st *state.State, u state.User) ClientProfile {
 	p := ClientProfile{V: ClientProfileVersion, Name: SubName(st, u), User: u.Name, Country: st.Country, Probe: ProbeURL}
-	for _, s := range subServers(st) {
-		for _, e := range linkEntries(s) {
-			if c, ok := ClientEntryFor(s, e, u, e.Knobs(), "proxy-"+e.ID); ok {
-				p.Configs = append(p.Configs, c)
-			}
+	for _, r := range routedEntries(st) {
+		if c, ok := ClientEntryFor(r.S, r.E, u, r.E.Knobs(), "proxy-"+r.E.ID); ok {
+			p.Configs = append(p.Configs, c)
 		}
 	}
 	p.Frag = FragOutbounds(ConfigFrags(p.Configs)...)

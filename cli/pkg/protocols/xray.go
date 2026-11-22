@@ -348,10 +348,10 @@ var Countries = map[string][2]string{
 func FailoverConfig(st *state.State, u state.User) J {
 	var obs []J
 	first := ""
-	for _, s := range subServers(st) {
-		for _, e := range state.FilterEntries(linkEntries(s), state.Entry.Xray) {
-			obs = append(obs, Outbound(s, e, u, e.Knobs(), "proxy-"+e.ID))
-			first = orStr(first, "proxy-"+e.ID)
+	for _, r := range routedEntries(st) {
+		if r.E.Xray() {
+			obs = append(obs, Outbound(r.S, r.E, u, r.E.Knobs(), "proxy-"+r.E.ID))
+			first = orStr(first, "proxy-"+r.E.ID)
 		}
 	}
 	obs = append(obs, FragOutbounds(FragsOf(obs...)...)...)

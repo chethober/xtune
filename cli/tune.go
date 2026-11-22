@@ -45,22 +45,24 @@ type TuneOpts struct {
 	Secs                          int
 	Out                           string
 	XrayBin                       string
-	ServerTag                     string   // "" = keep / latest
-	Only                          []string // test only entries whose ID starts with one of these
-	Domain, CDNDomain             string   // optional direct and CDN-proxied domains
-	KeepTest                      bool     // leave the server test instance running (it expires by itself)
-	Network                       string   // name of the network measured from, for the history
-	Protocols                     []string // opt-in protocol families: ssh, dnstt, awg, worker, openvpn, ikev2
-	DNSDomain                     string   // zone delegated to the server, for the DNS tunnel
-	Resolvers                     []string // DNS tunnel resolvers to try first ("udp:IP:53", "doh:URL", "dot:HOST:853")
-	Cloudflare                    string   // API token ("" = the deployment's): DNS records for new domains, the Worker relay
-	Zone                          string   // Cloudflare zone: domains not given get random names in it
-	CleanIPs                      int      // CDN and Worker configs: also measure them through this many clean edge IPs
-	Prepare                       bool     // start the test matrix without measuring it: an app measures it (tune --prepare)
-	Grid                          bool     // the fixed grid of client settings only: no samples, no second round
-	Evolve                        int      // second round: mutations per good variant (0: none)
-	Prior                         Prior    // what worked before on this network (memory.go), guiding the samples
-	Seed                          uint64   // the search's random seed (0: random)
+	ServerTag                     string      // "" = keep / latest
+	Only                          []string    // test only entries whose ID starts with one of these
+	Domain, CDNDomain             string      // optional direct and CDN-proxied domains
+	KeepTest                      bool        // leave the server test instance running (it expires by itself)
+	Network                       string      // name of the network measured from, for the history
+	Protocols                     []string    // opt-in protocol families: ssh, dnstt, awg, worker, openvpn, ikev2
+	DNSDomain                     string      // zone delegated to the server, for the DNS tunnel
+	Resolvers                     []string    // DNS tunnel resolvers to try first ("udp:IP:53", "doh:URL", "dot:HOST:853")
+	Cloudflare                    string      // API token ("" = the deployment's): DNS records for new domains, the Worker relay
+	Zone                          string      // Cloudflare zone: domains not given get random names in it
+	CleanIPs                      int         // CDN and Worker configs: also measure them through this many clean edge IPs
+	Prepare                       bool        // start the test matrix without measuring it: an app measures it (tune --prepare)
+	Grid                          bool        // the fixed grid of client settings only: no samples, no second round
+	Evolve                        int         // second round: mutations per good variant (0: none)
+	Prior                         Prior       // what worked before on this network (memory.go), guiding the samples
+	Seed                          uint64      // the search's random seed (0: random)
+	Relays                        []string    // relays whose routes are tuned too: names, "all" (default) or "none"
+	RelayDial                     RouteDialer // connects to a relay; nil: no routes
 	Log                           func(string)
 
 	deployed *state.State  // the server's deployment, if any
@@ -136,12 +138,30 @@ type Variant struct {
 	Down, Up   float64
 	Benched    bool
 	Score      float64
-	Round      int `json:",omitempty"` // the search round that added it (0: the first)
+	Round      int    `json:",omitempty"` // the search round that added it (0: the first)
+	Via        string `json:",omitempty"` // the relay this route goes through ("" direct)
+
+	viaPort int          // the relay's test port for this route
+	viaSt   *state.State // the deployment as seen through the relay (its address)
 
 	oks []int // ms of each probe that got through, over all rounds
 
 	dial      func(ctx context.Context, network, addr string) (net.Conn, error) // non-Xray tunnels
 	handshake func(ctx context.Context) (time.Duration, error)                  // VPNs: handshake only
+}
+
+// dialTarget is the deployment and entry the variant dials: through a relay, the relay's address
+// and port.
+func (v *Variant) dialTarget(st *state.State) (*state.State, state.Entry) {
+	e := v.Entry
+	if v.viaPort == 0 {
+		return st, e
+	}
+	e.Port, e.Hop = v.viaPort, ""
+	if v.viaSt != nil {
+		return v.viaSt, e
+	}
+	return st, e
 }
 
 // client is an HTTP client through the variant: its local Xray inbound, or its own dialer.
@@ -512,7 +532,8 @@ func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir
 	var vs []*Variant
 	h := &harness{}
 	for _, v := range all {
-		switch e := v.Entry; {
+		st, e := v.dialTarget(st)
+		switch {
 		case e.Kind == "mtproto":
 			v.handshake = func(ctx context.Context) (time.Duration, error) { return mtprotoHandshake(st, ctx, e, u) }
 		case e.HandshakeOnly():
@@ -552,7 +573,8 @@ func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir
 		if v.Entry.Kind == "wireguard" && testPeers {
 			ou = wgVariantUser(u, v.K)
 		}
-		cfg["outbounds"] = append(cfg["outbounds"].([]J), protocols.Outbound(st, v.Entry, ou, v.K, fmt.Sprintf("out%d", i)))
+		vst, ve := v.dialTarget(st)
+		cfg["outbounds"] = append(cfg["outbounds"].([]J), protocols.Outbound(vst, ve, ou, v.K, fmt.Sprintf("out%d", i)))
 		rules := cfg["routing"].(J)["rules"].([]J)
 		cfg["routing"].(J)["rules"] = append(rules, J{"inboundTag": []string{fmt.Sprintf("in%d", i)}, "outboundTag": fmt.Sprintf("out%d", i)})
 	}
@@ -901,7 +923,7 @@ func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) ([]*Vari
 	var promo []*Variant
 	seen := map[string]bool{}
 	for _, v := range alive {
-		g := v.Entry.ID + "|" + v.K.Frag + "|" + v.K.Mode + "|" + v.K.Addr
+		g := v.Entry.ID + "|" + v.K.Frag + "|" + v.K.Mode + "|" + v.K.Addr + "|" + v.Via
 		if !seen[g] {
 			seen[g] = true
 			promo = append(promo, v)
@@ -967,19 +989,28 @@ func sortByProbe(vs []*Variant) {
 	})
 }
 
-// Best returns the chosen variant per entry, best first.
+// Best returns the chosen variant per entry, best first: measured direct, or, for an entry that
+// only gets through a relay, its best route (the relay forwards to the same inbound).
 func Best(vs []*Variant) []*Variant {
-	groups := map[string][]*Variant{}
+	groups, routed := map[string][]*Variant{}, map[string][]*Variant{}
 	var order []string
 	for _, v := range vs {
-		if _, ok := groups[v.Entry.ID]; !ok {
+		if _, ok := groups[v.Entry.ID]; !ok && len(routed[v.Entry.ID]) == 0 {
 			order = append(order, v.Entry.ID)
+		}
+		if v.Via != "" {
+			routed[v.Entry.ID] = append(routed[v.Entry.ID], v)
+			continue
 		}
 		groups[v.Entry.ID] = append(groups[v.Entry.ID], v)
 	}
 	var best []*Variant
 	for _, id := range order {
-		if b := pick(groups[id]); b != nil {
+		b := pick(groups[id])
+		if b == nil {
+			b = pick(routed[id])
+		}
+		if b != nil {
 			best = append(best, b)
 		}
 	}
@@ -1051,6 +1082,7 @@ type TuneResult struct {
 	Best    []*Variant
 	Network netinfo.Network // the network it was measured from ("" ASN when unknown)
 	NetName string          // its name: --network, else the ASN registry's
+	Routes  RouteMatrix     // each config's best result direct and through each relay
 }
 
 // Tune installs/uses the isolated server Xray, starts the test matrix and measures it from here.
@@ -1219,7 +1251,16 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 		o.Log(fmt.Sprintf("[*] search: %d variants (the usual settings, plus samples of fingerprint, fragmentation and mode)", len(vs)))
 	}
 	vs = supportedKnobs(o.XrayBin, st, vs, o.Log)
+	var routes []*relayRoute
+	if !o.Prepare && !o.KeepTest { // a prepared or shared test is measured elsewhere, later
+		routes = openRoutes(o, r.Conn.Host, entries)
+		defer closeRoutes(routes, o.Log)
+	}
 	vs = addCleanIPVariants(st, entries, vs, o.CleanIPs, o.Log)
+	if rv := routeVariants(st, vs, routes); len(rv) > 0 {
+		o.Log(fmt.Sprintf("[*] routes: %d more variants through %d relays, measured with the direct ones", len(rv), len(routes)))
+		vs = append(vs, rv...)
+	}
 	if o.Prepare {
 		return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Network: netw, NetName: o.Network}, nil
 	}
@@ -1234,8 +1275,10 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	matrix := routeMatrix(vs, routes)
+	printRouteMatrix(&buf, matrix)
 	o.Log(buf.String())
-	return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Best: best, Network: netw, NetName: o.Network}, nil
+	return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Best: best, Network: netw, NetName: o.Network, Routes: matrix}, nil
 }
 
 // prepareExtras gets the server ready for the opt-in protocols: xtune itself runs the SSH and DNS

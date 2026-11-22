@@ -112,9 +112,18 @@ func applyClientReport(lock func() func(), load func() (*state.State, error), sa
 	if err != nil {
 		return err
 	}
-	keys := map[string]bool{}
+	keys := map[string]string{} // what the app calls a config -> its ranking key
 	for _, e := range st.Entries {
-		keys[state.EntryKey(e)] = true
+		keys[state.EntryKey(e)] = state.EntryKey(e)
+	}
+	for _, rs := range protocols.RelayStates(st) { // a relay's copy is a route to this server's config
+		for _, e := range rs.Entries {
+			for _, orig := range st.Entries {
+				if e.ID == rs.Naming.Via+"-"+orig.ID {
+					keys[state.EntryKey(e)] = state.RouteKey(rs.Naming.Via, orig)
+				}
+			}
+		}
 	}
 	if st.Networks == nil {
 		st.Networks = map[string]*state.NetRank{}
@@ -127,15 +136,16 @@ func applyClientReport(lock func() func(), load func() (*state.State, error), sa
 	changed := false
 	hourScores := map[string]float64{}
 	for _, r := range in.Results {
-		if !keys[r.Key] || r.N <= 0 || r.N > 100 || r.Ok < 0 || r.Ok > r.N || r.Down < 0 || r.Up < 0 || r.Down > 10000 || r.Up > 10000 {
+		key, known := keys[r.Key]
+		if !known || r.N <= 0 || r.N > 100 || r.Ok < 0 || r.Ok > r.N || r.Down < 0 || r.Up < 0 || r.Down > 10000 || r.Up > 10000 {
 			continue
 		}
 		s := score(&Variant{Ok: r.Ok, N: r.N, Warm: r.Warm, Down: r.Down, Up: r.Up})
-		if old, ok := nr.Scores[r.Key]; ok && fresh {
+		if old, ok := nr.Scores[key]; ok && fresh {
 			s = round2((old + s) / 2)
 		}
-		nr.Scores[r.Key] = s
-		hourScores[r.Key] = score(&Variant{Ok: r.Ok, N: r.N, Warm: r.Warm, Down: r.Down, Up: r.Up})
+		nr.Scores[key] = s
+		hourScores[key] = score(&Variant{Ok: r.Ok, N: r.N, Warm: r.Warm, Down: r.Down, Up: r.Up})
 		changed = true
 	}
 	if !changed {

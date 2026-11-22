@@ -34,6 +34,21 @@ same under *Relays*.
 - **Keeping it current.** A redeploy can change ports, and a move changes the address the relay forwards to. Until
   `xtune relay sync`, the configs that changed are left out of subscriptions (rather than handed out broken), and
   `xtune doctor` and the deploy output say so.
+- **Every route tuned.** `xtune tune` also measures every variant through every relay, in parallel with the direct
+  ones (`--relays all|none|NAME,..`, default all; `--relay-key` and `--relay-password-env` reach the relays). Each
+  relay forwards the test instance's ports for the tune (a temporary forwarder next to its own, gone after 2 hours
+  at most) and measures its own leg to the server, so the tune ends with a matrix of configs × routes:
+
+  ```
+  CONFIG  DIRECT   TEH1          BEST
+  hy2     blocked  14.20         teh1
+  r-tcp   9.80     11.35 [31ms]  teh1
+  ss2022  4.10     blocked       direct
+  ```
+
+  Each route's score is kept in that network's ranking (`via:RELAY/ID/PORT`), and subscriptions list the best
+  route for the asker's network first, whichever server or relay it goes through. Reports from the app on a relay's
+  configs count for that route. A config that only gets through a relay is still deployed.
 - **Device limits** count client IPs, and every user through a relay comes from the relay's IP, so devices through a
   relay are not told apart.
 

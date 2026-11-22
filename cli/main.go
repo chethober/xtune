@@ -44,6 +44,8 @@ On your computer (client):
                   --clean-ips N            measure the CDN and Worker configs through the N best Cloudflare edge
                                            IPs from here too (default 3, 0 = off)
                   --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
+                  --relays all|none|NAME,..  also tune every route through the deployment's relays, in parallel
+                                           (--relay-key, --relay-password-env reach them; default all)
                   --grid                   only the fixed grid of client settings (default: search: samples of
                                            fingerprint, fragment ranges and XHTTP mode, then a second round
                                            evolved from the best, --evolve N per variant)
@@ -410,6 +412,9 @@ func cmdTune(args []string) error {
 	fs.BoolVar(&o.Grid, "grid", false, "try only the fixed grid of client settings: no search samples, no second round")
 	fs.IntVar(&o.Evolve, "evolve", 0, "second round: this many mutations of each of the best variants (default 2; with --grid none)")
 	fs.Uint64Var(&o.Seed, "seed", 0, "the search's random seed, to repeat a tune's samples (0 = random)")
+	relays := fs.String("relays", "all", "also tune every route through these relays (names, all or none)")
+	relayKey := fs.String("relay-key", "", "SSH key for the relays (default: as for the server)")
+	relayPass := fs.String("relay-password-env", "", "env var holding the relays' SSH password")
 	var err error
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
@@ -426,6 +431,14 @@ func cmdTune(args []string) error {
 		return prepareTune(c, o, flagsSet(fs))
 	}
 	o.KeepTest = *share != ""
+	o.Relays = cleanList([]string{*relays})
+	o.RelayDial = func(rl state.Relay) (*remote.Server, error) {
+		cn := remote.Conn{Host: rl.SSH.Host, Port: rl.SSH.Port, User: rl.SSH.User, KeyPath: orStr(*relayKey, *c.key)}
+		if *relayPass != "" {
+			cn.Password = os.Getenv(*relayPass)
+		}
+		return remote.Dial(cn, cliPrompt)
+	}
 	if *only != "" {
 		o.Only = strings.Split(*only, ",")
 	}

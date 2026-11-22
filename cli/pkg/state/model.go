@@ -150,6 +150,9 @@ type State struct {
 	// EntryView, when set, is how one user sees each server's configs (their tuning): what
 	// subscriptions, links and client profiles list. via is the relay they go through ("" direct).
 	EntryView func(es []Entry, via string) []Entry `json:"-"`
+	// RouteRank, when set, ranks every route to a config (via: the relay, "" direct) for the
+	// network a client asks from: subscriptions list the best first, whichever server it is on.
+	RouteRank func(via string, e Entry) float64 `json:"-"`
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`

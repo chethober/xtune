@@ -44,7 +44,7 @@ func variantRank(entries []state.Entry, vs []*Variant) (map[string]float64, map[
 	for _, e := range entries {
 		best := -1.0
 		for _, v := range vs {
-			if v.Entry.ID != e.ID {
+			if v.Entry.ID != e.ID || v.Via != "" { // routes through relays: routeRank
 				continue
 			}
 			if v.K == e.Knobs() {
@@ -143,6 +143,9 @@ func forgetStaleRanks(st *state.State) {
 	keys := map[string]bool{}
 	for _, e := range st.Entries {
 		keys[state.EntryKey(e)] = true
+		for _, rl := range st.Relays { // the routes to it through each relay
+			keys[state.RouteKey(rl.Name, e)] = true
+		}
 	}
 	for asn, nr := range st.Networks {
 		for k := range nr.Scores {
@@ -226,6 +229,31 @@ func forNetworkAt(st *state.State, asn string, now time.Time, hour int) (*state.
 		return s
 	}
 	sort.SliceStable(cp.Entries, func(i, j int) bool { return rank(cp.Entries[i]) > rank(cp.Entries[j]) })
+	byID := map[string]state.Entry{}
+	for _, e := range st.Entries {
+		byID[e.ID] = e
+	}
+	// every route, this server's configs and their relays' together: the best first
+	cp.RouteRank = func(via string, e state.Entry) float64 {
+		if via == "" {
+			if _, ok := byID[e.ID]; ok {
+				return rank(e)
+			}
+			return -1 // a follower's: not ranked here
+		}
+		orig, ok := byID[strings.TrimPrefix(e.ID, via+"-")]
+		if !ok {
+			return -1
+		}
+		s, ok := nr.Scores[state.RouteKey(via, orig)]
+		switch {
+		case !ok:
+			return -1
+		case s == 0:
+			return -2
+		}
+		return s
+	}
 	return &cp, orStr(nr.Name, asn)
 }
 

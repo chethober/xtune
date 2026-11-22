@@ -17,6 +17,11 @@ All notable changes to this project are documented here. The format follows
   plus samples, screens every variant quickly and gives the rest of the probes only to the ones that got through
   (successive halving), then evolves a second round from the best (`--evolve N`). `--grid` keeps the old grid,
   `--seed N` repeats a search. Shared bundles carry the exact variants.
+- Multi-hop routes are tuned, not reused: `xtune tune` measures every variant through every relay too, in
+  parallel (`--relays all|none|NAME,..`), with each relay forwarding the test ports for the tune and measuring its
+  own leg to the server. The tune prints a configs × routes matrix; each route's score joins the network's ranking,
+  and subscriptions list the best route for the network first, across the server and its relays. App reports on a
+  relay's configs count for that route.
 - Personal tunes: users with `--self-tune on` tune their own configs' client settings from the app
   (`GET`/`POST <subscription>/tune`), with their own credentials and no test instance; the best settings become
   theirs and count for their network's ranking.
