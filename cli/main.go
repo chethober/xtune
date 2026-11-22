@@ -62,6 +62,8 @@ On your computer (client):
                                            move the deployment to a new server, keeping users and links
   xtune relay     [conn] [list | add NAME --ssh RELAY [--addr A] [--only ID,ID] | sync [NAME] | del NAME]
                                            multi-hop: a server in your users' country forwards to this one
+                  --bridge | --no-bridge   add, sync: the relay ends REALITY itself and reaches this server with
+                                           a second config tuned from the relay (it then holds the users' IDs)
   xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
   xtune xray      [conn] status|update     check / update Xray here and on the server
   xtune logs      [conn] [-n N] [-f]

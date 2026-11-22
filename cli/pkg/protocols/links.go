@@ -111,6 +111,16 @@ func RelayStates(st *state.State) []*state.State {
 			e.ID, e.Port, e.Hop, e.Addr = rl.Name+"-"+e.ID, rl.Forwards[i].Port, "", ""
 			rs.Entries = append(rs.Entries, e)
 		}
+		if b := rl.Bridge; b != nil && slices.ContainsFunc(st.Entries, func(e state.Entry) bool { return e.ID == b.Leg2 }) {
+			// a bridge ends REALITY itself, with its own keys
+			rs.RealityPriv, rs.RealityPub, rs.ShortID = b.RealityPriv, b.RealityPub, b.ShortID
+			for _, e := range b.Entries {
+				if slices.ContainsFunc(st.Entries, func(x state.Entry) bool { return x.ID == e.ID }) {
+					e.ID = rl.Name + "-" + e.ID
+					rs.Entries = append(rs.Entries, e)
+				}
+			}
+		}
 		if len(rs.Entries) > 0 {
 			out = append(out, &rs)
 		}

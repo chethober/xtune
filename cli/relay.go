@@ -98,10 +98,11 @@ func parseRelayCheck(out string) map[int]int {
 
 // RelayOpts are what `xtune relay add` and `sync` take.
 type RelayOpts struct {
-	Name string
-	Addr string   // the address clients dial, default the relay's SSH host
-	Only []string // entry IDs to forward, default every relayable one
-	Log  func(string)
+	Name   string
+	Addr   string   // the address clients dial, default the relay's SSH host
+	Only   []string // entry IDs to forward, default every relayable one
+	Bridge *bool    // true: end the REALITY configs on the relay (see bridge.go); false: forward only; nil: as it was
+	Log    func(string)
 }
 
 // SyncRelay sets up relay rl (new, or one this server knows) to forward this server's current
@@ -146,8 +147,26 @@ func SyncRelay(r, relay *remote.Server, o RelayOpts) (*state.State, error) {
 	if cc := relayCountry(relay, rl.Addr); cc != "" {
 		rl.Flag = cc
 	}
-	fs := planForwards(st, rl.Forwards, usedPorts(probe), o.Only)
-	if len(fs) == 0 {
+	bridge := rl.Bridge != nil
+	if o.Bridge != nil {
+		bridge = *o.Bridge
+	}
+	if bridge {
+		if st, err = ensureCheckUser(r); err != nil { // the second leg is measured as the check user
+			return nil, err
+		}
+	}
+	used := usedPorts(probe)
+	fs := planForwards(st, rl.Forwards, used, o.Only)
+	if bridge { // the bridge ends these itself
+		fs = slices.DeleteFunc(fs, func(f state.Forward) bool {
+			return slices.ContainsFunc(st.Entries, func(e state.Entry) bool { return e.ID == f.ID && bridgeable(e) })
+		})
+	}
+	for _, f := range fs {
+		used[f.Net][f.Port] = true
+	}
+	if len(fs) == 0 && !bridge {
 		return nil, errors.New("no config here can go through a relay (CDN, Worker, DNS tunnel and VPN configs cannot)")
 	}
 	var tcp []string
@@ -179,19 +198,40 @@ func SyncRelay(r, relay *remote.Server, o RelayOpts) (*state.State, error) {
 		}
 		kept = append(kept, f)
 	}
-	if len(kept) == 0 {
+	var b *state.RelayBridge
+	if bridge {
+		if b, err = planBridge(st, rl.Bridge, used, o.Only); err != nil {
+			return nil, err
+		}
+		if err := syncBridge(relay, st, target, b, log); err != nil {
+			return nil, fmt.Errorf("bridge: %w", err)
+		}
+	}
+	if len(kept) == 0 && b == nil {
 		return nil, errors.New("the relay reaches none of this server's ports: is it filtered between them?")
 	}
-	cfg, _ := json.MarshalIndent(relayConfig(target, kept), "", " ")
+	rcfg := relayConfig(target, kept)
+	specs := relaySpecs(kept)
+	if b != nil {
+		users, _ := bridgeUsers(st)
+		if rcfg, err = bridgeConfig(st, target, kept, b, users); err != nil {
+			return nil, err
+		}
+		for _, e := range b.Entries {
+			specs = append(specs, fmt.Sprintf("%d/tcp", e.Port))
+			log(fmt.Sprintf("  %-18s %5d/tcp  bridged on relay port %d (second leg: %s)", e.ID, e.Port, e.Port, b.Leg2))
+		}
+	}
+	cfg, _ := json.MarshalIndent(rcfg, "", " ")
 	if err := relay.Upload(remote.Dir+"/relay.json", cfg, "600"); err != nil {
 		return nil, err
 	}
-	if out, err := relay.Helper(append([]string{"relay-apply"}, relaySpecs(kept)...)...); err != nil {
+	if out, err := relay.Helper(append([]string{"relay-apply"}, specs...)...); err != nil {
 		return nil, fmt.Errorf("relay-apply: %w", err)
 	} else if !strings.Contains(out, "active") {
 		return nil, fmt.Errorf("the relay did not start: %s", out)
 	}
-	rl.Forwards, rl.Target = kept, target
+	rl.Forwards, rl.Target, rl.Bridge = kept, target, b
 	defer r.Lock()()
 	if st, err = requireState(r); err != nil { // reloaded under the lock
 		return nil, err
@@ -272,6 +312,12 @@ func relayProblem(st *state.State, rl state.Relay, ok string) string {
 	if stale > 0 {
 		return fmt.Sprintf("%d of its configs changed in a redeploy: xtune relay sync %s", stale, rl.Name)
 	}
+	if p := bridgeProblem(st, rl); p != "" {
+		return p
+	}
+	if rl.Bridge != nil {
+		return fmt.Sprintf("%s (bridge: second leg %s, %d users)", ok, rl.Bridge.Leg2, len(rl.Bridge.Users))
+	}
 	return ok
 }
 
@@ -286,6 +332,8 @@ func cmdRelay(args []string) error {
 	addr := fs.String("addr", "", "address clients dial for the relay (default its SSH host)")
 	only := fs.String("only", "", "comma-separated config IDs to forward (default every one that can)")
 	forget := fs.Bool("forget", false, "del: forget the relay without reaching it")
+	bridgeOn := fs.Bool("bridge", false, "add, sync: the relay ends REALITY itself and reaches this server with a second config tuned from the relay")
+	bridgeOff := fs.Bool("no-bridge", false, "sync: back to forwarding only")
 	pos := parse(fs, args)
 	action := "list"
 	if len(pos) > 0 {
@@ -326,6 +374,11 @@ func cmdRelay(args []string) error {
 		return nil, fmt.Errorf("no relay %q", name)
 	}
 	logf := func(s string) { fmt.Println(s) }
+	var bridge *bool
+	if *bridgeOn || *bridgeOff {
+		on := *bridgeOn && !*bridgeOff
+		bridge = &on
+	}
 	var ids []string
 	if *only != "" {
 		ids = strings.Split(*only, ",")
@@ -346,7 +399,7 @@ func cmdRelay(args []string) error {
 			return err
 		}
 		defer relay.Close()
-		if st, err = SyncRelay(r, relay, RelayOpts{Name: name, Addr: *addr, Only: ids, Log: logf}); err != nil {
+		if st, err = SyncRelay(r, relay, RelayOpts{Name: name, Addr: *addr, Only: ids, Bridge: bridge, Log: logf}); err != nil {
 			return err
 		}
 	case "sync":
@@ -370,7 +423,7 @@ func cmdRelay(args []string) error {
 				return fmt.Errorf("%s: %w", n, err)
 			}
 			fmt.Println("relay", n)
-			st, err = SyncRelay(r, relay, RelayOpts{Name: n, Addr: *addr, Only: ids, Log: logf})
+			st, err = SyncRelay(r, relay, RelayOpts{Name: n, Addr: *addr, Only: ids, Bridge: bridge, Log: logf})
 			relay.Close()
 			if err != nil {
 				return fmt.Errorf("%s: %w", n, err)

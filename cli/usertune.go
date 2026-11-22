@@ -34,12 +34,23 @@ func userView(st *state.State, u state.User, asn string, hour int, now time.Time
 		view, netName = forNetworkAt(st, asn, now, hour)
 	}
 	view = personalRank(view, u, asn, hour, now)
-	if u.Tune == nil {
+	bridges := slices.ContainsFunc(st.Relays, func(rl state.Relay) bool { return rl.Bridge != nil })
+	if u.Tune == nil && !bridges {
 		return view, netName
 	}
 	cp := *view
-	p, prefs := st.Policy(u), u.Tune.Prefs
+	var p state.TunePolicy
+	var prefs state.TunePrefs
+	if u.Tune != nil {
+		p, prefs = st.Policy(u), u.Tune.Prefs
+	}
 	cp.EntryView = func(es []state.Entry, via string) []state.Entry {
+		if bridges && via != "" { // a bridge relay serves the users it was synced with
+			es = bridgeFilter(st, u, es, via)
+		}
+		if u.Tune == nil {
+			return es
+		}
 		return state.TrimTo(state.EntryOrder(p, prefs, es, via), p.Max)
 	}
 	return &cp, netName

@@ -279,6 +279,7 @@ type fakeServer struct {
 	sib      []string                     // last sib arguments
 	rmus     int                          // rmu calls
 	helper   map[string]string            // canned output of other helper commands
+	helperFn map[string]func() string     // output made at the time of the call
 	calls    []string                     // helper commands run, with their arguments
 	restarts int
 	apiCalls int
@@ -411,6 +412,9 @@ func (f *fakeServer) Exec(cmd, stdin string, _ bool) (string, string, error) {
 		return f.used, "", nil
 	case strings.Contains(cmd, "helper.sh '"):
 		name := strings.SplitN(strings.SplitN(cmd, "helper.sh '", 2)[1], "'", 2)[0]
+		if fn := f.helperFn[name]; fn != nil {
+			return fn(), "", nil
+		}
 		return f.helper[name], "", nil
 	}
 	return "", "", nil
