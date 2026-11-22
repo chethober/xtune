@@ -72,20 +72,25 @@ func (sp Space) Searchable() bool {
 	return slices.ContainsFunc(sp.Dims, func(d Dim) bool { return !d.Server && len(d.Values) > 0 })
 }
 
-// Prior says how likely a setting value is to work on the network being tuned for, from 0 to 1
-// (0.5: nothing known). Nil: nothing known about anything.
-type Prior func(kind, dim, value string) float64
+// Prior is what is known about the network being tuned for (memory.go); the zero Prior knows
+// nothing.
+type Prior struct {
+	// W says how likely a setting value is to work there, from 0 to 1 (0.5: nothing known).
+	W func(kind, dim, value string) float64
+	// Frags are fragment ranges that worked there for a kind, best first.
+	Frags func(kind string) []string
+}
 
 // sampleValue picks a value of d: by the prior's weights, with a floor so every value keeps a
 // chance (exploration).
 func sampleValue(rng *mrand.Rand, kind string, d Dim, prior Prior) string {
-	if prior == nil {
+	if prior.W == nil {
 		return d.Values[rng.IntN(len(d.Values))]
 	}
 	ws := make([]float64, len(d.Values))
 	total := 0.0
 	for i, v := range d.Values {
-		w := prior(kind, d.Name, v)
+		w := prior.W(kind, d.Name, v)
 		ws[i] = 0.15 + w // explore: a value that never worked still gets picked now and then
 		total += ws[i]
 	}
@@ -108,13 +113,21 @@ func randomFrag(rng *mrand.Rand) string {
 	return protocols.MakeFragSpec(fragPackets[rng.IntN(len(fragPackets))], lo, hi, ilo, ihi)
 }
 
-func setDim(k *state.Knobs, dim, v string, rng *mrand.Rand) {
+func setDim(k *state.Knobs, kind, dim, v string, rng *mrand.Rand, prior Prior) {
 	switch dim {
 	case "fp":
 		k.FP = v
 	case "frag":
 		if v == "range" {
 			v = randomFrag(rng)
+			// half the time, a range that worked here before, moved a little
+			if prior.Frags != nil && rng.IntN(2) == 0 {
+				if good := prior.Frags(kind); len(good) > 0 {
+					if m, ok := protocols.FragSpec(good[rng.IntN(min(len(good), 3))]); ok {
+						v = nudgeFrag(rng, m)
+					}
+				}
+			}
 		}
 		k.Frag = v
 	case "mode":
@@ -141,7 +154,7 @@ func (sp Space) Sample(rng *mrand.Rand, n int, prior Prior) []state.Knobs {
 		}
 		for _, d := range sp.Dims {
 			if !d.Server && len(d.Values) > 0 {
-				setDim(&k, d.Name, sampleValue(rng, sp.Entry.Kind, d, prior), rng)
+				setDim(&k, sp.Entry.Kind, d.Name, sampleValue(rng, sp.Entry.Kind, d, prior), rng, prior)
 			}
 		}
 		if !seen[k] {
@@ -174,7 +187,7 @@ func (sp Space) Mutate(rng *mrand.Rand, k state.Knobs, prior Prior) state.Knobs 
 	cur := map[string]string{"fp": k.FP, "frag": k.Frag, "mode": k.Mode, "alpn": k.ALPN}[d.Name]
 	for range 10 {
 		if v := sampleValue(rng, sp.Entry.Kind, d, prior); v != cur || v == "range" {
-			setDim(&k, d.Name, v, rng)
+			setDim(&k, sp.Entry.Kind, d.Name, v, rng, prior)
 			return k
 		}
 	}

@@ -39,7 +39,7 @@ func TestSearchVariantsKeepsGridAndSamples(t *testing.T) {
 		{ID: "wg", Kind: "wireguard", Port: 51820}}
 	grid := ExpandVariants(entries, "smart")
 	rng := mrand.New(mrand.NewPCG(1, 2))
-	vs := SearchVariants(entries, "smart", nil, nil, rng)
+	vs := SearchVariants(entries, "smart", nil, Prior{}, rng)
 	labels := map[string]bool{}
 	for _, v := range vs {
 		if labels[v.Label] {
@@ -56,12 +56,12 @@ func TestSearchVariantsKeepsGridAndSamples(t *testing.T) {
 		t.Errorf("want %d grid + %d samples, have %d", len(grid), searchSamples["smart"], len(vs))
 	}
 	// a prior that only likes one fingerprint pulls the samples towards it
-	prior := func(kind, dim, v string) float64 {
+	prior := Prior{W: func(kind, dim, v string) float64 {
 		if dim == "fp" && v == "safari" {
 			return 1
 		}
 		return 0
-	}
+	}}
 	sp := SpaceFor(entries[0], "smart", nil)
 	safari := 0
 	for _, k := range sp.Sample(mrand.New(mrand.NewPCG(3, 4)), 40, prior) {
@@ -77,7 +77,7 @@ func TestSearchVariantsKeepsGridAndSamples(t *testing.T) {
 	}
 	// round 2 mutates the best, never WireGuard (its variants are server-side test peers)
 	best := []*Variant{variantFor(entries[0], state.Knobs{FP: "chrome", Frag: "frag:tlshello:20-60:5-15"}), variantFor(entries[1], state.Knobs{Frag: "none", MTU: 1420})}
-	next := Evolve(best, vs, "smart", nil, mrand.New(mrand.NewPCG(5, 6)), 3)
+	next := Evolve(best, vs, "smart", Prior{}, mrand.New(mrand.NewPCG(5, 6)), 3)
 	if len(next) == 0 {
 		t.Fatal("nothing evolved")
 	}
@@ -182,7 +182,7 @@ func TestRunTestsRounds(t *testing.T) {
 	benchFor = func(v *Variant, _ int, _ func(string)) (float64, float64) { return 10, 5 }
 	e := state.Entry{ID: "r-tcp", Kind: "reality-tcp", Port: 443, SNI: "www.a.com", Primary: true}
 	o := TuneOpts{Probes: 5, Parallel: 2, Top: 4, Rounds: 1, Secs: 1, Evolve: 2, Seed: 7, Depth: "smart", Out: t.TempDir(), Log: func(string) {}}
-	vs := SearchVariants([]state.Entry{e}, "smart", nil, nil, o.rng())
+	vs := SearchVariants([]state.Entry{e}, "smart", nil, Prior{}, o.rng())
 	n1 := len(vs)
 	out, err := RunTests(o, testState(), state.NewUser("t"), vs)
 	if err != nil {

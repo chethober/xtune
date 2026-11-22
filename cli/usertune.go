@@ -46,7 +46,10 @@ func userView(st *state.State, u state.User, asn string, hour int, now time.Time
 }
 
 // needsASN says whether serving u depends on the network they ask from (an ASN lookup).
-func needsASN(st *state.State, u state.User) bool { return len(st.Networks) > 0 }
+func needsASN(st *state.State, u state.User) bool { return len(st.Networks) > 0 || needsASNHook(st, u) }
+
+// needsASNHook says whether the user's own results need it (memory.go).
+var needsASNHook = func(st *state.State, u state.User) bool { return false }
 
 // personalRank is where a user's own measurements reorder their configs (see ranks.go); without
 // any, the view as it is.

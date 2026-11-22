@@ -345,6 +345,21 @@ func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (
 			fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
 		}
 	}
+	for _, rep := range reports { // what each network's measurements teach the next tunes
+		byLabel := map[string]*Variant{}
+		for _, v := range p.Variants {
+			byLabel[v.Label] = v
+		}
+		var vs []*Variant
+		for _, c := range rep.Results {
+			if v, ok := byLabel[c.Label]; ok {
+				m := *v
+				m.Ok, m.N, m.Warm, m.Down, m.Up, m.Score = c.Ok, c.N, c.Warm, c.Down, c.Up, c.Score
+				vs = append(vs, &m)
+			}
+		}
+		learnTune(r, rep.ASN, orStr(rep.ASName, rep.Network), vs, func(s string) { fmt.Fprintln(w, s) })
+	}
 	for _, rep := range reports {
 		scores, addrs := labelRank(st.Entries, labels, rep.Results)
 		if err := RecordNetwork(r, netinfo.Network{ASN: rep.ASN, Name: orStr(rep.ASName, rep.Network)}, scores, addrs); err != nil {

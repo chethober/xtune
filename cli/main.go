@@ -87,6 +87,8 @@ On the server (as root):
                                            kind, reality|cdn|worker|ssh|vpn|udp|tcp|xray, via:RELAY); denied
                                            configs refuse them on the server too
   xtune presets   [list | set NAME [tune flags] | del NAME] [--json]   named tuning policies for many users
+  xtune memory    [show | clear]           what tunes, checks and reports learned per network (it guides the
+                                           next tune's search) and per user (it orders their subscriptions)
   xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
   xtune public    [list | add NAME [--quota GB] [--days N] [--devices N] [--plan P] [--members N]]
   xtune public    limit|link|token|pause|resume|del NAME   pools of users shared through the community VPN bot
@@ -150,6 +152,8 @@ func main() {
 		err = cmdUsers(args)
 	case "presets":
 		err = cmdPresets(args)
+	case "memory":
+		err = cmdMemory(args)
 	case "domains":
 		err = cmdDomains(args)
 	case "sub":

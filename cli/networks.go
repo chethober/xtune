@@ -128,13 +128,16 @@ func RecordNetwork(r *remote.Server, n netinfo.Network, scores map[string]float6
 // recordCheck stores a check's results as its network's ranking.
 func recordCheck(r *remote.Server, n netinfo.Network, st *state.State, res []CheckResult) error {
 	scores := map[string]float64{}
+	var vs []*Variant
 	for _, c := range res {
 		for _, e := range st.Entries {
 			if e.ID == c.ID {
 				scores[state.EntryKey(e)] = checkScore(c)
+				vs = append(vs, &Variant{Entry: e, K: e.Knobs(), Ok: c.Ok, N: c.N, Warm: c.Warm, Down: c.Down, Up: c.Up, Score: checkScore(c)})
 			}
 		}
 	}
+	learnTune(r, n.ASN, n.Name, vs, func(string) {}) // the deployed settings' evidence, for the next tune
 	return RecordNetwork(r, n, scores, nil)
 }
 

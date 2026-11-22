@@ -1093,6 +1093,12 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 	}
 	o.deployed, _ = state.Load(r)
 	netw := netinfo.Detect(&o.Network, o.Log)
+	if o.Prior.W == nil && !o.Grid { // what earlier tunes, checks and reports found on this network
+		if mem, err := state.LoadMemory(r); err == nil && len(mem.Nets) > 0 {
+			o.Prior = priorFrom(mem, netw.ASN, time.Now().Unix())
+			o.Log("[*] search: guided by what worked before on this network")
+		}
+	}
 	made, err := o.tuneCloudflare(r.Conn.Host)
 	if err != nil {
 		return nil, err
@@ -1268,8 +1274,10 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 		o.Evolve = 2
 	}
 	if vs, err = RunTests(o, st, tuneUser, vs); err != nil {
+		learnTune(r, netw.ASN, netw.Name, vs, o.Log) // nothing got through: worth remembering too
 		return nil, err
 	}
+	learnTune(r, netw.ASN, netw.Name, vs, o.Log)
 	var buf strings.Builder
 	best, err := Report(&buf, o, st, tuneUser, vs)
 	if err != nil {

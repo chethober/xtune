@@ -103,6 +103,7 @@ func (h subHandler) serveClientReport(w http.ResponseWriter, req *http.Request, 
 		return
 	}
 	lastReports.Store(key, now)
+	learnReport(h.r, u, in, now) // a hint for later: a failure here changes nothing the user sees
 	w.WriteHeader(http.StatusNoContent)
 }
 

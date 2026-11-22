@@ -39,7 +39,7 @@ const personalTuneMax = 40
 var lastPersonal sync.Map // user name -> time.Time
 
 // personalPrior is what guides a personal tune's samples (memory.go fills it in).
-var personalPrior = func(st *state.State, u state.User, asn string) Prior { return nil }
+var personalPrior = func(st *state.State, u state.User, asn string) Prior { return Prior{} }
 
 // overrideString is a knob override as a variant key carries it.
 func overrideString(k state.Knobs) string {
@@ -214,6 +214,7 @@ func personalPick(st *state.State, u state.User, in ClientReport) (map[string][]
 // the results for the network's ranking.
 func applyPersonalTune(r *remote.Server, name string, in ClientReport, now time.Time) (*PersonalResult, error) {
 	var res *PersonalResult
+	var learn func(*state.Memory)
 	err := func() error {
 		defer r.Lock()()
 		st, err := requireState(r)
@@ -258,7 +259,7 @@ func applyPersonalTune(r *remote.Server, name string, in ClientReport, now time.
 			pr.Knobs = nil
 		}
 		pr.Tuned = now.Unix()
-		recordPersonal(st, *u, in, groups, now)
+		learn = recordPersonal(st, *u, in, groups, now)
 		if err := state.Save(r, st); err != nil {
 			return err
 		}
@@ -267,6 +268,9 @@ func applyPersonalTune(r *remote.Server, name string, in ClientReport, now time.
 	}()
 	if err != nil {
 		return nil, err
+	}
+	if learn != nil {
+		changeMemory(r, func(m *state.Memory, _ *state.State) { learn(m) })
 	}
 	// the configs' best results count for this network like a report from the app
 	rep := ClientReport{ASN: in.ASN, Name: in.Name, Hour: in.Hour}
@@ -305,6 +309,8 @@ func sameKnobs(a, b state.Knobs) bool {
 	return a == b
 }
 
-// recordPersonal is where a personal tune's results go into the user's and network's memory
-// (memory.go).
-var recordPersonal = func(st *state.State, u state.User, in ClientReport, groups map[string][]*Variant, now time.Time) {}
+// recordPersonal is what a personal tune teaches the user's and network's memory (memory.go),
+// saved once the state is no longer locked.
+var recordPersonal = func(st *state.State, u state.User, in ClientReport, groups map[string][]*Variant, now time.Time) func(*state.Memory) {
+	return nil
+}

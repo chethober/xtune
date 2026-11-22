@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
   own leg to the server. The tune prints a configs × routes matrix; each route's score joins the network's ranking,
   and subscriptions list the best route for the network first, across the server and its relays. App reports on a
   relay's configs count for that route.
+- Tunes remember: every tune, shared-test report, check, personal tune and app report updates per-network weights
+  of every setting value (Hedge with forgetting: evidence halves every 3 days) and the fragment ranges that worked,
+  in `memory.json` on the server. The next tune's search samples by them, keeping a floor for exploration. Each
+  user's own results per network order their subscription first (70% theirs, 30% the network's), unless they turn
+  it off. `xtune memory [show | clear]`.
 - Personal tunes: users with `--self-tune on` tune their own configs' client settings from the app
   (`GET`/`POST <subscription>/tune`), with their own credentials and no test instance; the best settings become
   theirs and count for their network's ranking.
