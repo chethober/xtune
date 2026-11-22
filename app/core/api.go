@@ -313,6 +313,70 @@ var handlers = map[string]handler{
 		return nil, SendReport(in.URL, in.Network, in.Results)
 	},
 
+	// the user's own tuning on their subscription (the Check tab)
+	"prefs.get": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			URL string `json:"url"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return Prefs(in.URL)
+	},
+	"prefs.set": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			URL   string      `json:"url"`
+			Prefs PrefsChange `json:"prefs"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return SetPrefs(in.URL, in.Prefs)
+	},
+	"personal.fetch": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			URL string `json:"url"`
+			ASN string `json:"asn"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return FetchPersonalTune(in.URL, in.ASN)
+	},
+	"personal.send": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			URL     string   `json:"url"`
+			Network Network  `json:"network"`
+			Results []Result `json:"results"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return SendPersonalTune(in.URL, in.Network, in.Results)
+	},
+	// a user's tuning on a managed server (the Manage tab)
+	"manage.userTune": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			Server ServerConn `json:"server"`
+			Name   string     `json:"name"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return UserTune(in.Server, in.Name)
+	},
+	"manage.setUserTune": func(a []byte) (any, error) {
+		in, err := decode[struct {
+			Server ServerConn     `json:"server"`
+			Name   string         `json:"name"`
+			Change map[string]any `json:"change"`
+		}](a)
+		if err != nil {
+			return nil, err
+		}
+		return SetUserTune(in.Server, in.Name, in.Change)
+	},
+
 	"manage.connect": func(a []byte) (any, error) {
 		c, err := decode[ServerConn](a)
 		if err != nil {

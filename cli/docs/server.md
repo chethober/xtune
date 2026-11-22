@@ -44,7 +44,8 @@ personal tune from there: the app measures variants of the user's own configs (t
 ones and samples from each config's client-side search space) with the user's own credentials, so it needs no test
 instance, and the best settings of each config become theirs (`GET`/`POST <subscription>/tune`, at most every 10
 minutes). The results also count for that network's ranking, like a report from the app. Management links (and the app's Manage tab) do the same with the `tune` and `setTune`
-operations; a reseller can only tune their own users.
+operations; a reseller can only tune their own users. In the xtune app, users find all of this under **Check → My
+configs** (and *Tune my configs* when self-tuning is on), and admins under **Manage → Users → a user → Tuning**.
 
 ## Subscriptions
 
