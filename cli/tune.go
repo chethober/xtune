@@ -57,6 +57,10 @@ type TuneOpts struct {
 	Zone                          string   // Cloudflare zone: domains not given get random names in it
 	CleanIPs                      int      // CDN and Worker configs: also measure them through this many clean edge IPs
 	Prepare                       bool     // start the test matrix without measuring it: an app measures it (tune --prepare)
+	Grid                          bool     // the fixed grid of client settings only: no samples, no second round
+	Evolve                        int      // second round: mutations per good variant (0: none)
+	Prior                         Prior    // what worked before on this network (memory.go), guiding the samples
+	Seed                          uint64   // the search's random seed (0: random)
 	Log                           func(string)
 
 	deployed *state.State  // the server's deployment, if any
@@ -84,6 +88,14 @@ func parseProtocols(list string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func (o TuneOpts) rng() *mrand.Rand {
+	seed := o.Seed
+	if seed == 0 {
+		seed = mrand.Uint64()
+	}
+	return mrand.New(mrand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 }
 
 func (o *TuneOpts) defaults() {
@@ -124,6 +136,9 @@ type Variant struct {
 	Down, Up   float64
 	Benched    bool
 	Score      float64
+	Round      int `json:",omitempty"` // the search round that added it (0: the first)
+
+	oks []int // ms of each probe that got through, over all rounds
 
 	dial      func(ctx context.Context, network, addr string) (net.Conn, error) // non-Xray tunnels
 	handshake func(ctx context.Context) (time.Duration, error)                  // VPNs: handshake only
@@ -466,7 +481,8 @@ type harness struct {
 	cmd     *exec.Cmd
 	logFile *os.File
 	once    sync.Once
-	closers []func() // in-process tunnels (AmneziaWG)
+	closers []func()   // in-process tunnels (AmneziaWG)
+	more    []*harness // later rounds' harnesses, stopped with this one
 }
 
 func freePorts(n int) ([]int, error) {
@@ -523,7 +539,11 @@ func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir
 		h.stop()
 		return nil, err
 	}
-	cfg := J{"log": J{"loglevel": "error"}, "inbounds": []J{}, "outbounds": protocols.FragOutbounds(), "routing": J{"rules": []J{}}}
+	var frags []string
+	for _, v := range vs {
+		frags = append(frags, v.K.Frag)
+	}
+	cfg := J{"log": J{"loglevel": "error"}, "inbounds": []J{}, "outbounds": protocols.FragOutbounds(frags...), "routing": J{"rules": []J{}}}
 	for i, v := range vs {
 		v.port = ports[i]
 		cfg["inbounds"] = append(cfg["inbounds"].([]J), J{"tag": fmt.Sprintf("in%d", i), "listen": "127.0.0.1",
@@ -572,6 +592,9 @@ func startHarness(bin string, st *state.State, u state.User, all []*Variant, dir
 
 func (h *harness) stop() {
 	h.once.Do(func() {
+		for _, m := range h.more {
+			m.stop()
+		}
 		for _, c := range h.closers {
 			c()
 		}
@@ -603,13 +626,23 @@ func socksClient(port int, timeout time.Duration) *http.Client {
 		DisableKeepAlives: true, TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout}}}
 }
 
+// harnessFor and probeFor are startHarness and probe (tests measure without Xray).
+var (
+	harnessFor = startHarness
+	probeFor   = probe
+	benchFor   = func(v *Variant, secs int, log func(string)) (float64, float64) {
+		return download(v, secs, log), upload(v, secs)
+	}
+)
+
+// probe measures n more fresh requests through v; results add up over rounds.
 func probe(v *Variant, n int) {
 	timeout := 8 * time.Second
 	if v.Entry.Kind == "dnstt" { // a fresh tunnel, SSH login and request, all over DNS
 		timeout = 30 * time.Second
 	}
 	c := v.client(timeout)
-	var ok []int
+	first := v.N == 0
 	for i := 0; i < n; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		t0 := time.Now()
@@ -628,18 +661,19 @@ func probe(v *Variant, n int) {
 		}
 		ms := int(time.Since(t0).Milliseconds())
 		cancel()
-		if i == 0 && good {
+		if i == 0 && first && good {
 			v.Cold = ms
 		}
 		if good {
-			ok = append(ok, ms)
+			v.oks = append(v.oks, ms)
 		}
 	}
-	v.Ok, v.N = len(ok), n
-	if len(ok) > 0 {
-		warm := ok
-		if len(ok) > 1 {
-			warm = ok[1:]
+	v.N += n
+	v.Ok = len(v.oks)
+	if len(v.oks) > 0 {
+		warm := v.oks
+		if len(v.oks) > 1 && v.Cold >= 0 {
+			warm = v.oks[1:]
 		}
 		v.Warm = median(warm)
 	}
@@ -797,35 +831,60 @@ func pick(vs []*Variant) *Variant {
 	return best
 }
 
-// RunTests screens every variant, then benchmarks the best of each (entry, fragment, mode) group.
-func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) error {
-	h, err := startHarness(o.XrayBin, st, u, vs, o.Out, true)
+// RunTests measures the variants in rounds (successive halving): every variant gets a quick screen,
+// the ones that got through get the rest of the probes, then, when searching, the best are mutated
+// into a second round (Evolve) measured the same way; the best of each (entry, fragment, mode)
+// group gets the throughput test.
+func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) ([]*Variant, error) {
+	h, err := harnessFor(o.XrayBin, st, u, vs, o.Out, true)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	setActiveHarness(h)
 	defer func() { setActiveHarness(nil); h.stop() }()
 
-	o.Log(fmt.Sprintf("\n[screen] %d variants, %d probes each, %d in parallel", len(vs), o.Probes, o.Parallel))
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	sem := make(chan struct{}, o.Parallel)
-	done := 0
-	for _, v := range vs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(v *Variant) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			probe(v, o.Probes)
-			mu.Lock()
-			done++
-			o.Log(fmt.Sprintf("  %3d/%d %-56s ok=%d/%d cold=%5s warm=%5s", done, len(vs), v.Label, v.Ok, v.N, ms(v.Cold), ms(v.Warm)))
-			mu.Unlock()
-		}(v)
+	screen := min(o.Probes, 2)
+	if len(vs) <= 3*o.Parallel { // small matrices: no halving, every variant gets every probe
+		screen = o.Probes
 	}
-	wg.Wait()
-
+	probeAll(o, vs, screen, "screen")
+	if rest := o.Probes - screen; rest > 0 {
+		var alive []*Variant
+		for _, v := range vs {
+			if v.Ok > 0 {
+				alive = append(alive, v)
+			}
+		}
+		sortByProbe(alive)
+		keep := alive[:min(len(alive), max(o.Top, len(alive)/3+1))]
+		probeAll(o, keep, rest, fmt.Sprintf("confirm the best %d", len(keep)))
+	}
+	if o.Evolve > 0 {
+		var good []*Variant
+		for _, v := range vs {
+			if v.Ok > 0 && v.handshake == nil && v.dial == nil {
+				good = append(good, v)
+			}
+		}
+		sortByProbe(good)
+		next := Evolve(good[:min(len(good), 8)], vs, o.Depth, o.Prior, o.rng(), o.Evolve)
+		if len(next) > 0 {
+			o.Log(fmt.Sprintf("\n[search] round 2: %d variants evolved from the best of round 1", len(next)))
+			for _, v := range next {
+				v.Round = 1
+			}
+			dir := filepath.Join(o.Out, "round2")
+			os.MkdirAll(dir, 0o700)
+			h2, err := harnessFor(o.XrayBin, st, u, next, dir, true)
+			if err != nil {
+				o.Log("[!] round 2 could not start: " + err.Error())
+			} else {
+				h.more = append(h.more, h2)
+				probeAll(o, next, o.Probes, "round 2")
+				vs = append(vs, next...)
+			}
+		}
+	}
 	var alive []*Variant
 	answered := false
 	for _, v := range vs {
@@ -835,14 +894,9 @@ func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) error {
 		answered = answered || v.Ok > 0
 	}
 	if !answered {
-		return fmt.Errorf("nothing connected - the server may be blocked from this network (see %s/xray.log)", o.Out)
+		return vs, fmt.Errorf("nothing connected - the server may be blocked from this network (see %s/xray.log)", o.Out)
 	}
-	sort.SliceStable(alive, func(i, j int) bool {
-		if alive[i].Ok != alive[j].Ok {
-			return alive[i].Ok > alive[j].Ok
-		}
-		return alive[i].Warm < alive[j].Warm
-	})
+	sortByProbe(alive)
 	// few-ms latency gaps are noise: give every (entry, fragment, mode, clean IP) group a throughput number
 	var promo []*Variant
 	seen := map[string]bool{}
@@ -864,7 +918,7 @@ func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) error {
 	o.Log(fmt.Sprintf("\n[benchmark] %d variants x %d rounds, %ds per transfer", len(promo), o.Rounds, o.Secs))
 	for r := 0; r < o.Rounds; r++ {
 		for _, v := range promo {
-			d, u := download(v, o.Secs, o.Log), upload(v, o.Secs)
+			d, u := benchFor(v, o.Secs, o.Log)
 			v.Downs, v.Ups = append(v.Downs, d), append(v.Ups, u)
 			o.Log(fmt.Sprintf("  r%d %-56s down=%7.2f  up=%6.2f Mbps", r+1, v.Label, d, u))
 		}
@@ -876,7 +930,41 @@ func RunTests(o TuneOpts, st *state.State, u state.User, vs []*Variant) error {
 		v.Score = score(v)
 	}
 	sort.SliceStable(vs, func(i, j int) bool { return vs[i].Score > vs[j].Score })
-	return nil
+	return vs, nil
+}
+
+// probeAll probes the variants, o.Parallel at a time.
+func probeAll(o TuneOpts, vs []*Variant, n int, what string) {
+	o.Log(fmt.Sprintf("\n[%s] %d variants, %d probes each, %d in parallel", what, len(vs), n, o.Parallel))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sem := make(chan struct{}, o.Parallel)
+	done := 0
+	for _, v := range vs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(v *Variant) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			probeFor(v, n)
+			mu.Lock()
+			done++
+			o.Log(fmt.Sprintf("  %3d/%d %-56s ok=%d/%d cold=%5s warm=%5s", done, len(vs), v.Label, v.Ok, v.N, ms(v.Cold), ms(v.Warm)))
+			mu.Unlock()
+		}(v)
+	}
+	wg.Wait()
+}
+
+// sortByProbe puts the most reliable, then fastest, first.
+func sortByProbe(vs []*Variant) {
+	sort.SliceStable(vs, func(i, j int) bool {
+		ri, rj := float64(vs[i].Ok)/float64(max(vs[i].N, 1)), float64(vs[j].Ok)/float64(max(vs[j].N, 1))
+		if ri != rj {
+			return ri > rj
+		}
+		return vs[i].Warm < vs[j].Warm
+	})
 }
 
 // Best returns the chosen variant per entry, best first.
@@ -1123,12 +1211,22 @@ func Tune(r *remote.Server, o TuneOpts) (*TuneResult, error) {
 	o.Log("[*] test inbounds: " + strings.Join(ids, ", "))
 	time.Sleep(time.Second)
 
-	vs := supportedKnobs(o.XrayBin, st, ExpandVariants(entries, o.Depth, o.Resolvers...), o.Log)
+	var vs []*Variant
+	if o.Grid {
+		vs = ExpandVariants(entries, o.Depth, o.Resolvers...)
+	} else {
+		vs = SearchVariants(entries, o.Depth, o.Resolvers, o.Prior, o.rng())
+		o.Log(fmt.Sprintf("[*] search: %d variants (the usual settings, plus samples of fingerprint, fragmentation and mode)", len(vs)))
+	}
+	vs = supportedKnobs(o.XrayBin, st, vs, o.Log)
 	vs = addCleanIPVariants(st, entries, vs, o.CleanIPs, o.Log)
 	if o.Prepare {
 		return &TuneResult{State: st, User: tuneUser, Entries: entries, All: vs, Network: netw, NetName: o.Network}, nil
 	}
-	if err := RunTests(o, st, tuneUser, vs); err != nil {
+	if !o.Grid && o.Evolve == 0 {
+		o.Evolve = 2
+	}
+	if vs, err = RunTests(o, st, tuneUser, vs); err != nil {
 		return nil, err
 	}
 	var buf strings.Builder

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,8 +20,50 @@ var fragments = map[string]map[string]string{
 	"frag-aggr": {"packets": "tlshello", "length": "10-30", "interval": "5-10"},
 }
 
+// A fragment setting is a preset name (FragNames) or a spec found by tuning's search:
+//
+//	frag:PACKETS:LENGTH:INTERVAL   e.g. frag:tlshello:20-60:5-15, frag:1-3:40-80:10-20
+//
+// PACKETS is tlshello (the TLS ClientHello) or a range of TCP packets, LENGTH the bytes per fragment
+// and INTERVAL the milliseconds between them, as Xray's freedom "fragment" takes them. The spec is
+// also the tag of the fragmenting outbound, so configs with the same one share it.
+
+var fragSpecRe = regexp.MustCompile(`^frag:(tlshello|[1-9]-[1-9])` + `:([1-9][0-9]{0,3})-([1-9][0-9]{0,3}):([0-9]{1,3})-([0-9]{1,3})$`)
+
+// FragSpec is a fragment spec's settings, or false when s is not one.
+func FragSpec(s string) (map[string]string, bool) {
+	m := fragSpecRe.FindStringSubmatch(s)
+	if m == nil {
+		return nil, false
+	}
+	lo, _ := strconv.Atoi(m[2])
+	hi, _ := strconv.Atoi(m[3])
+	ilo, _ := strconv.Atoi(m[4])
+	ihi, _ := strconv.Atoi(m[5])
+	if lo > hi || hi > 1400 || ilo > ihi || ihi > 200 {
+		return nil, false
+	}
+	return map[string]string{"packets": m[1], "length": m[2] + "-" + m[3], "interval": m[4] + "-" + m[5]}, true
+}
+
+// MakeFragSpec is the spec for these settings.
+func MakeFragSpec(packets string, lo, hi, ilo, ihi int) string {
+	return fmt.Sprintf("frag:%s:%d-%d:%d-%d", packets, lo, hi, ilo, ihi)
+}
+
 // ValidFrag says whether f names a fragment setting clients know.
-func ValidFrag(f string) bool { return slices.Contains(FragNames, f) }
+func ValidFrag(f string) bool {
+	_, spec := FragSpec(f)
+	return spec || slices.Contains(FragNames, f)
+}
+
+// fragSettings are the freedom outbound's fragment settings for a preset or spec.
+func fragSettings(f string) (map[string]string, bool) {
+	if m, ok := fragments[f]; ok {
+		return m, true
+	}
+	return FragSpec(f)
+}
 
 func addrFor(st *state.State, e state.Entry) string {
 	switch {
@@ -248,10 +291,31 @@ func directDownload(st *state.State, e state.Entry, k state.Knobs) J {
 		"xhttpSettings": J{"path": e.Path}}
 }
 
-func FragOutbounds() []J {
+// FragOutbounds are the fragmenting outbounds: the presets, and the specs given (or that the
+// outbounds given use, see FragsOf).
+func FragOutbounds(specs ...string) []J {
 	var out []J
-	for _, n := range FragNames[1:] {
-		out = append(out, J{"tag": n, "protocol": "freedom", "settings": J{"fragment": fragments[n]}})
+	seen := map[string]bool{}
+	for _, n := range append(slices.Clone(FragNames[1:]), specs...) {
+		m, ok := fragSettings(n)
+		if !ok || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, J{"tag": n, "protocol": "freedom", "settings": J{"fragment": m}})
+	}
+	return out
+}
+
+// FragsOf are the fragment settings the outbounds dial through.
+func FragsOf(obs ...J) []string {
+	var out []string
+	for _, ob := range obs {
+		ss, _ := ob["streamSettings"].(J)
+		so, _ := ss["sockopt"].(J)
+		if d, _ := so["dialerProxy"].(string); d != "" && !slices.Contains(out, d) {
+			out = append(out, d)
+		}
 	}
 	return out
 }
@@ -264,7 +328,7 @@ func clientInbounds() []J {
 
 // ClientConfig is a ready-to-run client config (socks 10808, http 10809).
 func ClientConfig(out J) J {
-	obs := append([]J{out}, FragOutbounds()...)
+	obs := append([]J{out}, FragOutbounds(FragsOf(out)...)...)
 	obs = append(obs, J{"tag": "direct", "protocol": "freedom"})
 	return J{"log": J{"loglevel": "warning"}, "inbounds": clientInbounds(), "outbounds": obs,
 		"routing": J{"rules": []J{{"ip": []string{"geoip:private"}, "outboundTag": "direct"}}}}
@@ -290,7 +354,7 @@ func FailoverConfig(st *state.State, u state.User) J {
 			first = orStr(first, "proxy-"+e.ID)
 		}
 	}
-	obs = append(obs, FragOutbounds()...)
+	obs = append(obs, FragOutbounds(FragsOf(obs...)...)...)
 	obs = append(obs, J{"tag": "direct", "protocol": "freedom"}, J{"tag": "block", "protocol": "blackhole"})
 	rules := []J{{"ip": []string{"geoip:private"}, "outboundTag": "direct"},
 		{"domain": []string{"geosite:category-ads-all"}, "outboundTag": "block"}}

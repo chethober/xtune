@@ -44,6 +44,9 @@ On your computer (client):
                   --clean-ips N            measure the CDN and Worker configs through the N best Cloudflare edge
                                            IPs from here too (default 3, 0 = off)
                   --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
+                  --grid                   only the fixed grid of client settings (default: search: samples of
+                                           fingerprint, fragment ranges and XHTTP mode, then a second round
+                                           evolved from the best, --evolve N per variant)
   xtune measure   FILE [--network NAME] [--report OUT]   measure a shared test from this network (no SSH)
   xtune deploy    [conn] [-n N] [REPORT ...]   deploy the shared test, so every network gets a config that works
   xtune check     [conn] [--network NAME] [--every 6h]   quick check of the deployed configs from this network;
@@ -404,6 +407,9 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
 	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
+	fs.BoolVar(&o.Grid, "grid", false, "try only the fixed grid of client settings: no search samples, no second round")
+	fs.IntVar(&o.Evolve, "evolve", 0, "second round: this many mutations of each of the best variants (default 2; with --grid none)")
+	fs.Uint64Var(&o.Seed, "seed", 0, "the search's random seed, to repeat a tune's samples (0 = random)")
 	var err error
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")

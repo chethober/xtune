@@ -61,7 +61,7 @@ type ClientEntry struct {
 
 // ClientProfileFor builds u's profile from st, which is already ordered for the requester.
 func ClientProfileFor(st *state.State, u state.User) ClientProfile {
-	p := ClientProfile{V: ClientProfileVersion, Name: SubName(st, u), User: u.Name, Country: st.Country, Probe: ProbeURL, Frag: FragOutbounds()}
+	p := ClientProfile{V: ClientProfileVersion, Name: SubName(st, u), User: u.Name, Country: st.Country, Probe: ProbeURL}
 	for _, s := range subServers(st) {
 		for _, e := range linkEntries(s) {
 			if c, ok := ClientEntryFor(s, e, u, e.Knobs(), "proxy-"+e.ID); ok {
@@ -69,7 +69,19 @@ func ClientProfileFor(st *state.State, u state.User) ClientProfile {
 			}
 		}
 	}
+	p.Frag = FragOutbounds(ConfigFrags(p.Configs)...)
 	return p
+}
+
+// ConfigFrags are the fragment settings the configs' Xray outbounds use.
+func ConfigFrags(cs []ClientEntry) []string {
+	var obs []J
+	for _, c := range cs {
+		if c.Outbound != nil {
+			obs = append(obs, c.Outbound)
+		}
+	}
+	return FragsOf(obs...)
 }
 
 // ClientEntryFor is u's config for entry e on server s with client settings k; tag names its Xray

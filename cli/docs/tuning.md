@@ -44,7 +44,25 @@ When the server has iptables, a Hysteria2 entry that listens on one port while a
 
 ## Client knobs
 
-uTLS fingerprint (chrome, firefox, safari, edge, randomized), TLS ClientHello fragmentation, XHTTP mode, all tested per config. With a CDN domain, also a *split* CDN entry: uploads go through the CDN, downloads straight from the server.
+uTLS fingerprint (chrome, firefox, safari, edge, randomized, ios, android), TLS ClientHello fragmentation, XHTTP mode,
+HTTP/3 to the CDN, all tested per config.
+
+## Search
+
+Tuning searches the client settings instead of only trying a fixed grid. Each kind of config has a *search space*:
+fingerprint, fragmentation (the presets, or a range: which packets, how many bytes per piece, how many milliseconds
+between pieces, written `frag:tlshello:20-60:5-15`), XHTTP mode and ALPN, each marked client-side (any user's app can
+change it) or server-side (SNI, port and path: a redeploy). A tune measures
+
+1. the usual settings (the grid earlier versions tried, so nothing they found is lost), plus samples from the space
+   (3 per config, 6 with `--depth deep`), drawn towards what worked before on this network;
+2. a quick screen of every variant (2 probes); only the ones that got through get the rest (successive halving);
+3. a second round: each of the 8 best is mutated (one setting changed, a fragment range moved a little) or crossed
+   with another good one of the same config (`--evolve N` per variant, default 2), measured the same way;
+4. the throughput test for the best of each config, fragment and mode.
+
+`--grid` goes back to the fixed grid; `--seed N` repeats a tune's samples. Shared tests (`--share`) send their
+testers the exact variants, so every network measures the same ones. With a CDN domain, also a *split* CDN entry: uploads go through the CDN, downloads straight from the server.
 
 ## Clean IPs
 

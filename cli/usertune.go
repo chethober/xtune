@@ -80,7 +80,7 @@ func checkOverride(o state.KnobOverride) error {
 	case o.FP != "" && !slices.Contains(tuneFPs, o.FP):
 		return fmt.Errorf("fp %q: one of %s", o.FP, strings.Join(tuneFPs, ", "))
 	case o.Frag != "" && !protocols.ValidFrag(o.Frag):
-		return fmt.Errorf("frag %q: none, frag-mild or frag-aggr", o.Frag)
+		return fmt.Errorf("frag %q: none, frag-mild, frag-aggr or a range like frag:tlshello:20-60:5-15", o.Frag)
 	case o.Mode != "" && !slices.Contains(tuneModes, o.Mode):
 		return fmt.Errorf("mode %q: one of %s", o.Mode, strings.Join(tuneModes, ", "))
 	case o.Split != "" && o.Split != "cdn-up" && o.Split != "none":
@@ -475,7 +475,7 @@ func (k knobFlag) Set(s string) error {
 	return nil
 }
 
-// parseOverride reads "fp=chrome,frag=frag-aggr,mtu=1280" ("none": no override).
+// parseOverride reads "fp=chrome,frag=frag:tlshello:20-60:5-15,mtu=1280" ("none": no override).
 func parseOverride(s string) (state.KnobOverride, error) {
 	var o state.KnobOverride
 	if s == "none" || s == "" {

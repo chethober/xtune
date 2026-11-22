@@ -12,6 +12,14 @@ All notable changes to this project are documented here. The format follows
   themselves; `--self-tune on` lets them tune their own configs from the app. `xtune presets` names a policy for
   many users (`users tune NAME --preset P`). Management links get the `tune` and `setTune` operations (resellers:
   their own users), and the subscription server `GET`/`PUT <subscription>/prefs` for the user's own choices.
+- Tuning searches client settings instead of a fixed grid: each config kind has a search space (fingerprint,
+  fragmentation ranges such as `frag:tlshello:20-60:5-15`, XHTTP mode, ALPN). A tune measures the usual settings
+  plus samples, screens every variant quickly and gives the rest of the probes only to the ones that got through
+  (successive halving), then evolves a second round from the best (`--evolve N`). `--grid` keeps the old grid,
+  `--seed N` repeats a search. Shared bundles carry the exact variants.
+- Personal tunes: users with `--self-tune on` tune their own configs' client settings from the app
+  (`GET`/`POST <subscription>/tune`), with their own credentials and no test instance; the best settings become
+  theirs and count for their network's ranking.
 
 ## [1.6.1] - 2026-11-19
 

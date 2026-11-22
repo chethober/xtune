@@ -295,9 +295,10 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	isMetrics := req.Method == http.MethodGet && (len(parts) == 2 || len(parts) == 3) && parts[1] == "metrics"
 	isReport := req.Method == http.MethodPost && len(parts) == 3 && parts[2] == "report"
 	isPrefs := (req.Method == http.MethodPut || req.Method == http.MethodGet) && len(parts) == 3 && parts[2] == "prefs"
+	isTune := (req.Method == http.MethodPost || req.Method == http.MethodGet) && len(parts) == 3 && parts[2] == "tune"
 	isPub := len(parts) >= 3 && parts[1] == "pub" &&
 		(len(parts) == 3 && req.Method == http.MethodGet || len(parts) == 4 && req.Method == http.MethodPost)
-	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm && !isReport && !isPrefs {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm && !isReport && !isPrefs && !isTune {
 		http.NotFound(w, req)
 		return
 	}
@@ -339,7 +340,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 4 || parts[0] != st.Sub.Path ||
-		len(parts) == 3 && parts[2] != "json" && parts[2] != "client" && parts[2] != "report" && parts[2] != "prefs" || len(parts) == 4 && parts[2] != "f" {
+		len(parts) == 3 && parts[2] != "json" && parts[2] != "client" && parts[2] != "report" && parts[2] != "prefs" && parts[2] != "tune" || len(parts) == 4 && parts[2] != "f" {
 		http.NotFound(w, req)
 		return
 	}
@@ -364,6 +365,9 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	case isPrefs:
 		h.serveUserPrefs(w, req, st, *u)
+		return
+	case isTune:
+		h.serveTune(w, req, st, *u, now)
 		return
 	case len(parts) == 3 && parts[2] == "client":
 		serveClientProfile(w, req, st, *u, uu, now)

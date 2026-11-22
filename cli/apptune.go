@@ -97,7 +97,7 @@ func PrepareProfile(r *remote.Server, res *TuneResult, o TuneOpts) (*TestProfile
 // testProfile is the variants as configs for user u (the test user), each keyed by its label.
 func testProfile(id string, expires int64, st *state.State, u state.User, vs []*Variant) *TestProfile {
 	tp := &TestProfile{ID: id, Expires: expires, Profile: protocols.ClientProfile{V: protocols.ClientProfileVersion,
-		Name: "xtune test", User: u.Name, Country: st.Country, Probe: protocols.ProbeURL, Frag: protocols.FragOutbounds()}}
+		Name: "xtune test", User: u.Name, Country: st.Country, Probe: protocols.ProbeURL}}
 	for i, v := range vs {
 		if v.Entry.HandshakeOnly() { // OpenVPN and IKEv2 run in other apps
 			tp.Skipped = append(tp.Skipped, v.Label)
@@ -112,6 +112,7 @@ func testProfile(id string, expires int64, st *state.State, u state.User, vs []*
 		c.ID, c.Key, c.Name = v.Entry.ID+"#"+strconv.Itoa(i), v.Label, v.Label
 		tp.Profile.Configs = append(tp.Profile.Configs, c)
 	}
+	tp.Profile.Frag = protocols.FragOutbounds(protocols.ConfigFrags(tp.Profile.Configs)...)
 	return tp
 }
 

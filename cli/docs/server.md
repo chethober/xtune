@@ -40,7 +40,10 @@ lists). `--pin` lists configs first, `--max N` keeps the first N per server, `--
 
 Users change their own order, hidden configs and client settings from the app's Check tab (or `GET`/`PUT
 <subscription>/prefs`), unless `--lock order,hide,knobs` says otherwise; `--self-tune on` also lets them run a
-personal tune from there. Management links (and the app's Manage tab) do the same with the `tune` and `setTune`
+personal tune from there: the app measures variants of the user's own configs (their current settings, the usual
+ones and samples from each config's client-side search space) with the user's own credentials, so it needs no test
+instance, and the best settings of each config become theirs (`GET`/`POST <subscription>/tune`, at most every 10
+minutes). The results also count for that network's ranking, like a report from the app. Management links (and the app's Manage tab) do the same with the `tune` and `setTune`
 operations; a reseller can only tune their own users.
 
 ## Subscriptions
