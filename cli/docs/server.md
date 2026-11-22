@@ -18,6 +18,31 @@ Per-user traffic quota, expiry date and device limit (simultaneous client IPs), 
 
 Named sets of limits: `xtune plans add basic --quota 50 --days 30 --devices 2 --reset monthly`, then `users add carol --plan basic`. `users renew carol` (or *Renew* in @chthvpnbot) extends the expiry by the plan's days from the current expiry, starts usage from zero and enables the user.
 
+## Per-user tuning
+
+Each user can get their own configs, order and client settings, set by an admin and, within what the admin allows,
+by the user from the app.
+
+```sh
+xtune users tune carol                                  # what carol gets, and why
+xtune users tune carol --deny udp --pin cdn-xhttp --max 4
+xtune users tune carol --knob cdn:frag=frag-aggr,fp=firefox --lock knobs --self-tune on
+xtune presets set mci --allow cdn,worker --knob cdn:frag=frag-aggr   # a policy for many users
+xtune users tune carol --preset mci
+```
+
+Configs are picked by *selector*: a config ID (`r-tcp`; through a relay `RELAY-ID`), a kind (`reality-xhttp`), a
+family (`reality`, `cdn`, `worker`, `ssh`, `vpn`, `udp`, `tcp`, `xray`) or `via:RELAY` (`via:direct` for the
+configs that use no relay). `--allow` keeps only those, `--deny` drops them: the server itself stops letting the user
+in through a denied config (relays forward to the same inbounds, so `via:` only changes what the subscription
+lists). `--pin` lists configs first, `--max N` keeps the first N per server, `--knob` sets client settings
+(`fp`, `frag`, `mode`, `split`, `mtu`, `resolver`, `addr`, `alpn`) for the configs a selector picks.
+
+Users change their own order, hidden configs and client settings from the app's Check tab (or `GET`/`PUT
+<subscription>/prefs`), unless `--lock order,hide,knobs` says otherwise; `--self-tune on` also lets them run a
+personal tune from there. Management links (and the app's Manage tab) do the same with the `tune` and `setTune`
+operations; a reseller can only tune their own users.
+
 ## Subscriptions
 
 `xtune sub enable` starts a small HTTPS server that gives every user one secret link: a page in the browser (usage, expiry, QR code, copy buttons), a subscription for apps (with the standard usage/expiry headers), and an automatic-failover config at `<link>/json`. It runs through the CDN domain (hides the server IP) or on the direct domain with a Let's Encrypt certificate. The page is in English, Persian (right-to-left, Solar Hijri dates), Russian or Chinese. `xtune sub metrics on` serves Prometheus metrics there too (users, traffic, each config's last use and whether it looks blocked, the enforce job, followers, backups, Worker requests), behind a token of their own.

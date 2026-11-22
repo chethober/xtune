@@ -46,6 +46,15 @@ covered.
 {"name": "carol", "enabled": true, "links": ["vless://…"], "subscription": "https://…", "failover": "https://…/json"}
 ```
 
+`xtune users tune NAME --json` (also the `tune` operation of management links and `GET <subscription>/prefs`) is:
+
+```json
+{"name": "carol", "preset": "mci", "policy": {…}, "effective": {"allow": [], "deny": [], "pin": [], "max": 0,
+ "knobs": {"cdn": {"frag": "frag-aggr"}}, "lock": ["knobs"], "selfTune": true}, "prefs": {"pin": [], "hide": []},
+ "configs": [{"id": "r-tcp", "kind": "reality-tcp", "label": "…", "via": "", "allowed": true, "listed": true,
+ "order": 1, "knobs": "fp=chrome", "pinned": false}], "presets": ["mci"], "families": [], "lockable": []}
+```
+
 Keys are not removed or renamed within 1.x; new keys may be added, so ignore keys you do not know. Byte counts are
 bytes, times are Unix seconds, 0 means unlimited or never.
 

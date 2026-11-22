@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Per-user tuning: `xtune users tune NAME` gives a user their own configs (`--allow`, `--deny`, by config ID, kind,
+  family or `via:RELAY`), order (`--pin`, `--max`) and client settings (`--knob SEL:fp=..,frag=..,mode=..`). A
+  denied config refuses the user on the server too. `--lock order,hide,knobs` keeps users from changing those
+  themselves; `--self-tune on` lets them tune their own configs from the app. `xtune presets` names a policy for
+  many users (`users tune NAME --preset P`). Management links get the `tune` and `setTune` operations (resellers:
+  their own users), and the subscription server `GET`/`PUT <subscription>/prefs` for the user's own choices.
+
 ## [1.6.1] - 2026-11-19
 
 ### Changed

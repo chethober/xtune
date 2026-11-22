@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -110,7 +111,13 @@ func ensureVPNCert(st *state.State) error {
 // vpnFiles are the files the VPN entries need in dir, by path.
 func vpnFiles(st *state.State, entries []state.Entry, users []state.User, dir string) map[string]string {
 	files := map[string]string{}
-	uj, _ := json.Marshal(protocols.VPNUsers(users))
+	vpnUsers := slices.DeleteFunc(slices.Clone(users), func(u state.User) bool { // tuning can keep a user off the VPNs
+		return !slices.ContainsFunc(entries, func(e state.Entry) bool { return e.HandshakeOnly() && e.Kind != "mtproto" && st.ServesUser(u, e) })
+	})
+	if !slices.ContainsFunc(entries, func(e state.Entry) bool { return e.HandshakeOnly() && e.Kind != "mtproto" }) {
+		vpnUsers = users
+	}
+	uj, _ := json.Marshal(protocols.VPNUsers(vpnUsers))
 	files[dir+"/users.json"] = string(uj)
 	for _, e := range entries {
 		switch e.Engine() {
@@ -119,7 +126,7 @@ func vpnFiles(st *state.State, entries []state.Entry, users []state.User, dir st
 		case "ikev2":
 			files[dir+"/ikev2.crt"] = st.VPNCert
 			files[dir+"/ikev2.key"] = st.VPNKey
-			files[dir+"/swanctl.conf"] = protocols.SwanctlConf(st, users)
+			files[dir+"/swanctl.conf"] = protocols.SwanctlConf(st, st.UsersForEngine("ikev2", users))
 		}
 	}
 	return files

@@ -76,6 +76,12 @@ On the server (as root):
   xtune users     renew NAME [--plan P] [--days N]   extend expiry, usage from zero, enable
   xtune users     usage NAME               traffic per day, the last 30 days
   xtune users     enable|disable|rotate|reset-usage|reset-sub|del NAME
+  xtune users     tune NAME [--allow SEL] [--deny SEL] [--pin SEL] [--max N] [--knob SEL:fp=chrome,frag=..]
+                  [--lock order,hide,knobs] [--self-tune on|off] [--preset P] [--clear] [--clear-prefs] [--json]
+                                           a user's own configs, order and client settings (SEL: config ID,
+                                           kind, reality|cdn|worker|ssh|vpn|udp|tcp|xray, via:RELAY); denied
+                                           configs refuse them on the server too
+  xtune presets   [list | set NAME [tune flags] | del NAME] [--json]   named tuning policies for many users
   xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
   xtune public    [list | add NAME [--quota GB] [--days N] [--devices N] [--plan P] [--members N]]
   xtune public    limit|link|token|pause|resume|del NAME   pools of users shared through the community VPN bot
@@ -137,6 +143,8 @@ func main() {
 		err = cmdXray(args)
 	case "users":
 		err = cmdUsers(args)
+	case "presets":
+		err = cmdPresets(args)
 	case "domains":
 		err = cmdDomains(args)
 	case "sub":
@@ -654,6 +662,8 @@ func cmdUsers(args []string) error {
 	asQR := fs.Bool("qr", false, "links: show QR codes in the terminal")
 	outDir := fs.String("out", ".", "profiles: directory to write the files to")
 	minutes := fs.Int("minutes", 60, "kick: how long the device stays blocked")
+	tf := addTuneFlags(fs)
+	setJSON := fs.String("set", "", "tune: a whole change as JSON (for the app)")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
@@ -687,6 +697,11 @@ func cmdUsers(args []string) error {
 		l.Plan = plan
 	}
 	show := func(st *state.State, err error) error {
+		if err == nil { // the links the user's tuning gives them
+			if _, u := st.User(pos[1]); u != nil {
+				st, _ = userView(st, *u, "", -1, time.Now())
+			}
+		}
 		switch {
 		case err != nil:
 			return err
@@ -752,6 +767,11 @@ func cmdUsers(args []string) error {
 		return writeProfiles(os.Stdout, st, pos[1], *outDir)
 	case "reset-sub":
 		return show(ResetSubLink(r, pos[1]))
+	case "tune":
+		if set["set"] {
+			return usersTuneSet(r, pos[1], *setJSON)
+		}
+		return usersTune(r, pos[1], tf, set, *asJSON)
 	case "kick", "unblock":
 		if len(pos) < 3 {
 			return fmt.Errorf("users %s NAME IP", pos[0])

@@ -19,6 +19,9 @@ var fragments = map[string]map[string]string{
 	"frag-aggr": {"packets": "tlshello", "length": "10-30", "interval": "5-10"},
 }
 
+// ValidFrag says whether f names a fragment setting clients know.
+func ValidFrag(f string) bool { return slices.Contains(FragNames, f) }
+
 func addrFor(st *state.State, e state.Entry) string {
 	switch {
 	case e.CDN():
@@ -141,9 +144,9 @@ func ServerConfig(st *state.State, entries []state.Entry, users []state.User) J 
 	ibs := []J{}
 	if len(enabled) > 0 {
 		for _, e := range state.FilterEntries(entries, state.Entry.Xray) {
-			us := enabled
+			us := st.UsersFor(e, enabled) // a user's tuning can keep them out of some configs
 			if e.Kind != "wireguard" {
-				us = slices.DeleteFunc(slices.Clone(enabled), func(u state.User) bool { return u.WGOnly })
+				us = slices.DeleteFunc(slices.Clone(us), func(u state.User) bool { return u.WGOnly })
 			}
 			ibs = append(ibs, Inbound(st, e, us))
 		}

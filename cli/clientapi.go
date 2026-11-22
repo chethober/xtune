@@ -60,10 +60,11 @@ func clientHour(req *http.Request) int {
 }
 
 func serveClientProfile(w http.ResponseWriter, req *http.Request, st *state.State, u state.User, uu *state.UserUsage, now time.Time) {
-	view, netName := st, ""
-	if len(st.Networks) > 0 {
-		view, netName = forNetworkAt(st, clientNetwork(req, st, now), now, clientHour(req))
+	asn := ""
+	if needsASN(st, u) {
+		asn = clientNetwork(req, st, now)
 	}
+	view, netName := userView(st, u, asn, clientHour(req), now)
 	p := protocols.ClientProfileFor(view, u)
 	p.Network = netName
 	p.Usage = protocols.ClientUsage{Up: uu.Up, Down: uu.Down, Quota: u.Quota, Expires: u.Expires, Devices: u.Devices,

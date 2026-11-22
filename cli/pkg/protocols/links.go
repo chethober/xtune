@@ -43,6 +43,7 @@ func PeerServers(st *state.State) []*state.State {
 			continue
 		}
 		ps := *p.State
+		ps.EntryView = st.EntryView
 		ps.Entries = nil
 		for _, e := range p.State.Entries {
 			e.ID = n + "-" + e.ID
@@ -119,6 +120,9 @@ func RelayStates(st *state.State) []*state.State {
 	return out
 }
 
+// SubStates are the servers whose configs subscriptions list (see subServers).
+func SubStates(st *state.State) []*state.State { return subServers(st) }
+
 // subServers are the servers whose configs subscriptions list: this one, its relays, then the
 // followers. Usage and statistics use PeerServers: relays carry this server's own configs.
 func subServers(st *state.State) []*state.State {
@@ -135,6 +139,13 @@ func workerPath(e state.Entry) string { return e.Path + "?ed=2560" }
 // linkEntries are the entries clients get: the deployed ones, plus a copy of each workers.dev
 // config for every extra Worker.
 func linkEntries(st *state.State) []state.Entry {
+	if st.EntryView != nil {
+		return st.EntryView(allLinkEntries(st), st.Naming.Via)
+	}
+	return allLinkEntries(st)
+}
+
+func allLinkEntries(st *state.State) []state.Entry {
 	if st.Worker == nil || len(st.Worker.Extra) == 0 {
 		return st.Entries
 	}
