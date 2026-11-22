@@ -39,4 +39,7 @@ release:
   github:
     owner: chethober
     name: xtune
+  # v1.7.0-rc and the like are pre-releases: GitHub's "latest" (what the CLI's and the app's
+  # updaters read) skips them, so only people who install them by hand get them
+  prerelease: auto
   name_template: "v{{ .Version }}"

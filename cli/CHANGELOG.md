@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.7.0-rc] - 2026-11-22
+
+A release candidate, for testing: marked as a pre-release, so `xtune self-update` and the app's updater do not
+offer it; install it with `xtune self-update --version v1.7.0-rc` (on your computer and on the server).
+
 ### Added
 - Per-user tuning: `xtune users tune NAME` gives a user their own configs (`--allow`, `--deny`, by config ID, kind,
   family or `via:RELAY`), order (`--pin`, `--max`) and client settings (`--knob SEL:fp=..,frag=..,mode=..`). A
@@ -34,6 +39,9 @@ All notable changes to this project are documented here. The format follows
 - Personal tunes: users with `--self-tune on` tune their own configs' client settings from the app
   (`GET`/`POST <subscription>/tune`), with their own credentials and no test instance; the best settings become
   theirs and count for their network's ranking.
+
+### Fixed
+- A pre-release is older than its release: `xtune self-update` and the app offer 1.7.0 to people on 1.7.0-rc.
 
 ## [1.6.1] - 2026-11-19
 
