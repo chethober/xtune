@@ -17,6 +17,7 @@ import '../ui/i18n.dart';
 import 'cdn.dart';
 import 'community.dart';
 import 'tune.dart';
+import 'user_tune.dart';
 
 class ManageScreen extends StatefulWidget {
   const ManageScreen({super.key});
@@ -1054,6 +1055,22 @@ class _UsersPageState extends State<UsersPage> {
               Navigator.pop(ctx);
               final r = await act('links', name);
               if (r != null && context.mounted) _showLinks(context, Map<String, dynamic>.from(r as Map));
+            },
+          ),
+          ListTile(
+            key: const ValueKey('user-tune'),
+            leading: const Icon(Icons.tune_rounded),
+            title: Text(T.s('userTune')),
+            subtitle: Text(T.s('userTuneShort'), style: Type.caption),
+            onTap: () {
+              Navigator.pop(ctx);
+              pushPage(
+                context,
+                AppScope(
+                  state: AppScope.of(context),
+                  child: UserTunePage(server: widget.server, name: name),
+                ),
+              );
             },
           ),
           ListTile(

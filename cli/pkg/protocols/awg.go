@@ -77,7 +77,7 @@ func AWGServerConf(st *state.State, entries []state.Entry, users []state.User, s
 	if st.AWG != nil {
 		c.Params = *st.AWG
 	}
-	for _, u := range users {
+	for _, u := range st.UsersForEngine("awg", users) {
 		if u.Enabled {
 			_, pub := AWGUserKey(u)
 			c.Peers = append(c.Peers, AWGPeer{Name: u.Name, Pub: pub, WGIP: u.WGIP})

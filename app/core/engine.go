@@ -339,7 +339,11 @@ func ruleFor(r Rule, target J, configs []protocols.ClientEntry) (J, error) {
 	case "ip":
 		out["ip"] = []string{v}
 	case "geoip":
-		out["ip"] = []string{"geoip:" + v}
+		ips, err := geoIPMatch(v)
+		if err != nil {
+			return nil, err
+		}
+		out["ip"] = ips
 	case "port":
 		out["port"] = v
 	case "app":

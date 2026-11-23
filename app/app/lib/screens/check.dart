@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../main.dart';
 import '../ui/glass.dart';
 import '../ui/i18n.dart';
+import 'user_tune.dart';
 
 class CheckScreen extends StatelessWidget {
   const CheckScreen({super.key});
@@ -107,6 +108,9 @@ class CheckScreen extends StatelessWidget {
     ];
     final buttons = <Widget>[
       const SizedBox(height: Space.l),
+      // the user's own configs on an xtune subscription: their order, and a personal tune
+      const MyConfigsPanel(),
+      const SizedBox(height: Space.s),
       CheckboxListTile(
         contentPadding: EdgeInsets.zero,
         controlAffinity: ListTileControlAffinity.leading,

@@ -6,7 +6,9 @@ version=${2:-dev}
 root=$(cd "$(dirname "$0")/.." && pwd)
 ext=""
 [ "$os" = windows ] && ext=.exe
-(cd "$root/app" && flutter build "$os" --release --build-name="${version#v}")
+# --split-debug-info: the Dart code's symbols go to app/build/symbols instead of into the app
+# (about 20% smaller); `flutter symbolize` turns a crash's stack back into names with them.
+(cd "$root/app" && flutter build "$os" --release --build-name="${version#v}" --split-debug-info=build/symbols)
 if [ "$os" = linux ]; then
   out="$root/app/build/linux/x64/release/bundle"
 else

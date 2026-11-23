@@ -80,8 +80,16 @@ Needs Go and Flutter 3.50. Run these from `app/`; the core builds against `../cl
 ```sh
 scripts/fetch-geo.sh core/testdata/geo && (cd core && go test ./...)   # the core, with end-to-end tests
 scripts/build-desktop.sh linux                                        # or windows, on Windows
-scripts/build-android-core.sh && (cd app && flutter build apk --split-per-abi)
+scripts/build-android-core.sh && (cd app && flutter build apk --split-per-abi --split-debug-info=build/symbols)
 ```
+
+Release builds keep the Dart code's symbols out of the app; each release has them in `…-debug-symbols.zip`. To
+read a Dart stack from a crash report: `flutter symbolize -i stack.txt -d symbols/app.android-arm64.symbols` (or
+`app.linux-x64.symbols`, `app.windows-x64.symbols`).
+
+`geoip.dat` holds only the countries the app's own rules use (`fetch-geo.sh`); a rule for another country asks to
+download the full list once. `scripts/subset-fonts.sh` (needs `fonttools`) trims the bundled fonts again after
+updating them.
 
 `go run ./cmd/devsub` (in `core/`) serves a fake subscription backed by a local Xray server, for working on the app
 without a server: add `http://127.0.0.1:18080/p/tok`. `app/integration_test` drives the real app against it.

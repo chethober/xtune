@@ -182,3 +182,14 @@ func TestApplyUpdate(t *testing.T) {
 		t.Error("a path out of the folder is refused")
 	}
 }
+
+func TestNewerPreRelease(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{{"v1.7.0", "v1.7.0-rc", true}, {"v1.7.0-rc", "v1.7.0", false}, {"v1.7.0-rc", "v1.6.1", true}, {"v1.7.0", "v1.7.0", false}, {"v1.6.1", "v1.7.0-rc", false}} {
+		if got := newer(c.a, c.b); got != c.want {
+			t.Errorf("newer(%s, %s) = %v", c.a, c.b, got)
+		}
+	}
+}

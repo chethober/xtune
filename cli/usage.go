@@ -66,7 +66,12 @@ func applyResets(st *state.State, us *state.Usage, now time.Time) bool {
 func activeKey(st *state.State, active []state.User) string {
 	var parts []string
 	for _, u := range active {
-		parts = append(parts, u.Name+":"+u.UUID+":"+u.SSKey)
+		p := u.Name + ":" + u.UUID + ":" + u.SSKey
+		if u.Tune != nil { // which configs the server lets them in through
+			pol := st.Policy(u)
+			p += ":" + strings.Join(pol.Allow, ",") + ":" + strings.Join(pol.Deny, ",")
+		}
+		parts = append(parts, p)
 	}
 	sort.Strings(parts)
 	for _, e := range st.Entries {
@@ -166,7 +171,9 @@ func countIs(re *regexp.Regexp, out string, want int) bool {
 func reconcile(r *remote.Server, st *state.State, active []state.User) error {
 	var add []J
 	adds := 0
+	all := active
 	for _, e := range state.FilterEntries(st.Entries, state.Entry.Xray) {
+		active := st.UsersFor(e, all) // per-user tuning keeps some users out of some configs
 		out, err := xrayAPI(r, st, "inbounduser", "-tag="+e.ID)
 		if err != nil {
 			return err

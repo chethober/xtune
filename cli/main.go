@@ -44,6 +44,11 @@ On your computer (client):
                   --clean-ips N            measure the CDN and Worker configs through the N best Cloudflare edge
                                            IPs from here too (default 3, 0 = off)
                   --share FILE             keep the test running 2 hours and write FILE for testers elsewhere
+                  --relays all|none|NAME,..  also tune every route through the deployment's relays, in parallel
+                                           (--relay-key, --relay-password-env reach them; default all)
+                  --grid                   only the fixed grid of client settings (default: search: samples of
+                                           fingerprint, fragment ranges and XHTTP mode, then a second round
+                                           evolved from the best, --evolve N per variant)
   xtune measure   FILE [--network NAME] [--report OUT]   measure a shared test from this network (no SSH)
   xtune deploy    [conn] [-n N] [REPORT ...]   deploy the shared test, so every network gets a config that works
   xtune check     [conn] [--network NAME] [--every 6h]   quick check of the deployed configs from this network;
@@ -57,6 +62,8 @@ On your computer (client):
                                            move the deployment to a new server, keeping users and links
   xtune relay     [conn] [list | add NAME --ssh RELAY [--addr A] [--only ID,ID] | sync [NAME] | del NAME]
                                            multi-hop: a server in your users' country forwards to this one
+                  --bridge | --no-bridge   add, sync: the relay ends REALITY itself and reaches this server with
+                                           a second config tuned from the relay (it then holds the users' IDs)
   xtune console   [conn]                   open the server's TUI (users, addresses) over SSH
   xtune xray      [conn] status|update     check / update Xray here and on the server
   xtune logs      [conn] [-n N] [-f]
@@ -76,6 +83,14 @@ On the server (as root):
   xtune users     renew NAME [--plan P] [--days N]   extend expiry, usage from zero, enable
   xtune users     usage NAME               traffic per day, the last 30 days
   xtune users     enable|disable|rotate|reset-usage|reset-sub|del NAME
+  xtune users     tune NAME [--allow SEL] [--deny SEL] [--pin SEL] [--max N] [--knob SEL:fp=chrome,frag=..]
+                  [--lock order,hide,knobs] [--self-tune on|off] [--preset P] [--clear] [--clear-prefs] [--json]
+                                           a user's own configs, order and client settings (SEL: config ID,
+                                           kind, reality|cdn|worker|ssh|vpn|udp|tcp|xray, via:RELAY); denied
+                                           configs refuse them on the server too
+  xtune presets   [list | set NAME [tune flags] | del NAME] [--json]   named tuning policies for many users
+  xtune memory    [show | clear]           what tunes, checks and reports learned per network (it guides the
+                                           next tune's search) and per user (it orders their subscriptions)
   xtune plans     [list | add NAME --quota GB --days N [--devices N] [--reset monthly] | del NAME]
   xtune public    [list | add NAME [--quota GB] [--days N] [--devices N] [--plan P] [--members N]]
   xtune public    limit|link|token|pause|resume|del NAME   pools of users shared through the community VPN bot
@@ -137,6 +152,10 @@ func main() {
 		err = cmdXray(args)
 	case "users":
 		err = cmdUsers(args)
+	case "presets":
+		err = cmdPresets(args)
+	case "memory":
+		err = cmdMemory(args)
 	case "domains":
 		err = cmdDomains(args)
 	case "sub":
@@ -396,6 +415,12 @@ func cmdTune(args []string) error {
 	fs.StringVar(&o.Zone, "zone", "", "Cloudflare zone: the direct and CDN domains (and the DNS tunnel's) not given get random names in it")
 	fs.IntVar(&o.CleanIPs, "clean-ips", defaultCleanIPs, "CDN and Worker configs: also measure them through the N best Cloudflare edge IPs from here (0 = off)")
 	only := fs.String("only", "", "test only these entries, e.g. hy2,r-tcp,venc,cdn (prefix match)")
+	fs.BoolVar(&o.Grid, "grid", false, "try only the fixed grid of client settings: no search samples, no second round")
+	fs.IntVar(&o.Evolve, "evolve", 0, "second round: this many mutations of each of the best variants (default 2; with --grid none)")
+	fs.Uint64Var(&o.Seed, "seed", 0, "the search's random seed, to repeat a tune's samples (0 = random)")
+	relays := fs.String("relays", "all", "also tune every route through these relays (names, all or none)")
+	relayKey := fs.String("relay-key", "", "SSH key for the relays (default: as for the server)")
+	relayPass := fs.String("relay-password-env", "", "env var holding the relays' SSH password")
 	var err error
 	deploy := fs.Int("deploy", -1, "keep the top N configs running (0 = none; asks when omitted)")
 	share := fs.String("share", "", "keep the test running and write this bundle for testers on other networks")
@@ -412,6 +437,14 @@ func cmdTune(args []string) error {
 		return prepareTune(c, o, flagsSet(fs))
 	}
 	o.KeepTest = *share != ""
+	o.Relays = cleanList([]string{*relays})
+	o.RelayDial = func(rl state.Relay) (*remote.Server, error) {
+		cn := remote.Conn{Host: rl.SSH.Host, Port: rl.SSH.Port, User: rl.SSH.User, KeyPath: orStr(*relayKey, *c.key)}
+		if *relayPass != "" {
+			cn.Password = os.Getenv(*relayPass)
+		}
+		return remote.Dial(cn, cliPrompt)
+	}
 	if *only != "" {
 		o.Only = strings.Split(*only, ",")
 	}
@@ -654,6 +687,8 @@ func cmdUsers(args []string) error {
 	asQR := fs.Bool("qr", false, "links: show QR codes in the terminal")
 	outDir := fs.String("out", ".", "profiles: directory to write the files to")
 	minutes := fs.Int("minutes", 60, "kick: how long the device stays blocked")
+	tf := addTuneFlags(fs)
+	setJSON := fs.String("set", "", "tune: a whole change as JSON (for the app)")
 	pos := parse(fs, args)
 	if len(pos) == 0 {
 		pos = []string{"list"}
@@ -687,6 +722,11 @@ func cmdUsers(args []string) error {
 		l.Plan = plan
 	}
 	show := func(st *state.State, err error) error {
+		if err == nil { // the links the user's tuning gives them
+			if _, u := st.User(pos[1]); u != nil {
+				st, _ = userView(st, *u, "", -1, time.Now())
+			}
+		}
 		switch {
 		case err != nil:
 			return err
@@ -752,6 +792,11 @@ func cmdUsers(args []string) error {
 		return writeProfiles(os.Stdout, st, pos[1], *outDir)
 	case "reset-sub":
 		return show(ResetSubLink(r, pos[1]))
+	case "tune":
+		if set["set"] {
+			return usersTuneSet(r, pos[1], *setJSON)
+		}
+		return usersTune(r, pos[1], tf, set, *asJSON)
 	case "kick", "unblock":
 		if len(pos) < 3 {
 			return fmt.Errorf("users %s NAME IP", pos[0])

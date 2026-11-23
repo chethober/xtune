@@ -43,6 +43,7 @@ func PeerServers(st *state.State) []*state.State {
 			continue
 		}
 		ps := *p.State
+		ps.EntryView = st.EntryView
 		ps.Entries = nil
 		for _, e := range p.State.Entries {
 			e.ID = n + "-" + e.ID
@@ -56,11 +57,9 @@ func PeerServers(st *state.State) []*state.State {
 // NamedLinks are the user's share links on every server, named by config.
 func NamedLinks(st *state.State, u state.User) []NamedLink {
 	var out []NamedLink
-	for _, s := range subServers(st) {
-		for _, e := range linkEntries(s) {
-			if l := Link(s, e, u, e.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
-				out = append(out, NamedLink{Name: e.ID, URL: l})
-			}
+	for _, r := range routedEntries(st) {
+		if l := Link(r.S, r.E, u, r.E.Knobs()); l != "" { // VPNs and the DNS tunnel come as profile files
+			out = append(out, NamedLink{Name: r.E.ID, URL: l})
 		}
 	}
 	return out
@@ -112,12 +111,62 @@ func RelayStates(st *state.State) []*state.State {
 			e.ID, e.Port, e.Hop, e.Addr = rl.Name+"-"+e.ID, rl.Forwards[i].Port, "", ""
 			rs.Entries = append(rs.Entries, e)
 		}
+		if b := rl.Bridge; b != nil && slices.ContainsFunc(st.Entries, func(e state.Entry) bool { return e.ID == b.Leg2 }) {
+			// a bridge ends REALITY itself, with its own keys
+			rs.RealityPriv, rs.RealityPub, rs.ShortID = b.RealityPriv, b.RealityPub, b.ShortID
+			for _, e := range b.Entries {
+				if slices.ContainsFunc(st.Entries, func(x state.Entry) bool { return x.ID == e.ID }) {
+					e.ID = rl.Name + "-" + e.ID
+					rs.Entries = append(rs.Entries, e)
+				}
+			}
+		}
 		if len(rs.Entries) > 0 {
 			out = append(out, &rs)
 		}
 	}
 	return out
 }
+
+// Routed is a config and the server (or relay's view of it) it is on.
+type Routed struct {
+	S *state.State
+	E state.Entry
+}
+
+// routedEntries are the configs subscriptions list on every server, relay and follower: in that
+// order, or, when st.RouteRank is set (a network's ranking), the best route first wherever it is.
+func routedEntries(st *state.State) []Routed {
+	var out []Routed
+	for _, s := range subServers(st) {
+		for _, e := range linkEntries(s) {
+			out = append(out, Routed{s, e})
+		}
+	}
+	if st.RouteRank != nil {
+		rank := make([]float64, len(out))
+		for i, r := range out {
+			rank[i] = st.RouteRank(r.S.Naming.Via, r.E)
+		}
+		idx := make([]int, len(out))
+		for i := range idx {
+			idx[i] = i
+		}
+		sort.SliceStable(idx, func(a, b int) bool { return rank[idx[a]] > rank[idx[b]] })
+		sorted := make([]Routed, len(out))
+		for i, j := range idx {
+			sorted[i] = out[j]
+		}
+		out = sorted
+	}
+	return out
+}
+
+// RoutedEntries are routedEntries, for callers outside the package.
+func RoutedEntries(st *state.State) []Routed { return routedEntries(st) }
+
+// SubStates are the servers whose configs subscriptions list (see subServers).
+func SubStates(st *state.State) []*state.State { return subServers(st) }
 
 // subServers are the servers whose configs subscriptions list: this one, its relays, then the
 // followers. Usage and statistics use PeerServers: relays carry this server's own configs.
@@ -135,6 +184,13 @@ func workerPath(e state.Entry) string { return e.Path + "?ed=2560" }
 // linkEntries are the entries clients get: the deployed ones, plus a copy of each workers.dev
 // config for every extra Worker.
 func linkEntries(st *state.State) []state.Entry {
+	if st.EntryView != nil {
+		return st.EntryView(allLinkEntries(st), st.Naming.Via)
+	}
+	return allLinkEntries(st)
+}
+
+func allLinkEntries(st *state.State) []state.Entry {
 	if st.Worker == nil || len(st.Worker.Extra) == 0 {
 		return st.Entries
 	}

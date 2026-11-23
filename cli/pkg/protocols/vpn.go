@@ -152,7 +152,7 @@ type Profile struct {
 func Profiles(st *state.State, u state.User) []Profile {
 	var out []Profile
 	for _, s := range PeerServers(st) {
-		for _, e := range s.Entries {
+		for _, e := range linkEntries(s) { // the user's tuning may leave some out
 			out = append(out, profiles(s, e, u)...)
 		}
 	}

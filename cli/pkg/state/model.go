@@ -74,21 +74,22 @@ func (e Entry) Net() string {
 }
 
 type User struct {
-	Name     string `json:"name"`
-	UUID     string `json:"uuid"`
-	SSKey    string `json:"ssKey"`
-	Enabled  bool   `json:"enabled"`
-	Created  int64  `json:"created"`
-	Quota    int64  `json:"quota,omitempty"`    // traffic in bytes, 0 = unlimited
-	Expires  int64  `json:"expires,omitempty"`  // unix seconds, 0 = never
-	Devices  int    `json:"devices,omitempty"`  // simultaneous client IPs, 0 = unlimited
-	SubToken string `json:"subToken,omitempty"` // secret part of the user's subscription URL
-	Reset    string `json:"reset,omitempty"`    // usage starts from zero every period: monthly | weekly
-	ResetAt  int64  `json:"resetAt,omitempty"`  // unix seconds of the next reset
-	Plan     string `json:"plan,omitempty"`     // plan the user was added or renewed with
-	Reseller string `json:"reseller,omitempty"` // reseller (management link) who manages this user
-	WGIP     string `json:"wgIp,omitempty"`     // WireGuard tunnel address
-	Pool     string `json:"pool,omitempty"`     // public profile the user is a member of
+	Name     string    `json:"name"`
+	UUID     string    `json:"uuid"`
+	SSKey    string    `json:"ssKey"`
+	Enabled  bool      `json:"enabled"`
+	Created  int64     `json:"created"`
+	Quota    int64     `json:"quota,omitempty"`    // traffic in bytes, 0 = unlimited
+	Expires  int64     `json:"expires,omitempty"`  // unix seconds, 0 = never
+	Devices  int       `json:"devices,omitempty"`  // simultaneous client IPs, 0 = unlimited
+	SubToken string    `json:"subToken,omitempty"` // secret part of the user's subscription URL
+	Reset    string    `json:"reset,omitempty"`    // usage starts from zero every period: monthly | weekly
+	ResetAt  int64     `json:"resetAt,omitempty"`  // unix seconds of the next reset
+	Plan     string    `json:"plan,omitempty"`     // plan the user was added or renewed with
+	Reseller string    `json:"reseller,omitempty"` // reseller (management link) who manages this user
+	WGIP     string    `json:"wgIp,omitempty"`     // WireGuard tunnel address
+	Pool     string    `json:"pool,omitempty"`     // public profile the user is a member of
+	Tune     *UserTune `json:"tune,omitempty"`     // which configs, in which order, with which client settings
 
 	WGOnly bool `json:"-"` // a WireGuard test peer (wgVariantUser): its UUID is not a real UUID
 }
@@ -126,24 +127,32 @@ type State struct {
 	APIPort     int                    `json:"apiPort,omitempty"` // Xray API on 127.0.0.1, for live user changes and stats
 	Country     string                 `json:"country,omitempty"` // client configs send this country's sites direct
 	Sub         SubConfig              `json:"sub"`
-	Check       *User                  `json:"check,omitempty"`     // hidden user `xtune check` measures the deployed configs with
-	Warp        *Warp                  `json:"warp,omitempty"`      // Cloudflare WARP outbound for chosen sites
-	Notify      Notify                 `json:"notify,omitzero"`     // admin alerts
-	LegacyBot   json.RawMessage        `json:"bot,omitempty"`       // the Telegram bot removed in v0.7.0: Enforce removes its unit, then this
-	Manage      *Manage                `json:"manage,omitempty"`    // management links, used by the community VPN bot
-	Plans       map[string]Plan        `json:"plans,omitempty"`     // named sets of limits for adding and renewing users
-	Cloudflare  Cloudflare             `json:"cloudflare,omitzero"` // API token for DNS records and the SSL mode
-	Peers       *PeerHub               `json:"peers,omitempty"`     // primary: followers whose configs join the subscriptions
-	Follow      *Follow                `json:"follow,omitempty"`    // follower: the users come from a primary
-	Public      map[string]*PublicPool `json:"public,omitempty"`    // public profiles: pools of users shared through a bot
-	AWG         *AWGParams             `json:"awg,omitempty"`       // AmneziaWG key and obfuscation settings
-	Worker      *Worker                `json:"worker,omitempty"`    // Cloudflare Worker relaying the worker-ws entries
-	Backups     *BackupPlan            `json:"backups,omitempty"`   // scheduled backups sent off the server
-	Networks    map[string]*NetRank    `json:"networks,omitempty"`  // configs ranked per network (ASN), for subscriptions
-	Autopilot   *Autopilot             `json:"autopilot,omitempty"` // where to get a new IP when this one is blocked
-	ClientIP    string                 `json:"clientIp,omitempty"`  // the address clients use instead of Host (a reserved IP)
-	Naming      Naming                 `json:"naming,omitzero"`     // config and subscription names, with the country flag
-	Relays      []Relay                `json:"relays,omitempty"`    // servers that forward ports here: multi-hop
+	Check       *User                  `json:"check,omitempty"`       // hidden user `xtune check` measures the deployed configs with
+	Warp        *Warp                  `json:"warp,omitempty"`        // Cloudflare WARP outbound for chosen sites
+	Notify      Notify                 `json:"notify,omitzero"`       // admin alerts
+	LegacyBot   json.RawMessage        `json:"bot,omitempty"`         // the Telegram bot removed in v0.7.0: Enforce removes its unit, then this
+	Manage      *Manage                `json:"manage,omitempty"`      // management links, used by the community VPN bot
+	Plans       map[string]Plan        `json:"plans,omitempty"`       // named sets of limits for adding and renewing users
+	Cloudflare  Cloudflare             `json:"cloudflare,omitzero"`   // API token for DNS records and the SSL mode
+	Peers       *PeerHub               `json:"peers,omitempty"`       // primary: followers whose configs join the subscriptions
+	Follow      *Follow                `json:"follow,omitempty"`      // follower: the users come from a primary
+	Public      map[string]*PublicPool `json:"public,omitempty"`      // public profiles: pools of users shared through a bot
+	AWG         *AWGParams             `json:"awg,omitempty"`         // AmneziaWG key and obfuscation settings
+	Worker      *Worker                `json:"worker,omitempty"`      // Cloudflare Worker relaying the worker-ws entries
+	Backups     *BackupPlan            `json:"backups,omitempty"`     // scheduled backups sent off the server
+	Networks    map[string]*NetRank    `json:"networks,omitempty"`    // configs ranked per network (ASN), for subscriptions
+	Autopilot   *Autopilot             `json:"autopilot,omitempty"`   // where to get a new IP when this one is blocked
+	ClientIP    string                 `json:"clientIp,omitempty"`    // the address clients use instead of Host (a reserved IP)
+	Naming      Naming                 `json:"naming,omitzero"`       // config and subscription names, with the country flag
+	Relays      []Relay                `json:"relays,omitempty"`      // servers that forward ports here: multi-hop
+	TunePresets map[string]TunePreset  `json:"tunePresets,omitempty"` // named per-user tuning policies
+
+	// EntryView, when set, is how one user sees each server's configs (their tuning): what
+	// subscriptions, links and client profiles list. via is the relay they go through ("" direct).
+	EntryView func(es []Entry, via string) []Entry `json:"-"`
+	// RouteRank, when set, ranks every route to a config (via: the relay, "" direct) for the
+	// network a client asks from: subscriptions list the best first, whichever server it is on.
+	RouteRank func(via string, e Entry) float64 `json:"-"`
 
 	WGPriv     string `json:"wgPrivateKey,omitempty"` // WireGuard server key (base64)
 	WGPub      string `json:"wgPublicKey,omitempty"`
