@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -119,7 +120,117 @@ class RulesPage extends StatelessWidget {
           ),
         const SizedBox(height: Space.m),
         Text(T.s('rulesOrder'), style: Type.caption),
+        _CountryList(rules: rules),
       ],
+    );
+  }
+}
+
+/// The app ships only a few countries' IP lists (the full list is 24 MB). When a rule names
+/// another country, this offers to download the full list once; the rule applies from then on.
+class _CountryList extends StatefulWidget {
+  const _CountryList({required this.rules});
+  final List<RouteRule> rules;
+
+  @override
+  State<_CountryList> createState() => _CountryListState();
+}
+
+class _CountryListState extends State<_CountryList> {
+  Map<String, dynamic>? geo;
+  Timer? poll;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    final s = AppScope.of(context);
+    try {
+      final g = Map<String, dynamic>.from(await s.core.call('geo.status') as Map);
+      if (!mounted) return;
+      final was = geo?['job']?['state'];
+      final now = (g['job'] as Map?)?['state'];
+      setState(() => geo = g);
+      if (now == 'downloading') {
+        poll ??= Timer.periodic(const Duration(milliseconds: 500), (_) => _load());
+      } else {
+        poll?.cancel();
+        poll = null;
+        if (was == 'downloading' && now == 'ready' && s.connected) await s.connect(); // the rules apply now
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _run(String method) async {
+    try {
+      await AppScope.of(context).core.call(method);
+    } catch (_) {}
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final g = geo;
+    if (g == null) return const SizedBox.shrink();
+    final builtin = {for (final c in (g['builtin'] as List? ?? [])) '$c'};
+    final missing = {
+      for (final r in widget.rules)
+        if (r.match == 'geoip') r.value.trim().toLowerCase().replaceFirst('!', ''),
+    }.where((c) => c.isNotEmpty && !builtin.contains(c)).toList()..sort();
+    final full = g['full'] == true;
+    final job = Map<String, dynamic>.from(g['job'] as Map? ?? {});
+    final downloading = job['state'] == 'downloading';
+    if (!full && missing.isEmpty && !downloading) return const SizedBox.shrink();
+    final total = (job['total'] as num?)?.toDouble() ?? 0;
+    final done = (job['done'] as num?)?.toDouble() ?? 0;
+    return Padding(
+      padding: const EdgeInsets.only(top: Space.l),
+      child: Glass(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(T.s('geoTitle'), style: Type.bodyStrong),
+            const SizedBox(height: Space.xs),
+            Text(
+              full
+                  ? T.s('geoHave')
+                  : T.s('geoNeed', {'c': missing.join(', '), 'b': builtin.where((c) => c != 'private').join(', ')}),
+              style: Type.caption,
+            ),
+            if (job['state'] == 'failed') ...[const SizedBox(height: Space.s), Notice('${job['error'] ?? ''}')],
+            const SizedBox(height: Space.m),
+            if (downloading) ...[
+              Bar(fraction: total > 0 ? done / total : 0),
+              const SizedBox(height: Space.s),
+              Text('${fmtBytes(done)} / ${fmtBytes(total)}', style: Type.caption),
+            ] else if (full)
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  onPressed: () => _run('geo.delete'),
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  label: Text(T.s('geoDelete')),
+                ),
+              )
+            else
+              FilledButton.icon(
+                onPressed: () => _run('geo.download'),
+                icon: const Icon(Icons.download_rounded),
+                label: Text(T.s('geoDownload')),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -80,6 +80,11 @@ var handlers = map[string]handler{
 		return nil, nil
 	},
 
+	// geo: the countries geoip rules can use; the full list downloads on request
+	"geo.status":   func([]byte) (any, error) { return GeoInfo(), nil },
+	"geo.download": func([]byte) (any, error) { return StartGeoDownload() },
+	"geo.delete":   func([]byte) (any, error) { return nil, DeleteFullGeoIP() },
+
 	"network.current": func([]byte) (any, error) { return CurrentNetwork() },
 
 	"profile.normalize": func(a []byte) (any, error) {
