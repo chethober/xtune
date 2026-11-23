@@ -1,5 +1,4 @@
-**A release candidate for testing.** The app does not offer it as an update: install it by hand. It needs xtune
-1.7.0-rc on the server for the new parts; with an older server they stay hidden.
+The new parts need xtune 1.7.0 on the server (`xtune self-update`); with an older server they stay hidden.
 
 **New**
 - **My configs, in Check.** On an xtune subscription, Check shows your configs as the server gives them to you: put
@@ -13,4 +12,10 @@
   there too), pin configs first, set a config's client settings, choose a preset, let the user tune their own
   configs, and choose what they may change themselves.
 
-Updating: install over 1.6.1 or earlier; your subscriptions, settings and servers stay.
+**Smaller**
+- **About 6 MB smaller to download, and about 45 MB less space on Android.** The app now carries the IP lists of
+  only the countries its own rules use (Iran, China, Russia). A routing rule for another country asks once to
+  download the full list (24 MB) in Routing rules; until then that rule is skipped, and the connection works as
+  before. The fonts and the app's code are smaller too.
+
+Updating: install over 1.7.0-rc, 1.6.1 or earlier; your subscriptions, settings and servers stay.

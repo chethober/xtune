@@ -5,10 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.7.0-rc] - 2026-11-22
+## [1.7.0] - 2026-11-23
 
-A release candidate, for testing: marked as a pre-release, so `xtune self-update` and the app's updater do not
-offer it; install it with `xtune self-update --version v1.7.0-rc` (on your computer and on the server).
+Everything in 1.7.0-rc, now a regular release: `xtune self-update` offers it, also to people on 1.7.0-rc.
 
 ### Added
 - Per-user tuning: `xtune users tune NAME` gives a user their own configs (`--allow`, `--deny`, by config ID, kind,
