@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +32,16 @@ type Bundle struct {
 	State   *state.State  `json:"state"` // public parts only
 	User    state.User    `json:"user"`
 	Entries []state.Entry `json:"entries"`
+	// Variants are the exact settings to measure (a tune's search samples them at random, so a
+	// tester cannot expand them again); empty in bundles from before 1.7, which expand Depth's grid.
+	Variants []BundleVariant `json:"variants,omitempty"`
+}
+
+// BundleVariant is one variant of a bundle: an entry with client settings.
+type BundleVariant struct {
+	ID    string      `json:"id"`
+	Label string      `json:"label"`
+	K     state.Knobs `json:"k"`
 }
 
 // Pending is a finished tune waiting on the server (pending.json) to be deployed.
@@ -72,8 +83,30 @@ func Share(r *remote.Server, res *TuneResult, depth, network string) (*Bundle, e
 	if err := r.Upload(pendingFile, b, "600"); err != nil {
 		return nil, err
 	}
-	return &Bundle{ID: p.ID, Created: now.Unix(), Expires: now.Add(testLifetime).Unix(), Depth: depth,
-		State: publicState(res.State), User: res.User, Entries: res.Entries}, nil
+	bd := &Bundle{ID: p.ID, Created: now.Unix(), Expires: now.Add(testLifetime).Unix(), Depth: depth,
+		State: publicState(res.State), User: res.User, Entries: res.Entries}
+	for _, v := range res.All {
+		bd.Variants = append(bd.Variants, BundleVariant{ID: v.Entry.ID, Label: v.Label, K: v.K})
+	}
+	return bd, nil
+}
+
+// bundleVariants are the variants a bundle asks to measure, on the entries this machine can run.
+func bundleVariants(b *Bundle, entries []state.Entry, resolvers []string) []*Variant {
+	if len(b.Variants) == 0 {
+		return ExpandVariants(entries, b.Depth, resolvers...)
+	}
+	var vs []*Variant
+	for _, bv := range b.Variants {
+		i := slices.IndexFunc(entries, func(e state.Entry) bool { return e.ID == bv.ID })
+		if i < 0 {
+			continue
+		}
+		v := variantFor(entries[i], bv.K)
+		v.Label = bv.Label
+		vs = append(vs, v)
+	}
+	return vs
 }
 
 func loadPending(r *remote.Server) (*Pending, error) {
@@ -114,9 +147,11 @@ func Measure(b *Bundle, o TuneOpts) (*NetReport, error) {
 	}
 	netw := netinfo.Detect(&o.Network, o.Log)
 	entries := supported(o.XrayBin, b.State, b.Entries, o.Log)
-	vs := supportedKnobs(o.XrayBin, b.State, ExpandVariants(entries, b.Depth, o.Resolvers...), o.Log)
+	vs := bundleVariants(b, entries, o.Resolvers)
+	vs = supportedKnobs(o.XrayBin, b.State, vs, o.Log)
 	vs = addCleanIPVariants(b.State, entries, vs, o.CleanIPs, o.Log) // this network's own clean IPs
-	err := RunTests(o, b.State, b.User, vs)
+	o.Evolve = 0                                                     // the server only knows the bundle's variants
+	vs, err := RunTests(o, b.State, b.User, vs)
 	if err != nil && !strings.Contains(err.Error(), "nothing connected") {
 		return nil, err
 	}
@@ -309,6 +344,21 @@ func DeployPending(r *remote.Server, reports []*NetReport, n int, w io.Writer) (
 		if err := RecordNetwork(r, netinfo.Network{ASN: p.ASN, Name: p.Network}, scores, addrs); err != nil {
 			fmt.Fprintln(w, "[!] ranking the configs for "+own.Name+":", err)
 		}
+	}
+	for _, rep := range reports { // what each network's measurements teach the next tunes
+		byLabel := map[string]*Variant{}
+		for _, v := range p.Variants {
+			byLabel[v.Label] = v
+		}
+		var vs []*Variant
+		for _, c := range rep.Results {
+			if v, ok := byLabel[c.Label]; ok {
+				m := *v
+				m.Ok, m.N, m.Warm, m.Down, m.Up, m.Score = c.Ok, c.N, c.Warm, c.Down, c.Up, c.Score
+				vs = append(vs, &m)
+			}
+		}
+		learnTune(r, rep.ASN, orStr(rep.ASName, rep.Network), vs, func(s string) { fmt.Fprintln(w, s) })
 	}
 	for _, rep := range reports {
 		scores, addrs := labelRank(st.Entries, labels, rep.Results)

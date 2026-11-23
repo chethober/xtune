@@ -27,6 +27,12 @@ import (
 
 var verRe = regexp.MustCompile(`v?(\d+)\.(\d+)\.(\d+)`)
 
+// tagRe is a version with its pre-release suffix, if any.
+var tagRe = regexp.MustCompile(`v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?`)
+
+// preRe is a pre-release version (1.7.0-rc).
+var preRe = regexp.MustCompile(`\d+\.\d+\.\d+-[0-9A-Za-z]`)
+
 // newer reports whether version a is newer than b ("v26.9.30" style; "" / "none" is oldest).
 func newer(a, b string) bool {
 	pa, pb := verRe.FindStringSubmatch(a), verRe.FindStringSubmatch(b)
@@ -43,11 +49,12 @@ func newer(a, b string) bool {
 			return x > y
 		}
 	}
-	return false
+	// the same numbers: a release is newer than its pre-releases (1.7.0 over 1.7.0-rc)
+	return !preRe.MatchString(a) && preRe.MatchString(b)
 }
 
 func normTag(v string) string {
-	if m := verRe.FindString(v); m != "" {
+	if m := tagRe.FindString(v); m != "" { // a pre-release keeps its suffix (v1.7.0-rc)
 		return "v" + strings.TrimPrefix(m, "v")
 	}
 	return v

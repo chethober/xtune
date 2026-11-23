@@ -481,6 +481,34 @@ relay-apply)
   systemctl restart xray-autotune-relay
   fw_close $D/fw.relay; fw_open $D/fw.relay "$@"
   sleep 1; systemctl is-active xray-autotune-relay ;;
+relay-test-start)
+  # tuning through this relay: forward the main server's test ports (relay-test.json) for 2 hours at most
+  if ! $X run -test -c $D/relay-test.json >/dev/null 2>&1; then $X run -test -c $D/relay-test.json 2>&1 | tail -5; exit 1; fi
+  fw_close $D/fw.relaytest; fw_open $D/fw.relaytest "$@"
+  start_test_unit xray-autotune-test-relay --property=LimitNOFILE=65535 $X run -c $D/relay-test.json
+  sleep 1; systemctl is-active xray-autotune-test-relay ;;
+relay-test-stop)
+  systemctl stop xray-autotune-test-relay 2>/dev/null || true
+  systemctl reset-failed xray-autotune-test-relay 2>/dev/null || true
+  fw_close $D/fw.relaytest; rm -f $D/relay-test.json; echo stopped ;;
+relay-probe)
+  # relay-probe N PORT...: N fresh requests through each socks port of relay-probe.json (a bridge's
+  # second-leg candidates): "PROBE PORT OK N MEDIAN_MS"
+  command -v curl >/dev/null 2>&1 || { echo "curl is needed on the relay"; exit 1; }
+  n=$1; shift
+  $X run -c $D/relay-probe.json >/dev/null 2>&1 &
+  xp=$!
+  sleep 2
+  for p in "$@"; do
+    ok=0; ms=""
+    for _ in $(seq 1 "$n"); do
+      t=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 8 -x "socks5h://127.0.0.1:$p" https://www.gstatic.com/generate_204 2>/dev/null || true)
+      case $t in "204 "*) ok=$((ok+1)); ms="$ms $(echo "${t#204 }" | awk '{printf "%d", $1*1000}')" ;; esac
+    done
+    med=$(echo "$ms" | tr ' ' '\n' | { grep -v '^$' || true; } | sort -n | awk '{a[NR]=$1} END{if (NR) print a[int((NR+1)/2)]; else print -1}')
+    echo "PROBE $p $ok $n $med"
+  done
+  kill $xp 2>/dev/null; wait $xp 2>/dev/null; rm -f $D/relay-probe.json; true ;;
 relay-check)
   # relay-check HOST PORT...: TCP connect time from here to the main server, in ms, or "fail"
   h=$1; shift
@@ -520,8 +548,8 @@ cleanup)
   else unlink_xt; rm -rf $D; echo removed; fi ;;
 uninstall)
   remove_units
-  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; fw_close $D/fw.relay; vpn_net_down
+  fw_close $D/fw.test; fw_close $D/fw.deployed; fw_close $D/fw.sub; fw_close $D/fw.relay; fw_close $D/fw.relaytest; vpn_net_down
   unlink_xt; rm -rf $D; echo uninstalled ;;
 *)
-  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|relay-apply|relay-check|relay-remove|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
+  echo "usage: helper.sh status|latest|install|xtune-link|xtune-install|probe|doctor|hop-restore|vpn-install|test-extras|extras|vpn-reload|vpn-sessions|vpn-kick|start|stop-test|check|apply|sub-enable|sub-disable|relay-apply|relay-test-start|relay-test-stop|relay-probe|relay-check|relay-remove|bot-remove|cleanup|uninstall" >&2; exit 2 ;;
 esac

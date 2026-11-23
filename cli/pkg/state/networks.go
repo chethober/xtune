@@ -1,5 +1,7 @@
 package state
 
+import "strings"
+
 // NetRank is how the deployed configs did from one network.
 type NetRank struct {
 	Name    string             `json:"name,omitempty"` // the ISP, as the ASN registry names it
@@ -9,6 +11,25 @@ type NetRank struct {
 	// Hours are the same scores by time of day (HourBlock of the measurer's local hour): filtering
 	// often changes in the evening, so a config can work in the morning and not at night.
 	Hours map[string]*HourRank `json:"hours,omitempty"`
+}
+
+// RouteKey is how rankings name entry e (of this server) reached through relay via: its EntryKey
+// when direct.
+func RouteKey(via string, e Entry) string {
+	if via == "" {
+		return EntryKey(e)
+	}
+	return "via:" + via + "/" + EntryKey(e)
+}
+
+// RouteOf splits a ranking key into the relay and the entry key.
+func RouteOf(key string) (via, entryKey string) {
+	if rest, ok := strings.CutPrefix(key, "via:"); ok {
+		if v, k, ok := strings.Cut(rest, "/"); ok {
+			return v, k
+		}
+	}
+	return "", key
 }
 
 // HourRank is one block of the day's scores from a network.

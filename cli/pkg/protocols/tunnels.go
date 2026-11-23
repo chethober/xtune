@@ -31,7 +31,7 @@ func TunnelServerConf(st *state.State, entries []state.Entry, users []state.User
 	c := TunnelConf{Entries: state.FilterEntries(entries, state.Entry.SSH), HostKey: st.SSHHostKey, CertPEM: st.CertPEM, KeyPEM: st.KeyPEM,
 		DNSTTKey: st.DNSTTKey, DNSDomain: st.DNSDomain, Stats: statsPath, Users: []TunnelUser{}}
 	mt := state.HasEngine(entries, "tunnel") && slices.ContainsFunc(entries, func(e state.Entry) bool { return e.Kind == "mtproto" })
-	for _, u := range users {
+	for _, u := range st.UsersForEngine("tunnel", users) {
 		if u.Enabled {
 			tu := TunnelUser{Name: u.Name, Pass: TunnelPassword(u), Devices: u.Devices}
 			if mt {

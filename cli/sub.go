@@ -294,9 +294,11 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	isAdm := req.Method == http.MethodPost && len(parts) == 3 && parts[1] == "adm"
 	isMetrics := req.Method == http.MethodGet && (len(parts) == 2 || len(parts) == 3) && parts[1] == "metrics"
 	isReport := req.Method == http.MethodPost && len(parts) == 3 && parts[2] == "report"
+	isPrefs := (req.Method == http.MethodPut || req.Method == http.MethodGet) && len(parts) == 3 && parts[2] == "prefs"
+	isTune := (req.Method == http.MethodPost || req.Method == http.MethodGet) && len(parts) == 3 && parts[2] == "tune"
 	isPub := len(parts) >= 3 && parts[1] == "pub" &&
 		(len(parts) == 3 && req.Method == http.MethodGet || len(parts) == 4 && req.Method == http.MethodPost)
-	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm && !isReport {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead && !isPeer && !isPub && !isAdm && !isReport && !isPrefs && !isTune {
 		http.NotFound(w, req)
 		return
 	}
@@ -338,7 +340,7 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if st.Sub.Mode == "" || len(parts) < 2 || len(parts) > 4 || parts[0] != st.Sub.Path ||
-		len(parts) == 3 && parts[2] != "json" && parts[2] != "client" && parts[2] != "report" || len(parts) == 4 && parts[2] != "f" {
+		len(parts) == 3 && parts[2] != "json" && parts[2] != "client" && parts[2] != "report" && parts[2] != "prefs" && parts[2] != "tune" || len(parts) == 4 && parts[2] != "f" {
 		http.NotFound(w, req)
 		return
 	}
@@ -361,6 +363,12 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case isReport:
 		h.serveClientReport(w, req, *u, now)
 		return
+	case isPrefs:
+		h.serveUserPrefs(w, req, st, *u)
+		return
+	case isTune:
+		h.serveTune(w, req, st, *u, now)
+		return
 	case len(parts) == 3 && parts[2] == "client":
 		serveClientProfile(w, req, st, *u, uu, now)
 		return
@@ -370,13 +378,15 @@ func (h subHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	hd.Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(protocols.SubName(st, *u))))
 	hd.Set("Profile-Update-Interval", "6")
 	hd.Set("Profile-Web-Page-Url", SubURL(st, *u))
-	view, netName := st, ""
-	if len(st.Networks) > 0 { // the requester's network's best configs first
-		view, netName = forNetwork(st, netinfo.ASNOf(requesterIP(req, st), now), now)
+	asn := ""
+	if needsASN(st, *u) {
+		asn = netinfo.ASNOf(requesterIP(req, st), now)
 	}
+	// the requester's network's best configs first, as the user's tuning has them
+	view, netName := userView(st, *u, asn, -1, now)
 	switch {
 	case len(parts) == 4: // a profile file
-		for _, p := range protocols.Profiles(st, *u) {
+		for _, p := range protocols.Profiles(view, *u) {
 			if p.File == parts[3] {
 				hd.Set("Content-Type", p.Type)
 				hd.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", p.File))

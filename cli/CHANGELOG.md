@@ -5,6 +5,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.7.0-rc] - 2026-11-22
+
+A release candidate, for testing: marked as a pre-release, so `xtune self-update` and the app's updater do not
+offer it; install it with `xtune self-update --version v1.7.0-rc` (on your computer and on the server).
+
+### Added
+- Per-user tuning: `xtune users tune NAME` gives a user their own configs (`--allow`, `--deny`, by config ID, kind,
+  family or `via:RELAY`), order (`--pin`, `--max`) and client settings (`--knob SEL:fp=..,frag=..,mode=..`). A
+  denied config refuses the user on the server too. `--lock order,hide,knobs` keeps users from changing those
+  themselves; `--self-tune on` lets them tune their own configs from the app. `xtune presets` names a policy for
+  many users (`users tune NAME --preset P`). Management links get the `tune` and `setTune` operations (resellers:
+  their own users), and the subscription server `GET`/`PUT <subscription>/prefs` for the user's own choices.
+- Tuning searches client settings instead of a fixed grid: each config kind has a search space (fingerprint,
+  fragmentation ranges such as `frag:tlshello:20-60:5-15`, XHTTP mode, ALPN). A tune measures the usual settings
+  plus samples, screens every variant quickly and gives the rest of the probes only to the ones that got through
+  (successive halving), then evolves a second round from the best (`--evolve N`). `--grid` keeps the old grid,
+  `--seed N` repeats a search. Shared bundles carry the exact variants.
+- Multi-hop routes are tuned, not reused: `xtune tune` measures every variant through every relay too, in
+  parallel (`--relays all|none|NAME,..`), with each relay forwarding the test ports for the tune and measuring its
+  own leg to the server. The tune prints a configs × routes matrix; each route's score joins the network's ranking,
+  and subscriptions list the best route for the network first, across the server and its relays. App reports on a
+  relay's configs count for that route.
+- Bridge relays: `xtune relay add|sync NAME --bridge` has the relay end REALITY itself (keys of its own) and reach
+  the server with a second config measured from the relay, so each leg uses the config that gets through there.
+  It connects as the same user, so quotas and usage still count on the server; it holds the users' IDs (rotate to
+  revoke). Users added or rotated since the last sync do not get the bridge's configs until the next one.
+- Tunes remember: every tune, shared-test report, check, personal tune and app report updates per-network weights
+  of every setting value (Hedge with forgetting: evidence halves every 3 days) and the fragment ranges that worked,
+  in `memory.json` on the server. The next tune's search samples by them, keeping a floor for exploration. Each
+  user's own results per network order their subscription first (70% theirs, 30% the network's), unless they turn
+  it off. `xtune memory [show | clear]`.
+- Personal tunes: users with `--self-tune on` tune their own configs' client settings from the app
+  (`GET`/`POST <subscription>/tune`), with their own credentials and no test instance; the best settings become
+  theirs and count for their network's ranking.
+
+### Fixed
+- A pre-release is older than its release: `xtune self-update` and the app offer 1.7.0 to people on 1.7.0-rc.
+
 ## [1.6.1] - 2026-11-19
 
 ### Changed

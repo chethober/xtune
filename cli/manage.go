@@ -114,13 +114,14 @@ func (m *manager) room(st *state.State, name string, l Limits, adding bool) erro
 // ---------------------------------------------------------------- the API
 
 type manageReq struct {
-	Op      string   `json:"op"`
-	Name    string   `json:"name,omitempty"`
-	QuotaGB *float64 `json:"quotaGB,omitempty"`
-	Days    *int     `json:"days,omitempty"`
-	Devices *int     `json:"devices,omitempty"`
-	Reset   *string  `json:"reset,omitempty"` // monthly | weekly | "" (none)
-	Plan    *string  `json:"plan,omitempty"`
+	Op      string      `json:"op"`
+	Name    string      `json:"name,omitempty"`
+	QuotaGB *float64    `json:"quotaGB,omitempty"`
+	Days    *int        `json:"days,omitempty"`
+	Devices *int        `json:"devices,omitempty"`
+	Reset   *string     `json:"reset,omitempty"` // monthly | weekly | "" (none)
+	Plan    *string     `json:"plan,omitempty"`
+	Tune    *TuneChange `json:"tune,omitempty"` // setTune
 }
 
 func (q manageReq) limits() Limits {
@@ -234,9 +235,10 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 		if u == nil {
 			return nil, fmt.Errorf("no user %q", name)
 		}
-		d := mUserDetail{mUser: userRow(*u, us.Users[name], now), Sub: SubURL(st, *u), Links: protocols.NamedLinks(st, *u),
+		view, _ := userView(st, *u, "", -1, now)
+		d := mUserDetail{mUser: userRow(*u, us.Users[name], now), Sub: SubURL(st, *u), Links: protocols.NamedLinks(view, *u),
 			Daily: orUsage(us.Users[name]).LastDays(now, 30)}
-		for _, p := range protocols.Profiles(st, *u) {
+		for _, p := range protocols.Profiles(view, *u) {
 			d.Files = append(d.Files, p.File)
 		}
 		return d, nil
@@ -334,6 +336,19 @@ func ManageOp(r *remote.Server, m *manager, q manageReq, now time.Time) (any, er
 	case "resetSub":
 		_, err := ResetSubLink(r, q.Name)
 		return ok(err)
+	case "tune": // the user's tuning: policy, preferences and what they give
+		_, u := st.User(q.Name)
+		return tuneViewOf(st, *u), nil
+	case "setTune":
+		if q.Tune == nil {
+			return nil, errors.New("nothing to change")
+		}
+		st, err := SetUserTune(r, q.Name, *q.Tune)
+		if err != nil {
+			return nil, err
+		}
+		_, u := st.User(q.Name)
+		return tuneViewOf(st, *u), nil
 	case "delete":
 		return J{"ok": true}, DeleteUser(r, q.Name)
 	}

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,8 +76,14 @@ func newer(a, b string) bool {
 			return x > y
 		}
 	}
-	return false
+	// the same numbers: a release is newer than its pre-releases (1.7.0 over 1.7.0-rc)
+	return !isPre(a) && isPre(b)
 }
+
+// isPre says whether v is a pre-release (1.7.0-rc).
+func isPre(v string) bool { return preRe.MatchString(v) }
+
+var preRe = regexp.MustCompile(`\d+\.\d+\.\d+-[0-9A-Za-z]`)
 
 // updateGet fetches u directly, or through the running connection when GitHub cannot be reached
 // from here (it is filtered on some networks).

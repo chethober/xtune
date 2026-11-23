@@ -31,11 +31,11 @@ The first release that promises stability, not just features.
   - a client-side console that draws the server's state locally (fetched as JSON over SSH) instead of running the
     server's TUI over SSH;
   - Persian / RTL in the TUI, reusing the subscription pages' i18n.
-- [ ] **Relays, second hop tuned**: let the relay → server hop use a different config than the one clients use
+- [x] **Relays, second hop tuned** (1.7: bridge relays, and every route tuned in parallel): let the relay → server hop use a different config than the one clients use
   (tuned from the relay), for routes where the international leg is filtered differently.
 - [ ] **Rotate a config's settings, not just the server IP**: when a config is confirmed blocked on a network,
   change its SNI, port or path automatically, which is cheaper than moving the IP.
-- [ ] **Time-of-day rankings**: filtering often worsens in the evening or around events; keep per-hour results and
+- [x] **Time-of-day rankings**: filtering often worsens in the evening or around events; keep per-hour results and
   rank by the current hour.
 - [ ] **Multi-server overview** in the client console, once it draws state locally.
 - [ ] **Other CDN fronts** (Fastly, Gcore, …), so Cloudflare is not the only option.

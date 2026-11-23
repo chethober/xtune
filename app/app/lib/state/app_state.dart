@@ -34,6 +34,7 @@ class AppState extends ChangeNotifier {
   String? checkSubId;
   String? reportMessage;
   Timer? _checkPoll;
+  Timer? _personalPoll;
 
   /// Single-config speed tests, by config ID: a result (state, warmMs, downMbps…) or testing.
   final Map<String, Map<String, dynamic>> speed = {};
@@ -149,6 +150,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     _poll?.cancel();
     _checkPoll?.cancel();
+    _personalPoll?.cancel();
     _maintain?.cancel();
     super.dispose();
   }
@@ -500,6 +502,120 @@ class AppState extends ChangeNotifier {
       reportMessage = 'Results shared with the server';
     } catch (e) {
       reportMessage = 'Not shared: $e';
+    }
+    notifyListeners();
+  }
+
+  // ------------------------------------------------------------ the user's own tuning (Check tab)
+
+  /// The server's view of this user's tuning (xtune's userTuneView): what their admin set, their
+  /// own choices and their configs. Null: not loaded, or not an xtune subscription.
+  Map<String, dynamic>? prefs;
+  String? prefsSubId;
+  String? prefsError;
+
+  /// A personal tune: the check job measuring the variants, then 'chosen' (config ID -> settings).
+  Map<String, dynamic>? personal;
+  String? personalMessage;
+
+  Future<void> loadPrefs() async {
+    final s = sub;
+    if (s == null || s.local) {
+      prefs = null;
+      prefsError = null;
+      notifyListeners();
+      return;
+    }
+    try {
+      prefs = Map<String, dynamic>.from(await core.call('prefs.get', {'url': s.url}) as Map);
+      prefsSubId = s.id;
+      prefsError = null;
+    } catch (e) {
+      prefs = null;
+      prefsError = '$e';
+    }
+    notifyListeners();
+  }
+
+  /// Saves the user's own choices (null: as they are); an error message, or null.
+  Future<String?> savePrefs({List<String>? pin, List<String>? hide, bool? auto}) async {
+    final s = sub;
+    final p = prefs;
+    if (s == null || p == null || prefsSubId != s.id) return null;
+    final cur = Map<String, dynamic>.from((p['prefs'] as Map?) ?? {});
+    final body = {
+      'pin': pin ?? List<String>.from((cur['pin'] as List?) ?? []),
+      'hide': hide ?? List<String>.from((cur['hide'] as List?) ?? []),
+      'knobs': cur['knobs'] ?? {},
+      'auto': ?(auto ?? cur['auto']),
+    };
+    try {
+      prefs = Map<String, dynamic>.from(await core.call('prefs.set', {'url': s.url, 'prefs': body}) as Map);
+      notifyListeners();
+      await refreshSub(s); // the subscription now lists them their way
+      return null;
+    } catch (e) {
+      return '$e';
+    }
+  }
+
+  bool get personalRunning => personal != null && personal!['done'] != true;
+
+  /// Tunes this user's configs from here: the server sends variants of them, this device measures
+  /// them like a check, and the server keeps the best settings of each.
+  Future<void> startPersonalTune() async {
+    final s = sub;
+    if (s == null || s.local || personalRunning) return;
+    personalMessage = null;
+    personal = {'results': [], 'done': false};
+    notifyListeners();
+    await refreshNetwork();
+    try {
+      final pt = Map<String, dynamic>.from(await core.call('personal.fetch', {'url': s.url, 'asn': _asn}) as Map);
+      final saving = await savingData();
+      final j = await core.call('probe.start', {
+        'profile': pt['profile'],
+        'options': {'probes': 3, 'seconds': saving ? -1 : 3, 'parallel': 4, 'asn': _asn},
+      });
+      personal = Map<String, dynamic>.from(j as Map);
+      notifyListeners();
+      _personalPoll?.cancel();
+      _personalPoll = Timer.periodic(const Duration(milliseconds: 700), (_) async {
+        try {
+          final v = Map<String, dynamic>.from(await core.call('probe.status', {'id': personal!['id']}) as Map);
+          personal = v;
+          notifyListeners();
+          if (v['done'] == true) {
+            _personalPoll?.cancel();
+            await _sendPersonal(s, v);
+          }
+        } catch (_) {
+          _personalPoll?.cancel();
+        }
+      });
+    } catch (e) {
+      personal = null;
+      personalMessage = '$e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> stopPersonalTune() async {
+    _personalPoll?.cancel();
+    if (personal?['id'] != null) await core.call('probe.stop', {'id': personal!['id']});
+    personal = null;
+    notifyListeners();
+  }
+
+  Future<void> _sendPersonal(Sub s, Map<String, dynamic> v) async {
+    try {
+      final r = Map<String, dynamic>.from(await core.call('personal.send', {'url': s.url, 'network': network, 'results': v['results']}) as Map);
+      personal = {...v, 'chosen': r['chosen'] ?? {}};
+      if (r['view'] is Map) prefs = Map<String, dynamic>.from(r['view'] as Map);
+      personalMessage = null;
+      await refreshSub(s);
+    } catch (e) {
+      personalMessage = '$e';
     }
     notifyListeners();
   }

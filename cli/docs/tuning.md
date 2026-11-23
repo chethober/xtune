@@ -44,7 +44,39 @@ When the server has iptables, a Hysteria2 entry that listens on one port while a
 
 ## Client knobs
 
-uTLS fingerprint (chrome, firefox, safari, edge, randomized), TLS ClientHello fragmentation, XHTTP mode, all tested per config. With a CDN domain, also a *split* CDN entry: uploads go through the CDN, downloads straight from the server.
+uTLS fingerprint (chrome, firefox, safari, edge, randomized, ios, android), TLS ClientHello fragmentation, XHTTP mode,
+HTTP/3 to the CDN, all tested per config.
+
+## Search
+
+Tuning searches the client settings instead of only trying a fixed grid. Each kind of config has a *search space*:
+fingerprint, fragmentation (the presets, or a range: which packets, how many bytes per piece, how many milliseconds
+between pieces, written `frag:tlshello:20-60:5-15`), XHTTP mode and ALPN, each marked client-side (any user's app can
+change it) or server-side (SNI, port and path: a redeploy). A tune measures
+
+1. the usual settings (the grid earlier versions tried, so nothing they found is lost), plus samples from the space
+   (3 per config, 6 with `--depth deep`), drawn towards what worked before on this network;
+2. a quick screen of every variant (2 probes); only the ones that got through get the rest (successive halving);
+3. a second round: each of the 8 best is mutated (one setting changed, a fragment range moved a little) or crossed
+   with another good one of the same config (`--evolve N` per variant, default 2), measured the same way;
+4. the throughput test for the best of each config, fragment and mode.
+
+### Memory
+
+What every tune, shared-test report, `xtune check`, personal tune and app report measures is kept on the server
+(`memory.json`, next to `state.json`; `xtune memory` shows it, `xtune memory clear` forgets it):
+
+- **per network** (and for all networks together), a weight for every value of every setting of every kind of config,
+  updated like Hedge (EXP3's form for when every option is measured at once): each result moves the weight up or
+  down, and old evidence fades by half every 3 days, since censors change what they block. The next tune from that
+  network samples settings by these weights (a network seen for the first time uses all networks'), with a floor
+  that keeps trying the rest; half its random fragment ranges start from ranges that worked there before;
+- **per user and network**, how their configs did for them (from their app's reports and personal tunes): their
+  subscription and client profile list what works for *them* first on that network (70% their results, 30% the
+  network's ranking), unless they turn it off in the app (`"auto": false` in their preferences).
+
+`--grid` goes back to the fixed grid; `--seed N` repeats a tune's samples. Shared tests (`--share`) send their
+testers the exact variants, so every network measures the same ones. With a CDN domain, also a *split* CDN entry: uploads go through the CDN, downloads straight from the server.
 
 ## Clean IPs
 

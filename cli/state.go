@@ -178,6 +178,7 @@ func Deploy(r *remote.Server, res *TuneResult, n int) (*state.State, error) {
 		return st, err
 	}
 	scores, addrs := variantRank(st.Entries, res.All)
+	routeRank(st.Entries, res.All, scores)
 	if err := RecordNetwork(r, res.Network, scores, addrs); err != nil {
 		fmt.Println("[!] ranking the configs for this network:", err) // subscriptions just stay unranked for it
 	}
